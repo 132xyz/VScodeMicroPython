@@ -1393,6 +1393,10 @@ export function activate(context: vscode.ExtensionContext) {
       tree.addNode(target, true);
     }),
     vscode.commands.registerCommand("microPythonWorkBench.delete", async (node: Esp32Node) => {
+      if ((node as any).isContextAnchor) {
+        vscode.window.showInformationMessage("Select a file or folder to delete.");
+        return;
+      }
       const okBoard = await vscode.window.showWarningMessage(`Delete ${node.path} from board?`, { modal: true }, "Delete");
       if (okBoard !== "Delete") return;
       
@@ -1419,6 +1423,10 @@ export function activate(context: vscode.ExtensionContext) {
       
     }),
     vscode.commands.registerCommand("microPythonWorkBench.deleteBoardAndLocal", async (node: Esp32Node) => {
+      if ((node as any).isContextAnchor) {
+        vscode.window.showInformationMessage("Select a file or folder to delete.");
+        return;
+      }
       const okBoardLocal = await vscode.window.showWarningMessage(`Delete ${node.path} from board AND local workspace?`, { modal: true }, "Delete");
       if (okBoardLocal !== "Delete") return;
       
@@ -1602,7 +1610,10 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand("microPythonWorkBench.refresh");
     }),
     vscode.commands.registerCommand("microPythonWorkBench.renameNode", async (node: Esp32Node) => {
-      if (!node) return;
+      if (!node || (node as any).isContextAnchor) {
+        vscode.window.showInformationMessage("Select a file or folder to rename.");
+        return;
+      }
       const oldPath = node.path;
       const isDir = node.kind === "dir";
       const base = path.posix.dirname(oldPath);

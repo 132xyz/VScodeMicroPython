@@ -39,6 +39,13 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
       (item as any).className = 'esp32fs-no-port-item';
       return item;
     }
+    if ((element as any).isContextAnchor) {
+      const item = new vscode.TreeItem("Board (/)", vscode.TreeItemCollapsibleState.None);
+      item.contextValue = "dir";
+      item.tooltip = "Right-click to access MicroPython WorkBench actions";
+      item.iconPath = new vscode.ThemeIcon("files");
+      return item;
+    }
     const item = new vscode.TreeItem(
       element.name,
       element.kind === "dir" ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
@@ -121,12 +128,23 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
     }
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const path = element?.path ?? rootPath;
+    const maybeAddAnchor = (list: Esp32Node[]) => {
+      if (element === undefined && !list.some(n => n.isContextAnchor)) {
+        list.unshift({
+          kind: "dir",
+          name: "Board (/)",
+          path: "/",
+          isContextAnchor: true
+        });
+      }
+      return list;
+    };
     // Permite forzar re-listado una vez (desde el botón Refresh)
     const forceList = this.rawListOnlyOnce;
     this.rawListOnlyOnce = false;
     // Si hay cache para este path y no se fuerza re-listado, úsalo
     if (!forceList && this._nodeCache.has(path)) {
-      return this._nodeCache.get(path)!;
+      return maybeAddAnchor(this._nodeCache.get(path)!);
     }
     try {
       let entries: { name: string; isDir: boolean }[] | undefined;
@@ -234,7 +252,7 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
       nodes.sort((a,b) => (a.kind === b.kind) ? a.name.localeCompare(b.name) : (a.kind === "dir" ? -1 : 1));
       // Cachear este directorio para actualizaciones incrementales
       this._nodeCache.set(path, nodes);
-      return nodes;
+      return maybeAddAnchor(nodes);
     } catch (err: any) {
       // Only show error if it's not a "no port selected" issue
       const errorMessage = String(err?.message ?? err).toLowerCase();
