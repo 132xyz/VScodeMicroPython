@@ -323,11 +323,6 @@
           "group": "navigation@1"
         },
         {
-          "command": "microPythonWorkBench.flashMicroPython",
-          "when": "view == microPythonWorkBenchActionsView",
-          "group": "navigation@9"
-        },
-        {
           "command": "microPythonWorkBench.serialSendCtrlC",
           "when": "view == microPythonWorkBenchActionsView",
           "group": "navigation@2"

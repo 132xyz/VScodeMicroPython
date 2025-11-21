@@ -317,10 +317,19 @@ export function activate(context: vscode.ExtensionContext) {
     const v = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
     const has = !!v && v !== "auto";
     vscode.commands.executeCommand('setContext', 'microPythonWorkBench.hasPort', has);
+    if (!has) {
+      // Reset view title and caches when no port is selected
+      try {
+        view.title = "Files";
+        tree.clearCache();
+        try { mp.clearFileTreeCache(); } catch {}
+      } catch {}
+    }
   };
   // Ensure no port is selected at startup
   vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", "auto", vscode.ConfigurationTarget.Global);
   updatePortContext();
+  refreshFilesViewTitle().catch(() => {});
 
   const tree = new Esp32Tree();
   const view = vscode.window.createTreeView("microPythonWorkBenchFsView", { treeDataProvider: tree });
@@ -1115,6 +1124,9 @@ export function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration('microPythonWorkBench.connect')) {
         updatePortContext();
         refreshFilesViewTitle().catch(() => {});
+        tree.clearCache();
+        try { mp.clearFileTreeCache(); } catch {}
+        tree.refreshTree();
       }
     }),
 
