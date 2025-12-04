@@ -8,11 +8,13 @@ The extension leverages **mpremote** for all board interactions, including file 
 
 ## Main features
 
-- 📂 Remote file explorer for the device (open, download, upload, rename, delete)
+- 📂 Remote file explorer for the device (open, download files/folders, upload, rename, delete)
 - 🔄 Two-way sync: compare local files with the device and sync changed files
 - 📝 Create a new file in the Files view and upload it to the board on first save
+- 💽 Flash MicroPython firmware via esptool with board auto-detection (catalog driven)
 - 💻 Integrated MicroPython REPL terminal
 - ⏯️ Send commands to the board (stop, soft reset, etc.)
+- 🧭 Files view shows the detected board name and status bar displays last auto-sync time
 
 **⚡ Connect to board and run a file**
 ![Run file demo](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
@@ -41,6 +43,7 @@ These commands perform full or incremental synchronization between your local wo
 - `MPY Workbench: Upload Active File` — upload the current editor file
 - `MPY Workbench: Select Serial Port` — pick device port
 - `MPY Workbench: Open REPL Terminal` — open MicroPython REPL
+- `MPY Workbench: Flash MicroPython Firmware` — flash firmware using the bundled catalog and esptool
 - `MPY Workbench: Toggle workspace Auto-Sync on Save` — enable/disable workspace auto-sync
 
 ## Workspace config
@@ -52,16 +55,30 @@ The extension stores per-workspace settings and manifests inside a workspace fol
 
 Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. If no workspace config exists the extension falls back to the global setting `microPythonWorkBench.autoSyncOnSave` (default: `false`).
 
-## Python Requirements
+## Status indicators
 
-- **mpremote** — Used internally for all board operations (file management, REPL connection, command execution).
+- Status bar shows `MPY: AutoSync ON/OFF`, a cancel-all-tasks button, and `MPY: LastSync <time>` after each auto-sync run.
+- Files view header displays the detected board name/ID once a fixed serial port is selected.
+
+## Requirements
+
+- **Python 3 + mpremote** — Used for all board operations (`pip install mpremote`). The extension defaults to VS Code’s selected interpreter and falls back to `python`/`python3` if needed.
+- **Firmware flashing:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
+- **Firmware downloads:** Network access to fetch firmware images referenced in `assets/firmwareCatalog.json` (currently seeded with ESP32-C6).
 
 The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
+
+## Firmware flashing
+
+- Choose a specific serial port (not `auto`), then run `MicroPython WorkBench: Flash MicroPython Firmware` from the Command Palette or Board Actions view.
+- The extension detects the board, picks the matching entry from `assets/firmwareCatalog.json`, downloads the image, and runs `esptool` at 460800 baud.
+- Put the board in bootloader mode first; the REPL is automatically closed during flashing to free the port.
+- Add more boards by appending entries to `assets/firmwareCatalog.json` (chip, flash mode/freq, offset, download URL, and aliases).
 
 ## Next steps
 
 - ✅ Broaden board compatibility (currently tested only with ESP32-S3 and ESP32-C3)
-- 🔌 Add firmware flashing support for boards
+- 🔌 Expand the firmware catalog beyond the initial ESP32-C6 entry
 - 🪟 Perform full Windows testing: validate mpremote compatibility with COM ports and ensure consistent behavior of file operations and REPL across Windows environments
 
 ## Contributing
