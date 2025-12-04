@@ -10,8 +10,17 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
   private rawListOnlyOnce = false;
+  private manualRefreshRequired = true;
+  private manualRefreshNoticeShown = false;
 
   refreshTree(): void { this._onDidChangeTreeData.fire(); }
+  /** Allow the next listing to run (clears the one-time block) */
+  allowListing(): void { this.manualRefreshRequired = false; }
+  /** Force the tree to wait for a manual refresh (used after port changes) */
+  requireManualRefresh(): void {
+    this.manualRefreshRequired = true;
+    this.manualRefreshNoticeShown = false;
+  }
 
   getTreeItem(element: Esp32Node | "no-port"): vscode.TreeItem {
     return this.getTreeItemForNode(element);
@@ -142,6 +151,14 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
     // Permite forzar re-listado una vez (desde el botón Refresh)
     const forceList = this.rawListOnlyOnce;
     this.rawListOnlyOnce = false;
+    // Block automatic listing until user explicitly refreshes
+    if (this.manualRefreshRequired && !forceList) {
+      if (!this.manualRefreshNoticeShown && port && port !== "auto") {
+        this.manualRefreshNoticeShown = true;
+        vscode.window.showInformationMessage("Board connected. Click Refresh to load files.");
+      }
+      return maybeAddAnchor([]);
+    }
     // Si hay cache para este path y no se fuerza re-listado, úsalo
     if (!forceList && this._nodeCache.has(path)) {
       return maybeAddAnchor(this._nodeCache.get(path)!);

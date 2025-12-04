@@ -479,6 +479,7 @@ export function activate(context: vscode.ExtensionContext) {
     syncView,
     vscode.commands.registerCommand("microPythonWorkBench.refresh", () => {
       // Clear cache and force next listing to come from device
+      tree.allowListing();
       tree.clearCache();
       tree.enableRawListForNext();
       tree.refreshTree();
@@ -570,6 +571,7 @@ export function activate(context: vscode.ExtensionContext) {
       const value = picked.label === "auto" ? "auto" : picked.label;
    await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", value, vscode.ConfigurationTarget.Global);
    updatePortContext();
+   tree.requireManualRefresh();
    await refreshFilesViewTitle();
    vscode.window.showInformationMessage(`Board connect set to ${value}`);
    tree.clearCache();
@@ -682,6 +684,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.setPort", async (port: string) => {
   await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", port, vscode.ConfigurationTarget.Global);
   updatePortContext();
+  tree.requireManualRefresh();
   await refreshFilesViewTitle();
   vscode.window.showInformationMessage(`ESP32 connect set to ${port}`);
   tree.clearCache();
@@ -1124,6 +1127,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration('microPythonWorkBench.connect')) {
         updatePortContext();
         refreshFilesViewTitle().catch(() => {});
+        tree.requireManualRefresh();
         tree.clearCache();
         try { mp.clearFileTreeCache(); } catch {}
         tree.refreshTree();
