@@ -2,6 +2,9 @@ import * as vscode from "vscode";
 import { exec } from "node:child_process";
 import * as mp from "./mpremote";
 
+let runTerminal: vscode.Terminal | undefined;
+let replTerminal: vscode.Terminal | undefined;
+
 // Disconnect the ESP32 REPL terminal but leave it open
 export async function disconnectReplTerminal() {
   if (replTerminal) {
@@ -114,19 +117,35 @@ export async function runActiveFile(): Promise<void> {
     await new Promise(r => setTimeout(r, 400));
   }
 
-  // Create a new terminal to run the file with mpremote
-  const runTerminal = vscode.window.createTerminal({
-    name: "ESP32 Run File",
-    cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-  });
+  const reuseExistingRunTerminal = !!(runTerminal && vscode.window.terminals.some(t => t === runTerminal));
+  const terminal = getRunTerminal();
+
+  if (reuseExistingRunTerminal) {
+    try {
+      terminal.sendText("\x03", false);
+      await new Promise(r => setTimeout(r, 80));
+    } catch {}
+  }
 
   // Use mpremote run command
   const cmd = `mpremote connect ${device} run "${filePath}"`;
-  runTerminal.sendText(cmd, true);
-  runTerminal.show(true);
+  terminal.sendText(cmd, true);
+  terminal.show(true);
 }
 
-let replTerminal: vscode.Terminal | undefined;
+function getRunTerminal(): vscode.Terminal {
+  if (runTerminal) {
+    const alive = vscode.window.terminals.some(t => t === runTerminal);
+    if (alive) return runTerminal;
+    runTerminal = undefined;
+  }
+
+  runTerminal = vscode.window.createTerminal({
+    name: "ESP32 Run File",
+    cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  });
+  return runTerminal;
+}
 
 export async function getReplTerminal(context?: vscode.ExtensionContext): Promise<vscode.Terminal> {
   if (replTerminal) {
