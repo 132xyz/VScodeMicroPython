@@ -7,6 +7,7 @@ import * as mp from "./mpremote";
 import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "./sync";
 import { Esp32DecorationProvider } from "./decorations";
 import { listDirPyRaw } from "./pyraw";
+import { disconnectReplTerminal, restartReplInExistingTerminal, isReplOpen, closeRunTerminal, isRunTerminalOpen } from "./mpremoteCommands";
 
 // Helper to get workspace folder or throw error
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -136,7 +137,7 @@ export class BoardOperations {
   }
 
   // Helper function for auto-suspend operations
-  private async withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean } = {}): Promise<T> {
+  private async withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
     const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
     // If auto-suspend disabled, run without suspend logic
     if (!enabled) {
@@ -144,8 +145,19 @@ export class BoardOperations {
       finally { }
     }
 
-    // For now, just execute the function (auto-suspend logic would be implemented here)
-    return await fn();
+    const runWasOpen = isRunTerminalOpen();
+    const replWasOpen = isReplOpen();
+    if (runWasOpen) await closeRunTerminal();
+    if (replWasOpen) await disconnectReplTerminal();
+    if (runWasOpen || replWasOpen) await delay(250);
+
+    try {
+      return await fn();
+    } finally {
+      if (replWasOpen) {
+        try { await restartReplInExistingTerminal(); } catch {}
+      }
+    }
   }
 
   async syncBaseline(): Promise<void> {

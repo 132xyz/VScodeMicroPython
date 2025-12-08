@@ -133,6 +133,27 @@ export async function runActiveFile(): Promise<void> {
   terminal.show(true);
 }
 
+export function isRunTerminalOpen(): boolean {
+  if (!runTerminal) return false;
+  const alive = vscode.window.terminals.some(t => t === runTerminal);
+  if (!alive) {
+    runTerminal = undefined;
+    return false;
+  }
+  return true;
+}
+
+export async function closeRunTerminal() {
+  if (!runTerminal) return;
+  try {
+    runTerminal.sendText("\x03", false);
+    await new Promise(r => setTimeout(r, 120));
+    runTerminal.dispose();
+  } catch {}
+  runTerminal = undefined;
+  await new Promise(r => setTimeout(r, 250));
+}
+
 function getRunTerminal(): vscode.Terminal {
   if (runTerminal) {
     const alive = vscode.window.terminals.some(t => t === runTerminal);

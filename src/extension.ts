@@ -28,7 +28,9 @@ import {
   runActiveFile,
   getReplTerminal,
   isReplOpen,
+  isRunTerminalOpen,
   closeReplTerminal,
+  closeRunTerminal,
   openReplTerminal,
   toLocalRelative,
   toDevicePath
@@ -466,13 +468,18 @@ export function activate(context: vscode.ExtensionContext) {
       finally { }
     }
     opQueue = opQueue.catch(() => {}).then(async () => {
-      const wasOpen = isReplOpen();
-      if (wasOpen) await disconnectReplTerminal();
+      const runWasOpen = isRunTerminalOpen();
+      const replWasOpen = isReplOpen();
+      if (runWasOpen) await closeRunTerminal();
+      if (replWasOpen) await disconnectReplTerminal();
+      if (runWasOpen || replWasOpen) {
+        await new Promise(r => setTimeout(r, 250));
+      }
       try {
         await ensureIdle();
         return await fn();
       } finally {
-        if (wasOpen) await restartReplInExistingTerminal();
+        if (replWasOpen) await restartReplInExistingTerminal();
       }
     });
     return opQueue as Promise<T>;
@@ -1571,22 +1578,21 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.deleteAllBoardFromView", async () => {
       await vscode.commands.executeCommand("microPythonWorkBench.deleteAllBoard");
     }),
-    // View wrappers: run commands without pre-ops (no kill/Ctrl-C)
+    // View wrappers: funnel commands from the view while keeping auto-suspend active
     vscode.commands.registerCommand("microPythonWorkBench.runFromView", async (cmd: string, ...args: any[]) => {
-      setSkipIdleOnce();
       try { await vscode.commands.executeCommand(cmd, ...args); } catch (e) {
         const msg = (e as any)?.message ?? String(e);
   vscode.window.showErrorMessage(`Board command failed: ${msg}`);
       }
     }),
-    vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.syncBaseline"); }),
-    vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromBoardFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.syncBaselineFromBoard"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncBaseline"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromBoardFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncBaselineFromBoard"); }),
 
-    vscode.commands.registerCommand("microPythonWorkBench.checkDiffsFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.checkDiffs"); }),
-    vscode.commands.registerCommand("microPythonWorkBench.syncDiffsLocalToBoardFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.syncDiffsLocalToBoard"); }),
-    vscode.commands.registerCommand("microPythonWorkBench.syncDiffsBoardToLocalFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.syncDiffsBoardToLocal"); }),
-    vscode.commands.registerCommand("microPythonWorkBench.runActiveFileFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.runActiveFile"); }),
-    vscode.commands.registerCommand("microPythonWorkBench.openReplFromView", async () => { setSkipIdleOnce(); await vscode.commands.executeCommand("microPythonWorkBench.openRepl"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.checkDiffsFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.checkDiffs"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.syncDiffsLocalToBoardFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncDiffsLocalToBoard"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.syncDiffsBoardToLocalFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncDiffsBoardToLocal"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.runActiveFileFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.runActiveFile"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.openReplFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.openRepl"); }),
     vscode.commands.registerCommand("microPythonWorkBench.newFileInTree", async (node?: Esp32Node) => {
       const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!ws) return;
