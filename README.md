@@ -55,6 +55,14 @@ The extension stores per-workspace settings and manifests inside a workspace fol
 
 Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. If no workspace config exists the extension falls back to the global setting `microPythonWorkBench.autoSyncOnSave` (default: `false`).
 
+### Auto-suspend and REPL restore
+
+- `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).
+- `microPythonWorkBench.replRestoreBehavior` (default: `resumeCommand`): what to do when REPL is restored after auto-suspend/auto-sync:
+  - `resumeCommand`: send the last resume command (e.g., `exec(open(<device path>).read())` for the file that was saved).
+  - `softReset`: send Ctrl-D so boards that auto-run `main.py` after reset will restart.
+  - `none`: just reopen the REPL without sending anything.
+
 ## Status indicators
 
 - Status bar shows `MPY: AutoSync ON/OFF`, a cancel-all-tasks button, and `MPY: LastSync <time>` after each auto-sync run.
