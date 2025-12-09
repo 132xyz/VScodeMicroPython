@@ -107,7 +107,7 @@ export async function suspendSerialSessionsForAutoSync(): Promise<AutoSuspendSna
   return snapshot;
 }
 
-export type ReplRestoreBehavior = "resumeCommand" | "softReset" | "none";
+export type ReplRestoreBehavior = "runChanged" | "executeBootMain" | "openReplEmpty" | "none";
 
 export async function restoreSerialSessionsFromSnapshot(
   snapshot: AutoSuspendSnapshot,
@@ -121,8 +121,12 @@ export async function restoreSerialSessionsFromSnapshot(
   }
   if (snapshot.replWasOpen) {
     logAutoSuspend("Restoring REPL terminal");
+    if (opts.replBehavior === "none") {
+      logAutoSuspend("REPL restore behavior is 'none'; not reopening REPL");
+      return;
+    }
     await restartReplInExistingTerminal();
-    if (opts.replBehavior === "softReset" && replTerminal) {
+    if (opts.replBehavior === "executeBootMain" && replTerminal) {
       await sleep(400);
       try {
         logAutoSuspend("Sending soft reset (Ctrl-D) to REPL");
@@ -130,7 +134,7 @@ export async function restoreSerialSessionsFromSnapshot(
       } catch {}
       await sleep(250);
     }
-    if (opts.replBehavior === "resumeCommand" && opts.resumeReplCommand && replTerminal) {
+    if (opts.replBehavior === "runChanged" && opts.resumeReplCommand && replTerminal) {
       // Give mpremote a bit more time to settle before sending the command
       await sleep(600);
       try {
@@ -140,6 +144,9 @@ export async function restoreSerialSessionsFromSnapshot(
         await sleep(150);
         replTerminal.show(true);
       } catch {}
+    }
+    if (opts.replBehavior === "openReplEmpty" && replTerminal) {
+      try { replTerminal.show(true); } catch {}
     }
   }
 }

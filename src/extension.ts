@@ -445,6 +445,12 @@ export function activate(context: vscode.ExtensionContext) {
   let listingInProgress = false;
   let skipIdleOnce = false;
   function setSkipIdleOnce() { skipIdleOnce = true; }
+  function normalizeReplBehavior(raw: string | undefined | null): "runChanged" | "executeBootMain" | "openReplEmpty" | "none" {
+    if (raw === "runChanged" || raw === "executeBootMain" || raw === "openReplEmpty" || raw === "none") return raw;
+    if (raw === "resumeCommand") return "runChanged"; // legacy
+    if (raw === "softReset") return "executeBootMain"; // legacy
+    return "none";
+  }
   async function ensureIdle(): Promise<void> {
     // Keep this lightweight: do not chain kill/ctrl-c automatically.
     // Optionally perform a quick check to nudge the connection.
@@ -454,7 +460,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (d > 0) await new Promise(r => setTimeout(r, d));
     }
   }
-  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; replBehavior?: "resumeCommand" | "softReset" | "none" } = {}): Promise<T> {
+  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; replBehavior?: "runChanged" | "executeBootMain" | "openReplEmpty" | "none" } = {}): Promise<T> {
     const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
     // Optionally preempt any in-flight mpremote process so new command takes priority
     if (opts.preempt !== false) {
@@ -1723,8 +1729,21 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } catch {}
       const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
-      const behavior = vscode.workspace.getConfiguration().get<"resumeCommand" | "softReset" | "none">("microPythonWorkBench.replRestoreBehavior", "none");
-      const resumeCmd = behavior === "resumeCommand" ? `exec(open(${JSON.stringify(deviceDest)}).read())` : undefined;
+      const rawBehavior = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.replRestoreBehavior", "none");
+      const behavior = normalizeReplBehavior(rawBehavior);
+      let resumeCmd: string | undefined;
+      if (behavior === "runChanged") {
+        const moduleName = deviceDest
+          .replace(/^[\\/]+/, "")
+          .replace(/\.py$/i, "")
+          .replace(/[\\/]+/g, ".");
+        const validModule = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/.test(moduleName);
+        if (validModule) {
+          resumeCmd = `import ${moduleName}`;
+        } else {
+          console.log("[MPY auto-suspend] Skipping resume import; invalid module name derived from", deviceDest, "=>", moduleName);
+        }
+      }
       try {
         console.log("[MPY auto-suspend] auto-sync resume prepared:", { resumeCmd, behavior });
         await withAutoSuspend(

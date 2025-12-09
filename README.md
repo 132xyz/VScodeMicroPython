@@ -59,9 +59,10 @@ Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to e
 
 - `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).
 - `microPythonWorkBench.replRestoreBehavior` (default: `none`): what to do when REPL is restored after auto-suspend/auto-sync:
-  - `resumeCommand`: send the last resume command (e.g., `exec(open(<device path>).read())` for the file that was saved).
-  - `softReset`: send Ctrl-D so boards that auto-run `main.py` after reset will restart.
-  - `none`: just reopen the REPL without sending anything.
+  - `runChanged`: Auto run the changed/saved file in REPL after sync.
+  - `executeBootMain`: send Ctrl-D so boards that auto-run `main.py`/`boot.py` after reset will restart.
+  - `openReplEmpty`: reopen the REPL without sending anything.
+  - `none`: do not reopen the REPL.
 
 ## Status indicators
 
@@ -72,7 +73,7 @@ Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to e
 
 - **Python 3.13.2**
 - **Mpremote v1.26.1**
-- **Firmware flashing:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
+- **Firmware flashinOk.g:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
 - The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
 
 ## Firmware flashing
