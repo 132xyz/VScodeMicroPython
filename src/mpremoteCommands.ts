@@ -4,6 +4,22 @@ import * as mp from "./mpremote";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const logAutoSuspend = (...args: any[]) => console.log("[MPY auto-suspend]", ...args);
+
+type LastRunCommand = {
+  device: string;
+  filePath: string;
+  cmd: string;
+};
+
+let lastRunCommand: LastRunCommand | undefined;
+
+export type AutoSuspendSnapshot = {
+  runWasOpen: boolean;
+  replWasOpen: boolean;
+  lastRunCommand?: LastRunCommand;
+};
 
 // Disconnect the ESP32 REPL terminal but leave it open
 export async function disconnectReplTerminal() {
@@ -16,18 +32,114 @@ export async function disconnectReplTerminal() {
   }
 }
 
-export async function restartReplInExistingTerminal() {
-  if (!replTerminal) return;
+export async function restartReplInExistingTerminal(opts: { show?: boolean } = {}) {
   try {
     const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
     if (!connect || connect === "auto") return;
     const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
 
-    // Simply restart mpremote connect command
+    // If the previous terminal is gone, recreate it
+    if (!replTerminal || !isReplOpen()) {
+      logAutoSuspend("REPL terminal missing/closed, creating new instance");
+      const term = await getReplTerminal();
+      if (opts.show !== false) term.show(true);
+      // give it a moment to connect
+      await sleep(250);
+      return;
+    }
+
+    // Reuse the existing terminal: send connect again
     const cmd = `mpremote connect ${device}`;
-    if (replTerminal) replTerminal.sendText(cmd, true);
-    await new Promise(r => setTimeout(r, 200));
+    logAutoSuspend("Reusing REPL terminal; sending reconnect command:", cmd);
+    replTerminal.sendText(cmd, true);
+    await sleep(200);
+    if (opts.show !== false) {
+      try { replTerminal.show(true); } catch {}
+    }
   } catch {}
+}
+
+function rememberLastRunCommand(device: string, filePath: string, cmd: string) {
+  lastRunCommand = { device, filePath, cmd };
+  logAutoSuspend("Remembering last Run command for resume:", cmd);
+}
+
+async function rerunLastRunCommand(info: LastRunCommand): Promise<void> {
+  // Ensure REPL is closed to free the port, mirroring runActiveFile behavior
+  if (isReplOpen()) {
+    await closeReplTerminal();
+    await sleep(400);
+  }
+
+  const reuseExistingRunTerminal = isRunTerminalOpen();
+  const terminal = getRunTerminal();
+
+  if (reuseExistingRunTerminal) {
+    try {
+      terminal.sendText("\x03", false);
+      await sleep(80);
+    } catch {}
+  }
+
+  terminal.sendText(info.cmd, true);
+  terminal.show(true);
+}
+
+export async function suspendSerialSessionsForAutoSync(): Promise<AutoSuspendSnapshot> {
+  const runWasOpen = isRunTerminalOpen();
+  const replWasOpen = isReplOpen();
+  logAutoSuspend("Suspend start — runWasOpen:", runWasOpen, "replWasOpen:", replWasOpen);
+  const snapshot: AutoSuspendSnapshot = {
+    runWasOpen,
+    replWasOpen,
+    lastRunCommand: runWasOpen ? lastRunCommand : undefined
+  };
+
+  if (runWasOpen) await closeRunTerminal();
+  if (replWasOpen) {
+    await disconnectReplTerminal(); // send Ctrl-X to exit cleanly
+    await sleep(120);
+    await closeReplTerminal(); // dispose so restore always recreates a fresh REPL terminal
+  }
+  if (runWasOpen || replWasOpen) await sleep(250);
+
+  logAutoSuspend("Suspend complete; snapshot captured");
+  return snapshot;
+}
+
+export async function restoreSerialSessionsFromSnapshot(
+  snapshot: AutoSuspendSnapshot,
+  opts: { resumeReplCommand?: string; resumeReplSoftReset?: boolean } = {}
+): Promise<void> {
+  // Prefer restoring the run command to avoid port contention with REPL
+  if (snapshot.runWasOpen && snapshot.lastRunCommand) {
+    logAutoSuspend("Restoring Run terminal with last command");
+    await rerunLastRunCommand(snapshot.lastRunCommand);
+    return;
+  }
+  if (snapshot.replWasOpen) {
+    logAutoSuspend("Restoring REPL terminal");
+    await restartReplInExistingTerminal();
+    if (opts.resumeReplSoftReset && replTerminal) {
+      await sleep(400);
+      try {
+        logAutoSuspend("Sending soft reset (Ctrl-D) to REPL");
+        replTerminal.sendText("\x04", false);
+      } catch {}
+      await sleep(250);
+    }
+    if (opts.resumeReplCommand && replTerminal) {
+      // Give mpremote a bit more time to settle before sending the command
+      await sleep(600);
+      try {
+        logAutoSuspend("Sending resume command to REPL:", opts.resumeReplCommand);
+        replTerminal.sendText(opts.resumeReplCommand, true);
+        // a slight follow-up delay helps ensure the command lands
+        await sleep(150);
+        replTerminal.show(true);
+      } catch {}
+    }
+  }
 }
 
 export async function checkMpremoteAvailability(): Promise<void> {
@@ -129,6 +241,7 @@ export async function runActiveFile(): Promise<void> {
 
   // Use mpremote run command
   const cmd = `mpremote connect ${device} run "${filePath}"`;
+  rememberLastRunCommand(device, filePath, cmd);
   terminal.sendText(cmd, true);
   terminal.show(true);
 }

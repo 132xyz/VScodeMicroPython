@@ -20,7 +20,8 @@ import { PythonInterpreterManager } from "./pythonInterpreter";
 // import { monitor } from "./monitor"; // switched to auto-suspend REPL strategy
 import {
   disconnectReplTerminal,
-  restartReplInExistingTerminal,
+  suspendSerialSessionsForAutoSync,
+  restoreSerialSessionsFromSnapshot,
   checkMpremoteAvailability,
   serialSendCtrlC,
   stop,
@@ -28,9 +29,7 @@ import {
   runActiveFile,
   getReplTerminal,
   isReplOpen,
-  isRunTerminalOpen,
   closeReplTerminal,
-  closeRunTerminal,
   openReplTerminal,
   toLocalRelative,
   toDevicePath
@@ -455,7 +454,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (d > 0) await new Promise(r => setTimeout(r, d));
     }
   }
-  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean } = {}): Promise<T> {
+  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; resumeReplSoftReset?: boolean } = {}): Promise<T> {
     const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
     // Optionally preempt any in-flight mpremote process so new command takes priority
     if (opts.preempt !== false) {
@@ -468,18 +467,18 @@ export function activate(context: vscode.ExtensionContext) {
       finally { }
     }
     opQueue = opQueue.catch(() => {}).then(async () => {
-      const runWasOpen = isRunTerminalOpen();
-      const replWasOpen = isReplOpen();
-      if (runWasOpen) await closeRunTerminal();
-      if (replWasOpen) await disconnectReplTerminal();
-      if (runWasOpen || replWasOpen) {
-        await new Promise(r => setTimeout(r, 250));
-      }
+      const snapshot = await suspendSerialSessionsForAutoSync();
       try {
         await ensureIdle();
         return await fn();
       } finally {
-        if (replWasOpen) await restartReplInExistingTerminal();
+        try {
+          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot start", { resumeReplCommand: opts.resumeReplCommand, resumeReplSoftReset: opts.resumeReplSoftReset });
+          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, resumeReplSoftReset: opts.resumeReplSoftReset });
+          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot done");
+        } catch (err) {
+          console.error("[DEBUG] restoreSerialSessionsFromSnapshot failed:", err);
+        }
       }
     });
     return opQueue as Promise<T>;
@@ -1724,8 +1723,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } catch {}
       const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
+      const softResetAfterUpload = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.replSoftResetAfterUpload", false);
+      const resumeCmd = softResetAfterUpload ? undefined : `exec(open(${JSON.stringify(deviceDest)}).read())`;
       try {
-        await withAutoSuspend(() => mp.cpToDevice(doc.uri.fsPath, deviceDest));
+        console.log("[MPY auto-suspend] auto-sync resume command prepared:", resumeCmd, "softResetAfterUpload:", softResetAfterUpload);
+        await withAutoSuspend(
+          () => mp.cpToDevice(doc.uri.fsPath, deviceDest),
+          { resumeReplCommand: resumeCmd, resumeReplSoftReset: softResetAfterUpload }
+        );
         tree.addNode(deviceDest, false);
         const ts = new Date();
         const detail = `${rel} → ${deviceDest}`;

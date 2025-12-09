@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "MicroPython-WorkBench",
   "description": "Fork of MPY-WorkBench to fix bugs and issues.  Browse and manage MicroPython files on ESP32 and similar boards via mpremote.",
-  "version": "0.0.7",
+  "version": "0.0.9",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -424,6 +424,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically close the REPL terminal before file ops and reopen after."
+        },
+        "microPythonWorkBench.replSoftResetAfterUpload": {
+          "type": "boolean",
+          "default": false,
+          "description": "After auto-sync on save, send Ctrl-D to the REPL (soft reset) when it is restored. Useful for boards that auto-run main.py after a reset."
         },
         "microPythonWorkBench.interruptOnConnect": {
           "type": "boolean",

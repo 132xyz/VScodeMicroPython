@@ -7,7 +7,7 @@ import * as mp from "./mpremote";
 import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "./sync";
 import { Esp32DecorationProvider } from "./decorations";
 import { listDirPyRaw } from "./pyraw";
-import { disconnectReplTerminal, restartReplInExistingTerminal, isReplOpen, closeRunTerminal, isRunTerminalOpen } from "./mpremoteCommands";
+import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "./mpremoteCommands";
 
 // Helper to get workspace folder or throw error
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -145,18 +145,11 @@ export class BoardOperations {
       finally { }
     }
 
-    const runWasOpen = isRunTerminalOpen();
-    const replWasOpen = isReplOpen();
-    if (runWasOpen) await closeRunTerminal();
-    if (replWasOpen) await disconnectReplTerminal();
-    if (runWasOpen || replWasOpen) await delay(250);
-
+    const snapshot = await suspendSerialSessionsForAutoSync();
     try {
       return await fn();
     } finally {
-      if (replWasOpen) {
-        try { await restartReplInExistingTerminal(); } catch {}
-      }
+      await restoreSerialSessionsFromSnapshot(snapshot);
     }
   }
 
