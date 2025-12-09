@@ -425,10 +425,11 @@
           "default": true,
           "description": "Automatically close the REPL terminal before file ops and reopen after."
         },
-        "microPythonWorkBench.replSoftResetAfterUpload": {
-          "type": "boolean",
-          "default": false,
-          "description": "After auto-sync on save, send Ctrl-D to the REPL (soft reset) when it is restored. Useful for boards that auto-run main.py after a reset."
+        "microPythonWorkBench.replRestoreBehavior": {
+          "type": "string",
+          "enum": ["resumeCommand", "softReset", "none"],
+          "default": "none",
+          "description": "What to do when REPL is restored after auto-suspend/auto-sync: resumeCommand -> send last resume command (e.g. exec(open(...).read())), softReset -> send Ctrl-D, none -> just reopen."
         },
         "microPythonWorkBench.interruptOnConnect": {
           "type": "boolean",

@@ -454,7 +454,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (d > 0) await new Promise(r => setTimeout(r, d));
     }
   }
-  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; resumeReplSoftReset?: boolean } = {}): Promise<T> {
+  async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; replBehavior?: "resumeCommand" | "softReset" | "none" } = {}): Promise<T> {
     const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
     // Optionally preempt any in-flight mpremote process so new command takes priority
     if (opts.preempt !== false) {
@@ -473,8 +473,8 @@ export function activate(context: vscode.ExtensionContext) {
         return await fn();
       } finally {
         try {
-          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot start", { resumeReplCommand: opts.resumeReplCommand, resumeReplSoftReset: opts.resumeReplSoftReset });
-          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, resumeReplSoftReset: opts.resumeReplSoftReset });
+          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot start", { resumeReplCommand: opts.resumeReplCommand, replBehavior: opts.replBehavior });
+          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, replBehavior: opts.replBehavior });
           console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot done");
         } catch (err) {
           console.error("[DEBUG] restoreSerialSessionsFromSnapshot failed:", err);
@@ -1723,13 +1723,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } catch {}
       const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
-      const softResetAfterUpload = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.replSoftResetAfterUpload", false);
-      const resumeCmd = softResetAfterUpload ? undefined : `exec(open(${JSON.stringify(deviceDest)}).read())`;
+      const behavior = vscode.workspace.getConfiguration().get<"resumeCommand" | "softReset" | "none">("microPythonWorkBench.replRestoreBehavior", "none");
+      const resumeCmd = behavior === "resumeCommand" ? `exec(open(${JSON.stringify(deviceDest)}).read())` : undefined;
       try {
-        console.log("[MPY auto-suspend] auto-sync resume command prepared:", resumeCmd, "softResetAfterUpload:", softResetAfterUpload);
+        console.log("[MPY auto-suspend] auto-sync resume prepared:", { resumeCmd, behavior });
         await withAutoSuspend(
           () => mp.cpToDevice(doc.uri.fsPath, deviceDest),
-          { resumeReplCommand: resumeCmd, resumeReplSoftReset: softResetAfterUpload }
+          { resumeReplCommand: resumeCmd, replBehavior: behavior }
         );
         tree.addNode(deviceDest, false);
         const ts = new Date();

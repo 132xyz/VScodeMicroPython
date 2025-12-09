@@ -58,7 +58,7 @@ Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to e
 ### Auto-suspend and REPL restore
 
 - `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).
-- `microPythonWorkBench.replRestoreBehavior` (default: `resumeCommand`): what to do when REPL is restored after auto-suspend/auto-sync:
+- `microPythonWorkBench.replRestoreBehavior` (default: `none`): what to do when REPL is restored after auto-suspend/auto-sync:
   - `resumeCommand`: send the last resume command (e.g., `exec(open(<device path>).read())` for the file that was saved).
   - `softReset`: send Ctrl-D so boards that auto-run `main.py` after reset will restart.
   - `none`: just reopen the REPL without sending anything.

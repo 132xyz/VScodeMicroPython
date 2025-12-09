@@ -107,9 +107,11 @@ export async function suspendSerialSessionsForAutoSync(): Promise<AutoSuspendSna
   return snapshot;
 }
 
+export type ReplRestoreBehavior = "resumeCommand" | "softReset" | "none";
+
 export async function restoreSerialSessionsFromSnapshot(
   snapshot: AutoSuspendSnapshot,
-  opts: { resumeReplCommand?: string; resumeReplSoftReset?: boolean } = {}
+  opts: { resumeReplCommand?: string; replBehavior?: ReplRestoreBehavior } = {}
 ): Promise<void> {
   // Prefer restoring the run command to avoid port contention with REPL
   if (snapshot.runWasOpen && snapshot.lastRunCommand) {
@@ -120,7 +122,7 @@ export async function restoreSerialSessionsFromSnapshot(
   if (snapshot.replWasOpen) {
     logAutoSuspend("Restoring REPL terminal");
     await restartReplInExistingTerminal();
-    if (opts.resumeReplSoftReset && replTerminal) {
+    if (opts.replBehavior === "softReset" && replTerminal) {
       await sleep(400);
       try {
         logAutoSuspend("Sending soft reset (Ctrl-D) to REPL");
@@ -128,7 +130,7 @@ export async function restoreSerialSessionsFromSnapshot(
       } catch {}
       await sleep(250);
     }
-    if (opts.resumeReplCommand && replTerminal) {
+    if (opts.replBehavior === "resumeCommand" && opts.resumeReplCommand && replTerminal) {
       // Give mpremote a bit more time to settle before sending the command
       await sleep(600);
       try {
