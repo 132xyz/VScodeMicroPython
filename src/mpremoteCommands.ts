@@ -290,7 +290,10 @@ function getRunTerminal(): vscode.Terminal {
   return runTerminal;
 }
 
-export async function getReplTerminal(context?: vscode.ExtensionContext): Promise<vscode.Terminal> {
+export async function getReplTerminal(
+  context?: vscode.ExtensionContext,
+  opts?: { interrupt?: boolean }
+): Promise<vscode.Terminal> {
   if (replTerminal) {
     const alive = vscode.window.terminals.some(t => t === replTerminal);
     if (alive) return replTerminal;
@@ -303,6 +306,10 @@ export async function getReplTerminal(context?: vscode.ExtensionContext): Promis
   }
 
   const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+  const shouldInterrupt = opts?.interrupt ?? vscode.workspace.getConfiguration().get<boolean>(
+    "microPythonWorkBench.interruptOnConnect",
+    true
+  );
 
   // Simply execute mpremote connect command in terminal
   const cmd = `mpremote connect ${device}`;
@@ -313,17 +320,19 @@ export async function getReplTerminal(context?: vscode.ExtensionContext): Promis
   });
 
   // Send interrupt (Ctrl-C) to ensure device is responsive
-  setTimeout(() => {
-    if (replTerminal) {
-      replTerminal.sendText("\x03", false); // Ctrl-C
-      // Small delay then send Ctrl-B for friendly REPL
-      setTimeout(() => {
-        if (replTerminal) {
-          replTerminal.sendText("\x02", false); // Ctrl-B
-        }
-      }, 100);
-    }
-  }, 500); // Wait 500ms for terminal to initialize
+  if (shouldInterrupt) {
+    setTimeout(() => {
+      if (replTerminal) {
+        replTerminal.sendText("\x03", false); // Ctrl-C
+        // Small delay then send Ctrl-B for friendly REPL
+        setTimeout(() => {
+          if (replTerminal) {
+            replTerminal.sendText("\x02", false); // Ctrl-B
+          }
+        }, 100);
+      }
+    }, 500); // Wait 500ms for terminal to initialize
+  }
 
   return replTerminal;
 }
@@ -356,7 +365,7 @@ export async function openReplTerminal() {
       } else if (interrupt) {
         try { await mp.reset(); } catch {}
       }
-      const term = await getReplTerminal();
+      const term = await getReplTerminal(undefined, { interrupt });
       term.show(true);
       // tiny delay to ensure terminal connects before next action
       await new Promise(r => setTimeout(r, 150));

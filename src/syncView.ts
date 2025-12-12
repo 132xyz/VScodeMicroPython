@@ -1,5 +1,7 @@
 
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface SyncActionNode { id: string; label: string; command: string }
 
@@ -39,12 +41,23 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
     try {
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (ws) {
-        const cfg = require('fs').existsSync(ws.uri.fsPath + '/.mpy-workbench/config.json')
-          ? JSON.parse(require('fs').readFileSync(ws.uri.fsPath + '/.mpy-workbench/config.json', 'utf8'))
+        const inspected = vscode.workspace
+          .getConfiguration(undefined, ws.uri)
+          .inspect<boolean>('microPythonWorkBench.autoSyncOnSave');
+        const settingValue =
+          typeof inspected?.workspaceFolderValue === 'boolean' ? inspected.workspaceFolderValue :
+          typeof inspected?.workspaceValue === 'boolean' ? inspected.workspaceValue :
+          typeof inspected?.globalValue === 'boolean' ? inspected.globalValue :
+          undefined;
+        const legacyPath = path.join(ws.uri.fsPath, '.mpy-workbench', 'config.json');
+        const legacyCfg = fs.existsSync(legacyPath)
+          ? JSON.parse(fs.readFileSync(legacyPath, 'utf8'))
           : {};
-        const enabled = typeof cfg.autoSyncOnSave === 'boolean'
-          ? cfg.autoSyncOnSave
-          : vscode.workspace.getConfiguration().get<boolean>('microPythonWorkBench.autoSyncOnSave', false);
+        const enabled = typeof settingValue === 'boolean'
+          ? settingValue
+          : typeof legacyCfg.autoSyncOnSave === 'boolean'
+            ? legacyCfg.autoSyncOnSave
+            : inspected?.defaultValue ?? false;
         autoSyncLabel = enabled ? 'AutoSync: ON (click to disable)' : 'AutoSync: OFF (click to enable)';
       }
     } catch {}
