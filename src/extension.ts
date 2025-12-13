@@ -1802,11 +1802,12 @@ export function activate(context: vscode.ExtensionContext) {
       const ws = getWorkspaceFolder();
       const current = await workspaceAutoSyncEnabled(ws.uri.fsPath);
       const next = !current;
-      // Update VS Code workspace settings so the toggle writes to $project/.vscode/settings.json
-      await vscode.workspace.getConfiguration().update(
-        'microPythonWorkBench.autoSyncOnSave',
+      // Update VS Code workspace folder settings - writes to $project/.vscode/settings.json
+      // Must use WorkspaceFolder target and pass resource URI for correct folder targeting
+      await vscode.workspace.getConfiguration('microPythonWorkBench', ws.uri).update(
+        'autoSyncOnSave',
         next,
-        vscode.ConfigurationTarget.Workspace
+        vscode.ConfigurationTarget.WorkspaceFolder
       );
       // Keep legacy .mpy-workbench config in sync for backward compatibility
       try {

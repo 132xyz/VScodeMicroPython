@@ -391,10 +391,15 @@ export async function openReplTerminal() {
 }
 
 async function strictConnectHandshake(interrupt: boolean) {
+  // Skip handshake entirely if interrupt is disabled, as mpremote's connect
+  // command may send interrupt signals to ensure the device is in a known state.
+  // Users who disable interruptOnConnect want no interrupts at all.
+  if (!interrupt) return;
+
   // Try reset + quick op, retry once if needed
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      if (interrupt) await mp.reset();
+      await mp.reset();
       // quick check: ls root; if it returns without throwing, we assume we're good
       await mp.ls("/");
       return;
