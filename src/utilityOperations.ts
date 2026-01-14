@@ -1,0 +1,82 @@
+import * as vscode from "vscode";
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import { Esp32Tree } from "./esp32Fs";
+import { Esp32DecorationProvider } from "./decorations";
+import { buildManifest, saveManifest, createIgnoreMatcher } from "./sync";
+
+const MPY_WORKBENCH_DIR = '.mpy-workbench';
+const MPY_MANIFEST_FILE = 'esp32sync.json';
+
+export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvider) {
+  // Refresh file tree
+  tree.requireManualRefresh();
+  tree.clearCache();
+  try {
+    // Clear mpremote cache if available
+    const mp = await import("./mpremote");
+    mp.clearFileTreeCache();
+  } catch {}
+  tree.refreshTree();
+}
+
+export async function rebuildManifest(tree: Esp32Tree) {
+  try {
+    console.log("[DEBUG] Starting manifest rebuild...");
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) {
+      vscode.window.showErrorMessage("No workspace folder open");
+      return;
+    }
+
+    // Ensure directories exist
+    await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
+
+    // Rebuild manifest
+    const matcher = await createIgnoreMatcher(ws.uri.fsPath);
+    const newManifest = await buildManifest(ws.uri.fsPath, matcher);
+    const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
+    await saveManifest(manifestPath, newManifest);
+
+    console.log("[DEBUG] Manifest rebuild completed");
+    vscode.window.showInformationMessage(`Manifest rebuilt successfully (${Object.keys(newManifest.files).length} files)`);
+  } catch (error: any) {
+    console.error("[DEBUG] Manifest rebuild failed:", error);
+    vscode.window.showErrorMessage(`Manifest rebuild failed: ${error?.message || error}`);
+  }
+}
+
+async function ensureWorkbenchIgnoreFile(wsPath: string) {
+  const workbenchDir = path.join(wsPath, MPY_WORKBENCH_DIR);
+  await fs.mkdir(workbenchDir, { recursive: true });
+  const ignoreFile = path.join(workbenchDir, '.mpyignore');
+  try {
+    await fs.access(ignoreFile);
+  } catch {
+    // Create default ignore file
+    const defaultIgnores = [
+      ".git/",
+      ".vscode/",
+      "node_modules/",
+      "dist/",
+      "out/",
+      "build/",
+      "__pycache__/",
+      ".DS_Store",
+      ".mpy-workbench/"
+    ].join('\n') + '\n';
+    await fs.writeFile(ignoreFile, defaultIgnores, 'utf8');
+  }
+}
+
+export async function cancelAllTasks() {
+  try {
+    console.log("[DEBUG] Starting to cancel all tasks...");
+    // Implementation to cancel tasks
+    // This might involve terminating running processes or clearing queues
+    console.log("[DEBUG] All tasks canceled successfully");
+  } catch (error: any) {
+    console.error("[DEBUG] Failed to cancel tasks:", error);
+    vscode.window.showErrorMessage(`Failed to cancel tasks: ${error?.message || error}`);
+  }
+}

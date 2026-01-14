@@ -1,9 +1,9 @@
 {
-  "name": "MicroPython-WorkBench",
+  "name": "Mpy",
   "icon": "media/logo.png",
-  "displayName": "MicroPython-WorkBench",
-  "description": "Fork of MPY-WorkBench to fix bugs and issues.  Browse and manage MicroPython files on ESP32 and similar boards via mpremote.",
-  "version": "0.1.1",
+  "displayName": "Mpy",
+  "description": "Browse and manage MicroPython files on ESP32 and similar boards via mpremote.",
+  "version": "0.1.3",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -18,7 +18,6 @@
       "supported": true
     }
   },
-  "extensionPack": [],
   "categories": [
     "Programming Languages",
     "Debuggers"
@@ -36,7 +35,7 @@
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.84.0",
     "typescript": "^5.4.0",
-    "vsce": "^2.15.0"
+    "vsce": "^1.97.0"
   },
   "repository": {
     "type": "git",
@@ -455,6 +454,11 @@
           "type": "string",
           "default": "/",
           "description": "Root path to show on device (e.g. /, /lib)"
+        },
+        "microPythonWorkBench.syncLocalRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Local root directory for sync operations relative to workspace root. If empty, uses workspace root. Example: 'src' or 'micropython'."
         },
         "microPythonWorkBench.usePyRawList": {
           "type": "boolean",

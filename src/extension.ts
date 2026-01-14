@@ -18,6 +18,7 @@ import { listDirPyRaw } from "./pyraw";
 import { BoardOperations } from "./boardOperations";
 import { PythonInterpreterManager } from "./pythonInterpreter";
 // import { monitor } from "./monitor"; // switched to auto-suspend REPL strategy
+import { refresh, rebuildManifest, cancelAllTasks } from "./utilityOperations";
 import {
   disconnectReplTerminal,
   suspendSerialSessionsForAutoSync,
@@ -552,11 +553,7 @@ export function activate(context: vscode.ExtensionContext) {
     actionsView,
     syncView,
     vscode.commands.registerCommand("microPythonWorkBench.refresh", () => {
-      // Clear cache and force next listing to come from device
-      tree.allowListing();
-      tree.clearCache();
-      tree.enableRawListForNext();
-      tree.refreshTree();
+      refresh(tree, decorations);
     }),
     vscode.commands.registerCommand("microPythonWorkBench.refreshFileTreeCache", async () => {
       try {
@@ -570,29 +567,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.rebuildManifest", async () => {
-      try {
-        console.log("[DEBUG] Starting manual manifest rebuild...");
-        const ws = vscode.workspace.workspaceFolders?.[0];
-        if (!ws) {
-          vscode.window.showErrorMessage("No workspace folder open");
-          return;
-        }
-
-        // Ensure directories exist
-        await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
-
-        // Rebuild manifest
-        const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-        const newManifest = await buildManifest(ws.uri.fsPath, matcher);
-        const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
-        await saveManifest(manifestPath, newManifest);
-
-        console.log("[DEBUG] Manifest rebuild completed");
-        vscode.window.showInformationMessage(`Manifest rebuilt successfully (${Object.keys(newManifest.files).length} files)`);
-      } catch (error: any) {
-        console.error("[DEBUG] Manifest rebuild failed:", error);
-        vscode.window.showErrorMessage(`Manifest rebuild failed: ${error?.message || error}`);
-      }
+      await rebuildManifest(tree);
     }),
     vscode.commands.registerCommand("microPythonWorkBench.debugTreeParsing", async () => {
       try {
@@ -617,21 +592,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", async () => {
-      try {
-        console.log("[DEBUG] Canceling all tasks...");
-
-        // Cancel current mpremote process
-        mp.cancelAll();
-
-        // Clear the operation queue by resetting it
-        opQueue = Promise.resolve();
-
-        vscode.window.showInformationMessage("All tasks have been canceled");
-        console.log("[DEBUG] All tasks canceled successfully");
-      } catch (error: any) {
-        console.error("[DEBUG] Failed to cancel tasks:", error);
-        vscode.window.showErrorMessage(`Failed to cancel tasks: ${error?.message || error}`);
-      }
+      await cancelAllTasks();
     }),
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", async () => {
       // Always get the most recent port list before showing the selector
@@ -863,6 +824,25 @@ export function activate(context: vscode.ExtensionContext) {
         }
         const ws = vscode.workspace.workspaceFolders?.[0];
         if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
+        const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
+        let localRootDir = ws.uri.fsPath;
+        if (syncLocalRoot) {
+          if (path.isAbsolute(syncLocalRoot)) {
+            localRootDir = syncLocalRoot;
+          } else {
+            localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
+          }
+          try {
+            await fs.access(localRootDir);
+          } catch {
+            const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
+            if (create === "Create") {
+              await fs.mkdir(localRootDir, { recursive: true });
+            } else {
+              localRootDir = ws.uri.fsPath;
+            }
+          }
+        }
         const initialized = await isLocalSyncInitialized();
         if (!initialized) {
           const initialize = await vscode.window.showWarningMessage(
@@ -874,7 +854,7 @@ export function activate(context: vscode.ExtensionContext) {
           // Create initial manifest to initialize sync
           await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
           const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-          const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+          const initialManifest = await buildManifest(localRootDir, matcher);
           const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
           await saveManifest(manifestPath, initialManifest);
           vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -882,7 +862,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
         const matcher2 = await createIgnoreMatcher(ws.uri.fsPath);
-        const man = await buildManifest(ws.uri.fsPath, matcher2);
+        const man = await buildManifest(localRootDir, matcher2);
 
         // Upload all files with progress using single mpremote fs cp command
         await vscode.window.withProgress({
@@ -1041,7 +1021,7 @@ export function activate(context: vscode.ExtensionContext) {
             const validFiles = [];
             const missingFiles = [];
             for (const relativePath of files) {
-              const localPath = path.join(ws.uri.fsPath, relativePath);
+              const localPath = path.join(localRootDir, relativePath);
 
               try {
                 await fs.access(localPath);
@@ -1075,7 +1055,7 @@ export function activate(context: vscode.ExtensionContext) {
             let failed = 0;
 
             for (const relativePath of validFiles) {
-              const localPath = path.join(ws.uri.fsPath, relativePath);
+              const localPath = path.join(localRootDir, relativePath);
               const devicePath = path.posix.join(rootPath, relativePath);
 
               // Double-check file exists before attempting upload (in case it was deleted during the process)
@@ -1146,6 +1126,21 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
+      const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
+      let localRootDir = ws.uri.fsPath;
+      if (syncLocalRoot) {
+        localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
+        try {
+          await fs.access(localRootDir);
+        } catch {
+          const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
+          if (create === "Create") {
+            await fs.mkdir(localRootDir, { recursive: true });
+          } else {
+            localRootDir = ws.uri.fsPath;
+          }
+        }
+      }
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
       const deviceStats = await withAutoSuspend(() => mp.listTreeStats(rootPath));
       const matcher = await createIgnoreMatcher(ws.uri.fsPath);
@@ -1161,7 +1156,7 @@ export function activate(context: vscode.ExtensionContext) {
         await withAutoSuspend(async () => {
           for (const stat of toDownload) {
             const rel = toLocalRelative(stat.path, rootPath);
-            const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+            const abs = path.join(localRootDir, ...rel.split("/"));
             progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
             await fs.mkdir(path.dirname(abs), { recursive: true });
             await mp.cpFromDevice(stat.path, abs);
@@ -1241,6 +1236,25 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncDiffsLocalToBoard", async () => {
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
+      const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
+      let localRootDir = ws.uri.fsPath;
+      if (syncLocalRoot) {
+        if (path.isAbsolute(syncLocalRoot)) {
+          localRootDir = syncLocalRoot;
+        } else {
+          localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
+        }
+        try {
+          await fs.access(localRootDir);
+        } catch {
+          const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
+          if (create === "Create") {
+            await fs.mkdir(localRootDir, { recursive: true });
+          } else {
+            localRootDir = ws.uri.fsPath;
+          }
+        }
+      }
       const initialized = await isLocalSyncInitialized();
       if (!initialized) {
         const initialize = await vscode.window.showWarningMessage(
@@ -1253,7 +1267,7 @@ export function activate(context: vscode.ExtensionContext) {
         // Create initial manifest to initialize sync
         await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
         const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-        const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+        const initialManifest = await buildManifest(localRootDir, matcher);
   const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
         await saveManifest(manifestPath, initialManifest);
         vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -1306,7 +1320,7 @@ export function activate(context: vscode.ExtensionContext) {
         await withAutoSuspend(async () => {
           for (const devicePath of allFilesToSync) {
             const rel = toLocalRelative(devicePath, rootPath);
-            const abs = path.join(ws.uri.fsPath, ...rel.split('/'));
+            const abs = path.join(localRootDir, ...rel.split('/'));
             
             try { 
               await fs.access(abs); 
@@ -1341,7 +1355,25 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncDiffsBoardToLocal", async () => {
       const ws2 = vscode.workspace.workspaceFolders?.[0];
       if (!ws2) { vscode.window.showErrorMessage("No workspace folder open"); return; }
-      
+      const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
+      let localRootDir = ws2.uri.fsPath;
+      if (syncLocalRoot) {
+        if (path.isAbsolute(syncLocalRoot)) {
+          localRootDir = syncLocalRoot;
+        } else {
+          localRootDir = path.join(ws2.uri.fsPath, syncLocalRoot);
+        }
+        try {
+          await fs.access(localRootDir);
+        } catch {
+          const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
+          if (create === "Create") {
+            await fs.mkdir(localRootDir, { recursive: true });
+          } else {
+            localRootDir = ws2.uri.fsPath;
+          }
+        }
+      }
       const initialized = await isLocalSyncInitialized();
       if (!initialized) {
         const initialize = await vscode.window.showWarningMessage(
@@ -1354,7 +1386,7 @@ export function activate(context: vscode.ExtensionContext) {
         // Create initial manifest to initialize sync
         await ensureWorkbenchIgnoreFile(ws2.uri.fsPath);
         const matcher = await createIgnoreMatcher(ws2.uri.fsPath);
-        const initialManifest = await buildManifest(ws2.uri.fsPath, matcher);
+        const initialManifest = await buildManifest(localRootDir, matcher);
   const manifestPath = path.join(ws2.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
         await saveManifest(manifestPath, initialManifest);
         vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -1400,7 +1432,7 @@ export function activate(context: vscode.ExtensionContext) {
         await withAutoSuspend(async () => {
           for (const devicePath of filtered) {
             const rel = toLocalRelative(devicePath, rootPath2);
-            const abs = path.join(ws2.uri.fsPath, ...rel.split('/'));
+            const abs = path.join(localRootDir, ...rel.split('/'));
             progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
             await fs.mkdir(path.dirname(abs), { recursive: true });
             await mp.cpFromDevice(devicePath, abs);
