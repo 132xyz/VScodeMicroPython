@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.41",
+  "version": "0.1.43",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -33,7 +33,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package",
+    "package": "@vscode/vsce package",
     "test": "jest",
     "test:watch": "jest --watch"
   },
@@ -44,7 +44,7 @@
     "jest": "^30.2.0",
     "ts-jest": "^29.4.6",
     "typescript": "^5.4.0",
-    "vsce": "^1.97.0"
+    "@vscode/vsce": "^2.15.0"
   },
   "repository": {
     "type": "git",
