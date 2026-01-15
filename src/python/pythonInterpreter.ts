@@ -200,8 +200,14 @@ export class PythonInterpreterManager {
             // Test if Python executable exists and can run
             const { stdout } = await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.version)'], { timeout: 5000 });
 
-            // Check if mpremote command is available
-            await execFileAsync('mpremote', ['--version'], { timeout: 5000 });
+            // Check if mpremote is available for this Python environment.
+            // Prefer running as a module via the selected python to avoid relying on PATH.
+            try {
+                await execFileAsync(pythonPath, ['-m', 'mpremote', '--version'], { timeout: 5000 });
+            } catch (err) {
+                // Fallback: try invoking mpremote from PATH (older setups)
+                await execFileAsync('mpremote', ['--version'], { timeout: 5000 });
+            }
 
             return { valid: true, missingMpremote: false };
         } catch (error: any) {
@@ -263,6 +269,11 @@ export class PythonInterpreterManager {
                         const installProcess = require('child_process').exec(installCommand);
 
                         return new Promise<void>((resolve, reject) => {
+                            let stdout = '';
+                            let stderr = '';
+                            if (installProcess.stdout) installProcess.stdout.on('data', (d: any) => { stdout += d.toString(); });
+                            if (installProcess.stderr) installProcess.stderr.on('data', (d: any) => { stderr += d.toString(); });
+
                             installProcess.on('close', (code: number) => {
                                 if (code === 0) {
                                     progress.report({ increment: 100, message: 'Installation completed' });
@@ -273,12 +284,30 @@ export class PythonInterpreterManager {
                                     this.clearCache();
                                     resolve();
                                 } else {
-                                    reject(new Error(`Installation failed with code ${code}`));
+                                    const combined = `Exit code: ${code}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+                                    try {
+                                        const ch = vscode.window.createOutputChannel('mpremote install');
+                                        ch.appendLine('mpremote install failed');
+                                        ch.appendLine(combined);
+                                        ch.show(true);
+                                    } catch (e) {
+                                        console.error('[Extension] Failed to create output channel for mpremote install logs', e);
+                                    }
+                                    reject(new Error(`Installation failed with code ${code}. See 'mpremote install' output channel for details.`));
                                 }
                             });
 
                             installProcess.on('error', (error: any) => {
-                                reject(error);
+                                const combinedErr = `Error: ${error && error.message ? error.message : String(error)}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+                                try {
+                                    const ch = vscode.window.createOutputChannel('mpremote install');
+                                    ch.appendLine('mpremote install error');
+                                    ch.appendLine(combinedErr);
+                                    ch.show(true);
+                                } catch (e) {
+                                    console.error('[Extension] Failed to create output channel for mpremote install logs', e);
+                                }
+                                reject(new Error(`Installation process error: ${error && error.message ? error.message : String(error)}. See 'mpremote install' output channel for details.`));
                             });
                         });
                     } catch (error: any) {

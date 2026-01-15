@@ -367,7 +367,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (!has) {
       // Reset view title and caches when no port is selected
       try {
-        view.title = "Files";
+        if (view) view.title = "Files";
         tree.clearCache();
         try { mp.clearFileTreeCache(); } catch {}
       } catch {}
@@ -378,20 +378,51 @@ export function activate(context: vscode.ExtensionContext) {
   updatePortContext();
   refreshFilesViewTitle().catch(() => {});
 
+  // Helper: verify the view id is contributed in package.json before creating it
+  const isViewContributed = (id: string): boolean => {
+    try {
+      const contributes = context.extension.packageJSON?.contributes;
+      if (!contributes || !contributes.views) return false;
+      for (const container of Object.keys(contributes.views)) {
+        const views = contributes.views[container];
+        if (Array.isArray(views) && views.some((v: any) => v.id === id)) return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('[Extension] Error checking contributed views', e);
+      return false;
+    }
+  };
+
   const tree = new Esp32Tree();
   console.log('[Extension] Creating file system view...');
-  const view = vscode.window.createTreeView("microPythonWorkBenchFsView", { treeDataProvider: tree });
-  console.log('[Extension] File system view created:', view ? 'success' : 'failed');
+  let view: vscode.TreeView<any> | undefined = undefined;
+  if (isViewContributed("microPythonWorkBenchFsView")) {
+    view = vscode.window.createTreeView("microPythonWorkBenchFsView", { treeDataProvider: tree });
+    console.log('[Extension] File system view created:', view ? 'success' : 'failed');
+  } else {
+    console.error('[Extension] View not contributed: microPythonWorkBenchFsView');
+  }
 
   const actionsTree = new ActionsTree();
   console.log('[Extension] Creating actions view...');
-  const actionsView = vscode.window.createTreeView("microPythonWorkBenchActionsView", { treeDataProvider: actionsTree });
-  console.log('[Extension] Actions view created:', actionsView ? 'success' : 'failed');
+  let actionsView: vscode.TreeView<any> | undefined = undefined;
+  if (isViewContributed("microPythonWorkBenchActionsView")) {
+    actionsView = vscode.window.createTreeView("microPythonWorkBenchActionsView", { treeDataProvider: actionsTree });
+    console.log('[Extension] Actions view created:', actionsView ? 'success' : 'failed');
+  } else {
+    console.error('[Extension] View not contributed: microPythonWorkBenchActionsView');
+  }
 
   const syncTree = new SyncTree();
   console.log('[Extension] Creating sync view...');
-  const syncView = vscode.window.createTreeView("microPythonWorkBenchSyncView", { treeDataProvider: syncTree });
-  console.log('[Extension] Sync view created:', syncView ? 'success' : 'failed');
+  let syncView: vscode.TreeView<any> | undefined = undefined;
+  if (isViewContributed("microPythonWorkBenchSyncView")) {
+    syncView = vscode.window.createTreeView("microPythonWorkBenchSyncView", { treeDataProvider: syncTree });
+    console.log('[Extension] Sync view created:', syncView ? 'success' : 'failed');
+  } else {
+    console.error('[Extension] View not contributed: microPythonWorkBenchSyncView');
+  }
   const decorations = new Esp32DecorationProvider();
   context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorations));
   // Export decorations for use in other modules
@@ -560,8 +591,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Update the Files view header with the detected board name/ID (when available)
   async function refreshFilesViewTitle() {
     // Reset title/description first so stale labels disappear if detection fails
-    view.title = "Files";
-    view.description = undefined;
+    if (view) {
+      view.title = "Files";
+      view.description = undefined;
+    }
 
     const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
     if (!connect || connect === "auto") return;
@@ -574,7 +607,7 @@ export function activate(context: vscode.ExtensionContext) {
       else if (info.sysname) parts.push(info.sysname);
       if (info.id) parts.push(info.id);
       const label = parts.join(" • ");
-      if (label) {
+      if (label && view) {
         view.title = `Files — ${label}`;
         view.description = undefined;
       }
@@ -585,10 +618,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Try to show board name on startup if a fixed port is already selected
   refreshFilesViewTitle().catch(() => {});
+  if (view) context.subscriptions.push(view);
+  if (actionsView) context.subscriptions.push(actionsView);
+  if (syncView) context.subscriptions.push(syncView);
   context.subscriptions.push(
-    view,
-    actionsView,
-    syncView,
     vscode.commands.registerCommand("microPythonWorkBench.refresh", () => {
       utilityCommands.refresh(tree, decorations);
     }),

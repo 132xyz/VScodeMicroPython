@@ -204,6 +204,32 @@ export function runMpremote(
       pythonPath = detected;
     }
 
+    // Determine how to invoke mpremote for this environment.
+    // Prefer `python -m mpremote` using the detected python. If that python doesn't have the module,
+    // fall back to the global `mpremote` executable (if available in PATH).
+    let invocationMode: { type: 'python-module' } | { type: 'executable', cmd: string } = { type: 'python-module' };
+    try {
+      await new Promise<void>((res, rej) => {
+        execFile(pythonPath as string, ['-m', 'mpremote', '--version'], { timeout: 3000 }, (err) => {
+          if (err) rej(err); else res();
+        });
+      });
+      invocationMode = { type: 'python-module' };
+    } catch (err: any) {
+      // If python -m mpremote failed due to missing module, try global executable
+      try {
+        await new Promise<void>((res, rej) => {
+          execFile('mpremote', ['--version'], { timeout: 3000 }, (err) => {
+            if (err) rej(err); else res();
+          });
+        });
+        invocationMode = { type: 'executable', cmd: 'mpremote' };
+      } catch (err2) {
+        // Keep python-module as default; the later exec will surface the real error
+        invocationMode = { type: 'python-module' };
+      }
+    }
+
     const executeCommand = () => {
       attempt++;
 
@@ -235,7 +261,9 @@ export function runMpremote(
       });
 
       // Use python -m mpremote instead of direct mpremote command
-      const cmd = `"${pythonPath}" -m mpremote ${escapedArgs.join(' ')}`;
+      const cmd = invocationMode.type === 'executable'
+        ? `mpremote ${escapedArgs.join(' ')}`
+        : `"${pythonPath}" -m mpremote ${escapedArgs.join(' ')}`;
 
       // Force UTF-8 output for mpremote to avoid cp1252 encoding failures on Windows consoles
       const env = {
