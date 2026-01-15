@@ -43,10 +43,20 @@ import { boardCommands } from "./commands/boardCommands";
 import { replCommands } from "./commands/replCommands";
 import { debugCommands } from "./commands/debugCommands";
 import { utilityCommands } from "./commands/utilityCommands";
+import { mpremoteCommands } from "./commands/mpremoteCommands";
 
 export function activate(context: vscode.ExtensionContext) {
-  // Check if mpremote is available
-  checkMpremoteAvailability().catch(() => {});
+  // Create status bar item for mpremote status
+  const mpremoteStatusBarItem = mpremoteCommands.createStatusBarItem();
+  context.subscriptions.push(mpremoteStatusBarItem);
+
+  // Check mpremote availability and update status bar
+  mpremoteCommands.checkAndInstallMpremote().then(available => {
+    mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
+  }).catch(() => {
+    mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
+  });
+
   // Helper to get workspace folder or throw error
   function getWorkspaceFolder(): vscode.WorkspaceFolder {
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -580,6 +590,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.debugTreeParsing", debugCommands.debugTreeParsing),
     vscode.commands.registerCommand("microPythonWorkBench.debugFilesystemStatus", debugCommands.debugFilesystemStatus),
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", debugCommands.cancelAllTasks),
+    vscode.commands.registerCommand("microPythonWorkBench.installMpremote", mpremoteCommands.showMpremoteInstallationGuide),
+    vscode.commands.registerCommand("microPythonWorkBench.checkMpremoteStatus", () => mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem)),
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", boardCommands.pickPort),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),
     vscode.commands.registerCommand("microPythonWorkBench.stop", replCommands.stop),

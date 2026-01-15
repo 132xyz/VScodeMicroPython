@@ -277,6 +277,15 @@
       {
         "command": "microPythonWorkBench.toggleWorkspaceAutoSync",
         "title": "MicroPython WorkBench: Toggle workspace Auto-Sync on Save"
+      },
+      {
+        "command": "microPythonWorkBench.installMpremote",
+        "title": "MicroPython WorkBench: Install mpremote",
+        "icon": "$(package)"
+      },
+      {
+        "command": "microPythonWorkBench.checkMpremoteStatus",
+        "title": "MicroPython WorkBench: Check mpremote Status"
       }
     ],
     "menus": {
