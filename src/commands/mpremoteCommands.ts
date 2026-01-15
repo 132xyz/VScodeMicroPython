@@ -13,37 +13,32 @@ export const mpremoteCommands = {
   /**
    * Check if mpremote is available and show installation guide if not
    */
-  async checkAndInstallMpremote(): Promise<boolean> {
+  async checkAndInstallMpremote(silent: boolean = false): Promise<boolean> {
     try {
       // Check if mpremote is available using multiple methods
       const available = await this.checkMpremoteAvailability();
       if (available) {
         return true; // Already available
       } else {
-        // Mpremote not found, show installation guide
-        await this.showMpremoteInstallationGuide();
+        // Mpremote not found
+        if (!silent) {
+          await this.showMpremoteInstallationGuide();
+        }
         return false;
       }
     } catch (error) {
-      // Mpremote not found, show installation guide
-      await this.showMpremoteInstallationGuide();
+      // Mpremote not found
+      if (!silent) {
+        await this.showMpremoteInstallationGuide();
+      }
       return false;
     }
   },
 
   /**
-   * Check mpremote availability using multiple methods
+   * Check mpremote availability using python -m mpremote method
    */
   async checkMpremoteAvailability(): Promise<boolean> {
-    // Method 1: Try direct command (relies on PATH)
-    try {
-      await execAsync('mpremote --version', { timeout: 5000 });
-      return true;
-    } catch {
-      // Continue to next method
-    }
-
-    // Method 2: Try python -m mpremote (most reliable)
     try {
       const pythonPath = await this.detectPythonPath();
       if (pythonPath) {
@@ -51,18 +46,7 @@ export const mpremoteCommands = {
         return true;
       }
     } catch {
-      // Continue to next method
-    }
-
-    // Method 3: Try to find mpremote executable in common locations
-    try {
-      const mpremotePath = await this.findMpremoteExecutable();
-      if (mpremotePath) {
-        await execAsync(`"${mpremotePath}" --version`, { timeout: 5000 });
-        return true;
-      }
-    } catch {
-      // All methods failed
+      // Method failed
     }
 
     return false;
@@ -127,19 +111,47 @@ export const mpremoteCommands = {
   /**
    * Automatically install mpremote using detected Python environment
    */
-  async installMpremoteAutomatically(): Promise<void> {
+  async installMpremoteAutomatically(silent: boolean = false): Promise<void> {
     const pythonPath = await this.detectPythonPath();
 
     if (!pythonPath) {
-      vscode.window.showErrorMessage(
-        'Could not detect Python installation. Please install Python first, then run manual installation.'
-      );
-      await this.showManualInstallationInstructions();
+      if (!silent) {
+        vscode.window.showErrorMessage(
+          'Could not detect Python installation. Please install Python first, then run manual installation.'
+        );
+        await this.showManualInstallationInstructions();
+      }
       return;
     }
 
     const installCommand = `"${pythonPath}" -m pip install mpremote`;
 
+    if (silent) {
+      // Silent installation - no UI feedback
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const installProcess = exec(installCommand, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath });
+          installProcess.on('close', (code) => {
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(new Error(`Installation failed with exit code ${code}`));
+            }
+          });
+          installProcess.on('error', (error) => {
+            reject(error);
+          });
+        });
+        // Verify installation silently
+        await this.verifyAndHandleInstallation(pythonPath, true);
+      } catch (error: any) {
+        console.error('Silent mpremote installation failed:', error);
+        throw error; // Re-throw for caller to handle
+      }
+      return;
+    }
+
+    // Normal installation with UI feedback
     const installPromise = vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
       title: 'Installing mpremote...',
@@ -222,13 +234,23 @@ export const mpremoteCommands = {
   /**
    * Verify installation and handle PATH issues
    */
-  async verifyAndHandleInstallation(pythonPath: string): Promise<void> {
+  async verifyAndHandleInstallation(pythonPath: string, silent: boolean = false): Promise<void> {
     // Wait a moment for installation to settle
     await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Try multiple verification methods
     const isAvailable = await this.checkMpremoteAvailability();
     if (!isAvailable) {
+      if (!silent) {
+        vscode.window.showErrorMessage(
+          'mpremote installation verification failed. The package may not be properly installed.',
+          'Get Help'
+        ).then(choice => {
+          if (choice === 'Get Help') {
+            this.showPathTroubleshootingGuide(pythonPath);
+          }
+        });
+      }
       throw new Error('Installation verification failed');
     }
   },

@@ -19,9 +19,10 @@ function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
 
 // Utility commands implementation
 export const utilityCommands = {
-  refresh: (tree: Esp32Tree, decorations: Esp32DecorationProvider) => {
-    // refresh(tree, decorations);
-    vscode.window.showInformationMessage("Refresh functionality moved");
+  refresh: async (tree: Esp32Tree, decorations: Esp32DecorationProvider) => {
+    // Import refresh function from utilityOperations
+    const { refresh } = await import("../utilityOperations");
+    await refresh(tree, decorations);
   },
 
   uploadActiveFile: async () => {

@@ -126,13 +126,83 @@ class ConnectionManager {
 // Global connection manager instance
 const connectionManager = new ConnectionManager();
 
+/**
+ * Detect Python interpreter path using multiple fallback methods
+ */
+async function detectPythonPath(): Promise<string | null> {
+  // Method 1: Check VS Code Python extension
+  try {
+    const pythonExtension = vscode.extensions.getExtension('ms-python.python');
+    if (pythonExtension && pythonExtension.isActive) {
+      const pythonApi = pythonExtension.exports;
+      if (pythonApi && pythonApi.settings && pythonApi.settings.getExecutionDetails) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const executionDetails = pythonApi.settings.getExecutionDetails(workspaceFolder?.uri);
+        if (executionDetails && executionDetails.execCommand && executionDetails.execCommand.length > 0) {
+          return executionDetails.execCommand[0];
+        }
+      }
+    }
+  } catch (error) {
+    console.log('Failed to get Python from extension API:', error);
+  }
+
+  // Method 2: Check configuration
+  const config = vscode.workspace.getConfiguration('python');
+  const configuredPath = config.get<string>('defaultInterpreterPath') || config.get<string>('pythonPath');
+  if (configuredPath) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(configuredPath, ['--version'], (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      return configuredPath;
+    } catch (error) {
+      // Continue to next method
+    }
+  }
+
+  // Method 3: Try common Python executables
+  const candidates = process.platform === 'win32'
+    ? ['python', 'python3', 'py', 'py -3']
+    : ['python3', 'python'];
+
+  for (const candidate of candidates) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(candidate, ['--version'], (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      return candidate;
+    } catch (error) {
+      // Continue to next candidate
+    }
+  }
+
+  return null;
+}
+
 export function runMpremote(
   args: string[],
-  opts: { cwd?: string; retryOnFailure?: boolean; env?: NodeJS.ProcessEnv } = {}
+  opts: { cwd?: string; retryOnFailure?: boolean; env?: NodeJS.ProcessEnv; pythonPath?: string } = {}
 ): Promise<{ stdout: string; stderr: string }>{
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const maxRetries = opts.retryOnFailure !== false ? 2 : 0;
     let attempt = 0;
+
+    // Detect Python path if not provided
+    let pythonPath: string | undefined = opts.pythonPath;
+    if (!pythonPath) {
+      const detected = await detectPythonPath();
+      if (!detected) {
+        return reject(new Error("Python interpreter not found. Please ensure Python is installed and available in PATH."));
+      }
+      pythonPath = detected;
+    }
 
     const executeCommand = () => {
       attempt++;
@@ -164,7 +234,8 @@ export function runMpremote(
         return `"${arg}"`;
       });
 
-      const cmd = `mpremote ${escapedArgs.join(' ')}`;
+      // Use python -m mpremote instead of direct mpremote command
+      const cmd = `"${pythonPath}" -m mpremote ${escapedArgs.join(' ')}`;
 
       // Force UTF-8 output for mpremote to avoid cp1252 encoding failures on Windows consoles
       const env = {
@@ -252,8 +323,45 @@ const TREE_CACHE_DURATION = 30000; // 30 seconds
 // Populate the global cache with complete file tree
 async function populateFileTreeCache(): Promise<void> {
   try {
+    console.log(`[DEBUG] populateFileTreeCache: Starting cache population`);
+
+    // First, try to load from existing tree-paths.json file
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder) {
+      const workbenchDir = path.join(workspaceFolder.uri.fsPath, '.mpy-workbench');
+      const filePath = path.join(workbenchDir, 'tree-paths.json');
+
+      try {
+        if (fs.existsSync(filePath)) {
+          const stats = fs.statSync(filePath);
+          const fileAge = Date.now() - stats.mtime.getTime();
+
+          // Use cached file if it's less than 30 seconds old
+          if (fileAge < 30000) {
+            console.log(`[DEBUG] populateFileTreeCache: Loading from existing tree-paths.json (age: ${fileAge}ms)`);
+            const cachedData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            console.log(`[DEBUG] populateFileTreeCache: Loaded ${cachedData.length} items from cache file`);
+
+            const treeRoot = buildTreeFromParsedLines(cachedData);
+            console.log(`[DEBUG] populateFileTreeCache: Built tree with ${treeRoot.children.length} root children from cache`);
+
+            globalFileTreeCache = treeRoot;
+            lastTreeUpdate = Date.now();
+
+            console.log(`[DEBUG] populateFileTreeCache: Cache populated from file with ${cachedData.length} items`);
+            return;
+          } else {
+            console.log(`[DEBUG] populateFileTreeCache: Cached file too old (${fileAge}ms), refreshing...`);
+          }
+        }
+      } catch (cacheError) {
+        console.log(`[DEBUG] populateFileTreeCache: Could not load from cache file:`, cacheError);
+      }
+    }
+
+    // Fallback: fetch fresh data from device
     const connect = normalizeConnect(vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto") || "auto");
-    console.log(`[DEBUG] populateFileTreeCache: Fetching complete file tree`);
+    console.log(`[DEBUG] populateFileTreeCache: Fetching complete file tree from device`);
     const { stdout } = await runMpremote(["connect", connect, "fs", "tree"], { retryOnFailure: true });
 
     console.log(`[DEBUG] populateFileTreeCache: Raw tree output:\n${stdout}`);
@@ -304,10 +412,14 @@ function isCacheValid(): boolean {
 
 // Get entries for a specific path from cache
 function getEntriesFromCache(targetPath: string): { name: string; isDir: boolean }[] | null {
-  if (!globalFileTreeCache) return null;
+  if (!globalFileTreeCache) {
+    console.log(`[DEBUG] getEntriesFromCache: globalFileTreeCache is null`);
+    return null;
+  }
 
   console.log(`[DEBUG] getEntriesFromCache: Looking for ${targetPath} in cache`);
   console.log(`[DEBUG] getEntriesFromCache: Cache has ${globalFileTreeCache.children.length} root children`);
+  console.log(`[DEBUG] getEntriesFromCache: Root children:`, globalFileTreeCache.children.map(c => `${c.name} (${c.isDir ? 'dir' : 'file'})`));
 
   if (targetPath === "/") {
     const result = globalFileTreeCache.children.map(child => ({
@@ -769,15 +881,21 @@ export async function lsTyped(p: string): Promise<{ name: string; isDir: boolean
 
   try {
     // Check if cache needs to be populated or refreshed
-    if (!isCacheValid()) {
+    const cacheValid = isCacheValid();
+    console.log(`[DEBUG] lsTyped: Cache valid = ${cacheValid}, lastTreeUpdate = ${lastTreeUpdate}, now = ${Date.now()}`);
+
+    if (!cacheValid) {
       console.log(`[DEBUG] lsTyped: Cache invalid, populating...`);
       await populateFileTreeCache();
+      console.log(`[DEBUG] lsTyped: Cache populated, globalFileTreeCache exists = ${!!globalFileTreeCache}`);
     } else {
       console.log(`[DEBUG] lsTyped: Using cached tree data`);
     }
 
     // Try to get entries from cache first
     const cachedResult = getEntriesFromCache(p);
+    console.log(`[DEBUG] lsTyped: Cached result for ${p}:`, cachedResult);
+
     if (cachedResult && cachedResult.length > 0) {
       console.log(`[DEBUG] lsTyped: Found ${cachedResult.length} entries in cache for ${p}`);
       return cachedResult;
