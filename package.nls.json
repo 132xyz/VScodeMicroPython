@@ -166,5 +166,21 @@
   "commands.installMpremote.title": "MicroPython WorkBench: Install mpremote",
   "commands.openSerial.title": "MicroPython WorkBench: Open Serial Monitor",
   "messages.scriptsPathCopied": "Scripts directory path copied to clipboard",
-  "messages.fileCreatedLocallyButUploadFailed": "File created locally but upload to board failed: {0}"
+  "messages.fileCreatedLocallyButUploadFailed": "File created locally but upload to board failed: {0}",
+
+  "configuration.enableCodeCompletion.description": "Enable code completion for MicroPython. 'auto' = automatically detect based on sync settings, 'true' = always enabled, 'false' = disabled",
+  "configuration.enableCodeCompletion.enumDescriptions.auto": "Automatically enable when MicroPython project is detected",
+  "configuration.enableCodeCompletion.enumDescriptions.enabled": "Always enable code completion",
+  "configuration.enableCodeCompletion.enumDescriptions.disabled": "Disable code completion",
+  "configuration.enableMultiLanguageDocs.description": "Enable multi-language documentation support (English/Chinese)",
+
+  "commands.toggleCodeCompletion.title": "MicroPython WorkBench: Toggle Code Completion",
+
+  "messages.pylanceNotInstalled": "Pylance extension is required for code completion. Please install it.",
+  "messages.installPylance": "Install Pylance",
+  "messages.codeCompletionEnabled": "MicroPython code completion enabled",
+  "messages.codeCompletionDisabled": "MicroPython code completion disabled",
+  "messages.codeCompletionEnableFailed": "Failed to enable code completion: {0}",
+  "messages.codeCompletionDisableFailed": "Failed to disable code completion: {0}",
+  "messages.codeCompletionAutoMode": "Code completion: Auto mode (enabled when MicroPython project detected)"
 }

@@ -15,6 +15,7 @@ The extension leverages **mpremote** for all board interactions, including file 
 - 💻 Integrated MicroPython REPL terminal
 - ⏯️ Send commands to the board (stop, soft reset, etc.)
 - 🧭 Files view shows the detected board name and status bar displays last auto-sync time
+- 🧠 **IntelliSense code completion** for MicroPython modules with auto-detection and multi-language support
 
 **⚡ Connect to board and run a file**
 ![Run file demo](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
@@ -45,6 +46,7 @@ These commands perform full or incremental synchronization between your local wo
 - `MPY Workbench: Open REPL Terminal` — open MicroPython REPL
 - `MPY Workbench: Flash MicroPython Firmware` — flash firmware using the bundled catalog and esptool
 - `MPY Workbench: Toggle workspace Auto-Sync on Save` — enable/disable workspace auto-sync
+- `MPY Workbench: Toggle Code Completion` — enable/disable MicroPython code completion
 
 ## Workspace config
 
@@ -74,6 +76,49 @@ This is useful when your MicroPython project files are in a subdirectory of your
 
 See `example-workspace-settings.json` for a complete configuration example.
 
+## Code Completion
+
+The extension provides intelligent code completion for MicroPython modules using Python stub files. This feature integrates with VS Code's Pylance language server to provide IntelliSense support.
+
+### Auto-detection
+
+Code completion automatically enables when:
+- A MicroPython project is detected (based on sync settings or project structure)
+- The workspace contains MicroPython-specific files or configurations
+- Manual override via command or settings
+
+### Multi-language Support
+
+- **English**: Default documentation language
+- **Chinese**: Automatically used when VS Code language is set to Chinese
+- Supports 47+ MicroPython modules with type annotations
+
+### Configuration Options
+
+```json
+{
+  "microPythonWorkBench.enableCodeCompletion": "auto",
+  "microPythonWorkBench.enableMultiLanguageDocs": true
+}
+```
+
+- `microPythonWorkBench.enableCodeCompletion`:
+  - `"auto"` (default): Automatically enable for MicroPython projects
+  - `"manual"`: Manual control via commands
+  - `"forced"`: Always enabled regardless of project type
+  - `"disabled"`: Completely disabled
+
+- `microPythonWorkBench.enableMultiLanguageDocs`: Enable multi-language documentation based on VS Code locale
+
+### Manual Control
+
+Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually enable/disable code completion for the current workspace.
+
+### Requirements
+
+- **Pylance extension** (recommended): `ms-python.vscode-pylance` for full IntelliSense support
+- Code completion works with any Python language server but provides enhanced experience with Pylance
+
 ### Auto-suspend and REPL restore
 
 - `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).
@@ -92,7 +137,8 @@ See `example-workspace-settings.json` for a complete configuration example.
 
 - **Python 3.13.2**
 - **Mpremote v1.26.1**
-- **Firmware flashinOk.g:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
+- **Firmware flashing:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
+- **Code Completion (optional):** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) extension for enhanced IntelliSense support
 - The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
 
 ## Firmware flashing

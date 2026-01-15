@@ -8,8 +8,8 @@
 
 发布到扩展插件市场内
 
-多语言支持
-
 mpy库代码提示支持
 
 mpy vscode 同步路径
+
+左下角一直有一个mpremote的安装提示,即使mpremote已经安装好了也还有,识别到了mpremote是不是就不需要了呀

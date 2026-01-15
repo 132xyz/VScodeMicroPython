@@ -45,6 +45,7 @@ import { debugCommands } from "./commands/debugCommands";
 import { utilityCommands } from "./commands/utilityCommands";
 import { mpremoteCommands } from "./commands/mpremoteCommands";
 import { Localization } from "./localization";
+import { codeCompletionManager } from "./codeCompletion";
 
 export function activate(context: vscode.ExtensionContext) {
   // Create status bar item for mpremote status
@@ -56,6 +57,11 @@ export function activate(context: vscode.ExtensionContext) {
     mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
   }).catch(() => {
     mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
+  });
+
+  // Initialize code completion manager
+  codeCompletionManager.initialize(context).catch(error => {
+    console.error('Failed to initialize code completion manager:', error);
   });
 
   // Helper to get workspace folder or throw error

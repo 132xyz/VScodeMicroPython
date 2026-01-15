@@ -15,6 +15,7 @@
 - 💻 集成的 MicroPython REPL 终端
 - ⏯️ 向开发板发送命令（停止、软重置等）
 - 🧭 文件视图显示检测到的开发板名称和状态栏显示上次自动同步时间
+- 🧠 **IntelliSense 代码补全** MicroPython 模块，支持自动检测和多语言
 
 **⚡ 连接到开发板并运行文件**
 ![运行文件演示](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
@@ -45,6 +46,7 @@
 - `MPY 工作台：打开 REPL 终端` — 打开 MicroPython REPL
 - `MPY 工作台：烧录 MicroPython 固件` — 使用捆绑目录和 esptool 烧录固件
 - `MPY 工作台：切换工作区保存时自动同步` — 启用/禁用工作区自动同步
+- `MPY 工作台：切换代码补全` — 启用/禁用 MicroPython 代码补全
 
 ## 工作区配置
 
@@ -74,6 +76,49 @@
 
 请参阅 `example-workspace-settings.json` 以获取完整的配置示例。
 
+## 代码补全
+
+该扩展使用 Python stub 文件为 MicroPython 模块提供智能代码补全。此功能与 VS Code 的 Pylance 语言服务器集成，提供 IntelliSense 支持。
+
+### 自动检测
+
+代码补全在以下情况下自动启用：
+- 检测到 MicroPython 项目（基于同步设置或项目结构）
+- 工作区包含 MicroPython 特定文件或配置
+- 通过命令或设置手动覆盖
+
+### 多语言支持
+
+- **英文**：默认文档语言
+- **中文**：当 VS Code 语言设置为中文时自动使用
+- 支持 47+ 个 MicroPython 模块的类型注解
+
+### 配置选项
+
+```json
+{
+  "microPythonWorkBench.enableCodeCompletion": "auto",
+  "microPythonWorkBench.enableMultiLanguageDocs": true
+}
+```
+
+- `microPythonWorkBench.enableCodeCompletion`：
+  - `"auto"`（默认）：自动为 MicroPython 项目启用
+  - `"manual"`：通过命令手动控制
+  - `"forced"`：无论项目类型如何始终启用
+  - `"disabled"`：完全禁用
+
+- `microPythonWorkBench.enableMultiLanguageDocs`：根据 VS Code 区域设置启用多语言文档
+
+### 手动控制
+
+从命令面板使用 `MPY 工作台：切换代码补全` 来手动启用/禁用当前工作区的代码补全。
+
+### 要求
+
+- **Pylance 扩展**（推荐）：`ms-python.vscode-pylance` 以获得完整的 IntelliSense 支持
+- 代码补全适用于任何 Python 语言服务器，但在 Pylance 下提供增强体验
+
 ### 自动暂停和 REPL 恢复
 
 - `microPythonWorkBench.serialAutoSuspend`（默认：`true`）：在文件操作前关闭 REPL/运行终端以避免串口冲突，然后在操作后恢复（重新运行运行活动文件，或重新打开 REPL）。
@@ -93,6 +138,7 @@
 - **Python 3.13.2**
 - **Mpremote v1.26.1**
 - **固件烧录：** `esptool` 在同一 Python 环境中可用。通过 `pip install esptool` 安装。该扩展检查 `python`、`py -3`（Windows）和 PATH 中的 `esptool.py`/`esptool`。
+- **代码补全（可选）：** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展以获得增强的 IntelliSense 支持
 - 如果需要选择特定解释器，可以在扩展设置中调整 Python 路径。
 
 ## 固件烧录

@@ -166,5 +166,21 @@
   "commands.installMpremote.title": "MicroPython 工作台：安装 mpremote",
   "commands.openSerial.title": "MicroPython 工作台：打开串口监视器",
   "messages.scriptsPathCopied": "脚本目录路径已复制到剪贴板",
-  "messages.fileCreatedLocallyButUploadFailed": "文件已本地创建但上传到开发板失败：{0}"
+  "messages.fileCreatedLocallyButUploadFailed": "文件已本地创建但上传到开发板失败：{0}",
+
+  "configuration.enableCodeCompletion.description": "启用 MicroPython 代码补全。'auto' = 根据同步设置自动检测，'true' = 始终启用，'false' = 禁用",
+  "configuration.enableCodeCompletion.enumDescriptions.auto": "检测到 MicroPython 项目时自动启用",
+  "configuration.enableCodeCompletion.enumDescriptions.enabled": "始终启用代码补全",
+  "configuration.enableCodeCompletion.enumDescriptions.disabled": "禁用代码补全",
+  "configuration.enableMultiLanguageDocs.description": "启用多语言文档支持（中英文）",
+
+  "commands.toggleCodeCompletion.title": "MicroPython 工作台：切换代码补全",
+
+  "messages.pylanceNotInstalled": "代码补全需要 Pylance 扩展。请安装它。",
+  "messages.installPylance": "安装 Pylance",
+  "messages.codeCompletionEnabled": "MicroPython 代码补全已启用",
+  "messages.codeCompletionDisabled": "MicroPython 代码补全已禁用",
+  "messages.codeCompletionEnableFailed": "启用代码补全失败：{0}",
+  "messages.codeCompletionDisableFailed": "禁用代码补全失败：{0}",
+  "messages.codeCompletionAutoMode": "代码补全：自动模式（检测到 MicroPython 项目时启用）"
 }

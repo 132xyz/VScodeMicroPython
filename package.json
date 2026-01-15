@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.14",
+  "version": "0.1.24",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -24,6 +24,9 @@
   ],
   "activationEvents": [
     "onLanguage:python"
+  ],
+  "recommends": [
+    "ms-python.vscode-pylance"
   ],
   "main": "./dist/extension.js",
   "scripts": {
@@ -289,6 +292,10 @@
         "icon": "$(package)"
       },
       {
+        "command": "microPythonWorkBench.toggleCodeCompletion",
+        "title": "%commands.toggleCodeCompletion.title%"
+      },
+      {
         "command": "microPythonWorkBench.installMpremoteAutomatically",
         "title": "%commands.installMpremoteAutomatically.title%",
         "icon": "$(package)"
@@ -493,6 +500,24 @@
           "type": "string",
           "default": "",
           "description": "%configuration.pythonPath.description%"
+        },
+        "microPythonWorkBench.enableCodeCompletion": {
+          "type": [
+            "string",
+            "boolean"
+          ],
+          "enum": [
+            "auto",
+            true,
+            false
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "%configuration.enableCodeCompletion.enumDescriptions.auto%",
+            "%configuration.enableCodeCompletion.enumDescriptions.enabled%",
+            "%configuration.enableCodeCompletion.enumDescriptions.disabled%"
+          ],
+          "description": "%configuration.enableCodeCompletion.description%"
         }
       }
     }
