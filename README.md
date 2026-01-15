@@ -55,6 +55,25 @@ The extension stores per-workspace settings and manifests inside a workspace fol
 
 Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. If no workspace config exists the extension falls back to the global setting `microPythonWorkBench.autoSyncOnSave` (default: `false`).
 
+### Local sync root directory
+
+By default, sync operations use the workspace root directory. You can configure a different local root directory using the `microPythonWorkBench.syncLocalRoot` setting:
+
+- **Empty (default)**: Uses the workspace root directory
+- **Relative path**: e.g., `"src"` or `"micropython"` - relative to workspace root
+- **Absolute path**: Full path to a directory outside the workspace
+
+This is useful when your MicroPython project files are in a subdirectory of your workspace, or when you want to sync to a different location entirely.
+
+**Example VS Code settings:**
+```json
+{
+  "microPythonWorkBench.syncLocalRoot": "src/micropython"
+}
+```
+
+See `example-workspace-settings.json` for a complete configuration example.
+
 ### Auto-suspend and REPL restore
 
 - `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).

@@ -29,11 +29,16 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.84.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
     "typescript": "^5.4.0",
     "vsce": "^1.97.0"
   },
@@ -281,6 +286,11 @@
       {
         "command": "microPythonWorkBench.installMpremote",
         "title": "MicroPython WorkBench: Install mpremote",
+        "icon": "$(package)"
+      },
+      {
+        "command": "microPythonWorkBench.installMpremoteAutomatically",
+        "title": "MicroPython WorkBench: Install mpremote Automatically",
         "icon": "$(package)"
       },
       {

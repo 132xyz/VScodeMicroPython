@@ -591,6 +591,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.debugFilesystemStatus", debugCommands.debugFilesystemStatus),
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", debugCommands.cancelAllTasks),
     vscode.commands.registerCommand("microPythonWorkBench.installMpremote", mpremoteCommands.showMpremoteInstallationGuide),
+    vscode.commands.registerCommand("microPythonWorkBench.installMpremoteAutomatically", () => mpremoteCommands.installMpremoteAutomatically()),
     vscode.commands.registerCommand("microPythonWorkBench.checkMpremoteStatus", () => mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem)),
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", boardCommands.pickPort),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),

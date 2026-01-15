@@ -15,14 +15,92 @@ export const mpremoteCommands = {
    */
   async checkAndInstallMpremote(): Promise<boolean> {
     try {
-      // Check if mpremote is available
-      await execAsync('mpremote --version');
-      return true; // Already available
+      // Check if mpremote is available using multiple methods
+      const available = await this.checkMpremoteAvailability();
+      if (available) {
+        return true; // Already available
+      } else {
+        // Mpremote not found, show installation guide
+        await this.showMpremoteInstallationGuide();
+        return false;
+      }
     } catch (error) {
       // Mpremote not found, show installation guide
       await this.showMpremoteInstallationGuide();
       return false;
     }
+  },
+
+  /**
+   * Check mpremote availability using multiple methods
+   */
+  async checkMpremoteAvailability(): Promise<boolean> {
+    // Method 1: Try direct command (relies on PATH)
+    try {
+      await execAsync('mpremote --version', { timeout: 5000 });
+      return true;
+    } catch {
+      // Continue to next method
+    }
+
+    // Method 2: Try python -m mpremote (most reliable)
+    try {
+      const pythonPath = await this.detectPythonPath();
+      if (pythonPath) {
+        await execAsync(`"${pythonPath}" -m mpremote --version`, { timeout: 5000 });
+        return true;
+      }
+    } catch {
+      // Continue to next method
+    }
+
+    // Method 3: Try to find mpremote executable in common locations
+    try {
+      const mpremotePath = await this.findMpremoteExecutable();
+      if (mpremotePath) {
+        await execAsync(`"${mpremotePath}" --version`, { timeout: 5000 });
+        return true;
+      }
+    } catch {
+      // All methods failed
+    }
+
+    return false;
+  },
+
+  /**
+   * Find mpremote executable in common installation locations
+   */
+  async findMpremoteExecutable(): Promise<string | null> {
+    const pythonPath = await this.detectPythonPath();
+    if (!pythonPath) return null;
+
+    // Get Python installation directory
+    try {
+      const { stdout } = await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.executable)']);
+      const pythonExe = stdout.trim();
+      const pythonDir = path.dirname(pythonExe);
+
+      // Common locations for mpremote.exe
+      const candidates = [
+        path.join(pythonDir, 'mpremote.exe'), // Same directory as python.exe
+        path.join(pythonDir, 'Scripts', 'mpremote.exe'), // Windows Scripts directory
+        path.join(pythonDir, '..', 'Scripts', 'mpremote.exe'), // Alternative Scripts location
+      ];
+
+      for (const candidate of candidates) {
+        try {
+          await execFileAsync(candidate, ['--version'], { timeout: 2000 });
+          return candidate;
+        } catch {
+          // Continue checking
+        }
+      }
+    } catch {
+      // Could not determine Python directory
+    }
+
+    return null;
   },
 
   /**
@@ -80,13 +158,26 @@ export const mpremoteCommands = {
         installProcess.on('close', (code) => {
           if (code === 0) {
             progress.report({ increment: 100, message: 'Installation completed successfully!' });
-            vscode.window.showInformationMessage(
-              'mpremote installed successfully! Please restart VS Code to use all features.',
-              'Restart Now'
-            ).then(choice => {
-              if (choice === 'Restart Now') {
-                vscode.commands.executeCommand('workbench.action.reloadWindow');
-              }
+            // Verify installation and handle PATH issues
+            this.verifyAndHandleInstallation(pythonPath).then(() => {
+              vscode.window.showInformationMessage(
+                'mpremote installed successfully! Please restart VS Code to use all features.',
+                'Restart Now'
+              ).then(choice => {
+                if (choice === 'Restart Now') {
+                  vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }
+              });
+            }).catch(() => {
+              // Verification failed, but installation completed
+              vscode.window.showWarningMessage(
+                'mpremote was installed but may not be accessible. Please check PATH or restart VS Code.',
+                'Get Help'
+              ).then(choice => {
+                if (choice === 'Get Help') {
+                  this.showPathTroubleshootingGuide(pythonPath);
+                }
+              });
             });
             resolve();
           } else {
@@ -129,6 +220,123 @@ export const mpremoteCommands = {
   },
 
   /**
+   * Verify installation and handle PATH issues
+   */
+  async verifyAndHandleInstallation(pythonPath: string): Promise<void> {
+    // Wait a moment for installation to settle
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Try multiple verification methods
+    const isAvailable = await this.checkMpremoteAvailability();
+    if (!isAvailable) {
+      throw new Error('Installation verification failed');
+    }
+  },
+
+  /**
+   * Show troubleshooting guide for PATH issues
+   */
+  async showPathTroubleshootingGuide(pythonPath: string): Promise<void> {
+    // Get Python Scripts directory
+    let scriptsDir = '';
+    try {
+      const { stdout } = await execFileAsync(pythonPath, ['-c', 'import sys; import os; print(os.path.join(sys.executable, \"..\", \"Scripts\"))']);
+      scriptsDir = stdout.trim();
+    } catch {
+      scriptsDir = 'Python Scripts directory';
+    }
+
+    const isWindows = process.platform === 'win32';
+    const pathVar = isWindows ? 'PATH' : 'PATH';
+
+    let instructions: string;
+    if (isWindows) {
+      instructions = `**Windows PATH Troubleshooting:**
+
+**Problem:** pip安装的包没有自动添加到系统PATH中。
+
+**解决方案：**
+
+1. **查找Scripts目录：**
+   - 通常位于: \`${scriptsDir}\`
+   - 或在Python安装目录下的Scripts文件夹
+
+2. **添加到PATH（推荐）：**
+   - 右键"此电脑" → "属性" → "高级系统设置"
+   - 点击"环境变量"
+   - 在"系统变量"中找到"Path"，双击编辑
+   - 添加: \`${scriptsDir}\`
+   - 重启VS Code
+
+3. **临时解决方案：**
+   - 重启VS Code（有时可以解决问题）
+   - 或使用完整路径运行mpremote
+
+4. **验证安装：**
+   - 打开命令提示符
+   - 运行: \`mpremote --version\`
+   - 如果失败，检查PATH设置
+
+**替代方法：**
+- 使用 \`python -m mpremote\` 代替 \`mpremote\`
+- 重新安装Python时选择"Add to PATH"选项`;
+    } else {
+      instructions = `**Linux/macOS PATH Troubleshooting:**
+
+**Problem:** pip安装的包可能不在PATH中。
+
+**解决方案：**
+
+1. **检查安装位置：**
+   \`\`\`
+   which mpremote
+   python3 -c "import mpremote; print(mpremote.__file__)"
+   \`\`\`
+
+2. **添加用户bin目录到PATH：**
+   \`\`\`
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+   source ~/.bashrc
+   \`\`\`
+
+3. **使用python模块方式：**
+   - 使用 \`python3 -m mpremote\` 代替 \`mpremote\`
+
+4. **验证安装：**
+   \`\`\`
+   mpremote --version
+   # 或
+   python3 -m mpremote --version
+   \`\`\`
+
+**注意：** 在某些系统上可能需要重新登录才能使PATH更改生效。`;
+    }
+
+    const result = await vscode.window.showInformationMessage(
+      'PATH Troubleshooting Guide',
+      { modal: true, detail: instructions },
+      'Copy Scripts Path',
+      'Open Terminal',
+      'Test Installation'
+    );
+
+    if (result === 'Copy Scripts Path') {
+      await vscode.env.clipboard.writeText(scriptsDir);
+      vscode.window.showInformationMessage('Scripts directory path copied to clipboard');
+    } else if (result === 'Open Terminal') {
+      await vscode.commands.executeCommand('workbench.action.terminal.new');
+    } else if (result === 'Test Installation') {
+      // Test using python -m mpremote
+      try {
+        await execAsync(`"${pythonPath}" -m mpremote --version`, { timeout: 5000 });
+        vscode.window.showInformationMessage('mpremote is working! Use: python -m mpremote');
+      } catch {
+        vscode.window.showErrorMessage('mpremote test failed. Please check installation.');
+      }
+    }
+  },
+
+  /**
    * Show manual installation instructions
    */
   async showManualInstallationInstructions(): Promise<void> {
@@ -144,11 +352,28 @@ export const mpremoteCommands = {
 
 1. Open Command Prompt or PowerShell as Administrator
 2. Run: \`${command}\`
-3. Restart VS Code
+3. **Important:** Add Python Scripts to PATH (see below)
+4. Restart VS Code
+
+**PATH Setup (Critical for Windows):**
+
+After installation, you MUST add Python's Scripts directory to your PATH:
+
+1. Find your Python Scripts directory:
+   - Usually: \`C:\\Users\\<username>\\AppData\\Local\\Programs\\Python\\Python3x\\Scripts\`
+   - Or run: \`python -c "import sys; import os; print(os.path.join(sys.executable, '..', 'Scripts'))"\`
+
+2. Add to PATH:
+   - Right-click "This PC" → "Properties" → "Advanced system settings"
+   - Click "Environment Variables"
+   - Under "System variables", find "Path" and click "Edit"
+   - Add the Scripts directory path
+   - Restart VS Code
 
 **Alternative methods:**
-- Using conda: \`conda install mpremote\`
-- Using winget: \`winget install --id=python.mpremote\``;
+- Using conda: \`conda install mpremote\` (better PATH handling)
+- Using winget: \`winget install --id=python.mpremote\`
+- Using python module: \`python -m mpremote\` (works without PATH)`;
     } else if (isMac) {
       command = 'python3 -m pip install mpremote';
       instructions = `**macOS Installation:**
@@ -289,21 +514,64 @@ For more information, visit: https://pypi.org/project/mpremote/`;
   },
 
   /**
+   * Check if pip is available for the given Python executable
+   */
+  async checkPipAvailability(pythonPath: string): Promise<boolean> {
+    try {
+      await execFileAsync(pythonPath, ['-m', 'pip', '--version'], { timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
    * Check mpremote version and compatibility
    */
   async checkMpremoteVersion(): Promise<{ version: string | null; compatible: boolean }> {
-    try {
-      const { stdout } = await execAsync('mpremote --version');
-      const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/);
-      const version = versionMatch ? versionMatch[1] : null;
+    // Try multiple methods to get version
+    const methods = [
+      // Method 1: Direct command
+      async () => {
+        const { stdout } = await execAsync('mpremote --version', { timeout: 5000 });
+        return stdout;
+      },
+      // Method 2: Python module
+      async () => {
+        const pythonPath = await this.detectPythonPath();
+        if (pythonPath) {
+          const { stdout } = await execAsync(`"${pythonPath}" -m mpremote --version`, { timeout: 5000 });
+          return stdout;
+        }
+        throw new Error('Python not found');
+      },
+      // Method 3: Full path
+      async () => {
+        const mpremotePath = await this.findMpremoteExecutable();
+        if (mpremotePath) {
+          const { stdout } = await execAsync(`"${mpremotePath}" --version`, { timeout: 5000 });
+          return stdout;
+        }
+        throw new Error('mpremote executable not found');
+      }
+    ];
 
-      // Check if version is compatible (mpremote 1.20.0+ recommended)
-      const compatible = version ? this.isVersionCompatible(version) : false;
+    for (const method of methods) {
+      try {
+        const stdout = await method();
+        const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/);
+        const version = versionMatch ? versionMatch[1] : null;
 
-      return { version, compatible };
-    } catch (error) {
-      return { version: null, compatible: false };
+        // Check if version is compatible (mpremote 1.20.0+ recommended)
+        const compatible = version ? this.isVersionCompatible(version) : false;
+
+        return { version, compatible };
+      } catch {
+        // Try next method
+      }
     }
+
+    return { version: null, compatible: false };
   },
 
   /**

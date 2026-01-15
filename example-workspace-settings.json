@@ -1,0 +1,7 @@
+{
+  "microPythonWorkBench": {
+    "syncLocalRoot": "src/micropython",
+    "rootPath": "/lib",
+    "autoSyncOnSave": true
+  }
+}
