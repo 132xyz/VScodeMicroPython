@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { Esp32Tree } from "./esp32Fs";
 import { Esp32DecorationProvider } from "./decorations";
 import { buildManifest, saveManifest, createIgnoreMatcher } from "./sync";
+import { Localization } from "./localization";
 
 const MPY_WORKBENCH_DIR = '.mpy-workbench';
 const MPY_MANIFEST_FILE = 'esp32sync.json';
@@ -25,7 +26,7 @@ export async function rebuildManifest(tree: Esp32Tree) {
     console.log("[DEBUG] Starting manifest rebuild...");
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) {
-      vscode.window.showErrorMessage("No workspace folder open");
+      Localization.showError("messages.noWorkspaceFolder");
       return;
     }
 
@@ -39,10 +40,10 @@ export async function rebuildManifest(tree: Esp32Tree) {
     await saveManifest(manifestPath, newManifest);
 
     console.log("[DEBUG] Manifest rebuild completed");
-    vscode.window.showInformationMessage(`Manifest rebuilt successfully (${Object.keys(newManifest.files).length} files)`);
+    Localization.showInfo("messages.manifestRebuilt", Object.keys(newManifest.files).length);
   } catch (error: any) {
     console.error("[DEBUG] Manifest rebuild failed:", error);
-    vscode.window.showErrorMessage(`Manifest rebuild failed: ${error?.message || error}`);
+    Localization.showError("messages.manifestRebuildFailed", error?.message || error);
   }
 }
 
@@ -77,6 +78,6 @@ export async function cancelAllTasks() {
     console.log("[DEBUG] All tasks canceled successfully");
   } catch (error: any) {
     console.error("[DEBUG] Failed to cancel tasks:", error);
-    vscode.window.showErrorMessage(`Failed to cancel tasks: ${error?.message || error}`);
+    Localization.showError("messages.cancelTasksFailed", error?.message || error);
   }
 }

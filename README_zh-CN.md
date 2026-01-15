@@ -1,0 +1,117 @@
+# MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
+
+---- fork of [DanielBustillos/mpy-workbench](https://github.com/DanielBustillos/mpy-workbench) 以修复问题 -----
+
+受 Thonny 简洁性的启发，此扩展简化了在多个开发板上的 MicroPython 开发。它在 VS Code 中提供远程文件管理、集成的 REPL 和自动双向同步，从而实现更流畅的工作流程。
+
+该扩展使用 **mpremote** 处理所有开发板交互，包括文件传输、REPL 连接和命令执行。
+
+## 主要功能
+
+- 📂 设备远程文件资源管理器（打开、下载文件/文件夹、上传、重命名、删除）
+- 🔄 双向同步：比较本地文件与设备并同步已更改的文件
+- 📝 在文件视图中创建一个新文件并在首次保存时将其上传到开发板
+- 💽 通过 esptool 烧录 MicroPython 固件并自动检测开发板（目录驱动）
+- 💻 集成的 MicroPython REPL 终端
+- ⏯️ 向开发板发送命令（停止、软重置等）
+- 🧭 文件视图显示检测到的开发板名称和状态栏显示上次自动同步时间
+
+**⚡ 连接到开发板并运行文件**
+![运行文件演示](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
+
+**🔄 自动同步本地文件夹内容**
+![同步文件演示](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/sync%20new%20files.gif?raw=true)
+
+## 同步工具
+
+这些命令在本地工作区和连接的 MicroPython 开发板之间执行完整或增量同步：
+
+- **检查差异：** 列出本地和开发板之间新的、已更改或已删除的文件。
+- **同步本地 → 开发板：** 仅上传本地文件，这些文件是新的或已修改的。
+- **同步开发板 → 本地：** 仅下载开发板文件，这些文件是新的或已修改的。
+- **上传所有本地 → 开发板：** 将所有非忽略的本地文件上传到设备。
+- **下载所有开发板 → 本地：** 下载所有开发板文件，覆盖本地副本。
+- **删除开发板上的所有文件：** 从设备中移除所有文件。
+
+## 有用的命令（命令面板）
+
+- `MPY 工作台：刷新` — 刷新文件树
+- `MPY 工作台：检查文件差异` — 显示差异和本地独有文件
+- `MPY 工作台：同步已更改文件（本地 → 开发板）` — 上传已更改的本地文件
+- `MPY 工作台：同步已更改文件（开发板 → 本地）` — 下载已更改的开发板文件
+- `MPY 工作台：同步所有文件` — 完整上传或下载
+- `MPY 工作台：上传活动文件` — 上传当前编辑器文件
+- `MPY 工作台：选择串口` — 选择设备串口
+- `MPY 工作台：打开 REPL 终端` — 打开 MicroPython REPL
+- `MPY 工作台：烧录 MicroPython 固件` — 使用捆绑目录和 esptool 烧录固件
+- `MPY 工作台：切换工作区保存时自动同步` — 启用/禁用工作区自动同步
+
+## 工作区配置
+
+该扩展在工作区根目录的 `.mpy-workbench` 文件夹中存储每个工作区的设置和清单。
+
+- 工作区覆盖文件：`.mpy-workbench/config.json`
+- 同步清单：`.mpy-workbench/esp32sync.json`
+
+使用命令 `MicroPython 工作台：切换工作区保存时自动同步` 来启用或禁用当前工作区的自动同步。如果不存在工作区配置，扩展将回退到全局设置 `microPythonWorkBench.autoSyncOnSave`（默认：`false`）。
+
+### 本地同步根目录
+
+默认情况下，同步操作使用工作区根目录。您可以使用 `microPythonWorkBench.syncLocalRoot` 设置配置不同的本地根目录：
+
+- **空（默认）**：使用工作区根目录
+- **相对路径**：例如，`"src"` 或 `"micropython"` - 相对于工作区根目录
+- **绝对路径**：完整路径到工作区外部的目录
+
+当您的 MicroPython 项目文件位于工作区子目录中时，或者当您想要同步到完全不同的位置时，这很有用。
+
+**VS Code 设置示例：**
+```json
+{
+  "microPythonWorkBench.syncLocalRoot": "src/micropython"
+}
+```
+
+请参阅 `example-workspace-settings.json` 以获取完整的配置示例。
+
+### 自动暂停和 REPL 恢复
+
+- `microPythonWorkBench.serialAutoSuspend`（默认：`true`）：在文件操作前关闭 REPL/运行终端以避免串口冲突，然后在操作后恢复（重新运行运行活动文件，或重新打开 REPL）。
+- `microPythonWorkBench.replRestoreBehavior`（默认：`none`）：REPL 在自动暂停/同步后恢复时执行的操作：
+  - `runChanged`：自动在 REPL 中运行已更改/保存的文件。
+  - `executeBootMain`：发送 Ctrl-D 以便重置后重新启动自动运行 `main.py`/`boot.py` 的开发板。
+  - `openReplEmpty`：重新打开 REPL 而无需发送任何内容。
+  - `none`：不重新打开 REPL。
+
+## 状态指示器
+
+- 状态栏显示 `MPY: 自动同步 开/关`、取消所有任务按钮，以及 `MPY: 上次同步 <时间>` 在每次自动同步运行后。
+- 文件视图标题在选择固定串口后显示检测到的开发板名称/ID。
+
+## 要求
+
+- **Python 3.13.2**
+- **Mpremote v1.26.1**
+- **固件烧录：** `esptool` 在同一 Python 环境中可用。通过 `pip install esptool` 安装。该扩展检查 `python`、`py -3`（Windows）和 PATH 中的 `esptool.py`/`esptool`。
+- 如果需要选择特定解释器，可以在扩展设置中调整 Python 路径。
+
+## 固件烧录
+
+- 选择特定的串口（不是 `auto`），然后从命令面板或开发板操作视图运行 `MicroPython 工作台：烧录 MicroPython 固件`。
+- 该扩展检测开发板，从 `assets/firmwareCatalog.json` 中选择匹配条目，下载映像，并使用 460800 波特率运行 `esptool`。
+- 首先将开发板置于引导加载程序模式；烧录期间 REPL 会自动关闭以释放串口。
+- 通过将条目附加到 `assets/firmwareCatalog.json` 来添加更多开发板（芯片、闪存模式/频率、偏移、下载 URL 和别名）。
+
+## 后续步骤
+
+- ✅ 扩大开发板兼容性（目前仅在 ESP32-S3 和 ESP32-C3 上测试）
+- 🔌 扩展固件目录以超越初始 ESP32-C6 条目
+- 🪟 执行完整的 Windows 测试：验证 mpremote 与 COM 端口的兼容性，并确保文件操作和 REPL 在 Windows 环境中的一致行为
+
+## 贡献
+
+欢迎问题和拉取请求。
+
+## 许可证
+
+MIT — 请参阅此仓库中的 `LICENSE` 文件。

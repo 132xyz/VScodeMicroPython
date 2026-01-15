@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { exec } from "node:child_process";
 import * as mp from "./mpremote";
+import { showInfo, showError, showWarning } from "./localization";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
@@ -194,7 +195,7 @@ export async function softReset(): Promise<void> {
       term.sendText("\x02", false); // Ctrl-B (friendly REPL)
       await new Promise(r => setTimeout(r, 80));
       term.sendText("\x04", false); // Ctrl-D (soft reset)
-      vscode.window.showInformationMessage("Board: Soft reset sent via ESP32 REPL");
+      showInfo("messages.softResetSentViaRepl");
       return;
     } catch {
       // fall back to mpremote below
@@ -208,9 +209,9 @@ export async function softReset(): Promise<void> {
   await new Promise<void>((resolve) => {
     exec(cmd, (error: any, stdout: any, stderr: any) => {
       if (error) {
-        vscode.window.showErrorMessage(`Board: Soft reset failed: ${stderr || error.message}`);
+        showError("messages.softResetFailed", stderr || error.message);
       } else {
-        vscode.window.showInformationMessage(`Board: Soft reset sent via mpremote connect auto reset`);
+        showInfo("messages.softResetSentViaMpremoteConnect");
       }
       resolve();
     });
@@ -219,12 +220,12 @@ export async function softReset(): Promise<void> {
 
 export async function runActiveFile(): Promise<void> {
   const ed = vscode.window.activeTextEditor;
-  if (!ed) { vscode.window.showErrorMessage("No active editor"); return; }
+  if (!ed) { showError("messages.noActiveEditor"); return; }
   await ed.document.save();
 
   const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
   if (!connect || connect === "auto") {
-    vscode.window.showErrorMessage("Select a specific serial port first (not 'auto').");
+    showError("messages.selectSpecificPort");
     return;
   }
 
@@ -434,7 +435,7 @@ export async function robustInterrupt(port?: string): Promise<void> {
       term.sendText("\x03", false);
       await new Promise(r => setTimeout(r, 60));
       term.sendText("\x03", false);
-      vscode.window.showInformationMessage("Board: Interrupt sent via ESP32 REPL");
+        showInfo("messages.interruptSentViaRepl");
       return;
     } catch (error) {
       console.log(`[DEBUG] robustInterrupt: REPL interrupt path failed, falling back: ${error}`);

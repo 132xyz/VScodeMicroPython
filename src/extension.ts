@@ -44,6 +44,7 @@ import { replCommands } from "./commands/replCommands";
 import { debugCommands } from "./commands/debugCommands";
 import { utilityCommands } from "./commands/utilityCommands";
 import { mpremoteCommands } from "./commands/mpremoteCommands";
+import { Localization } from "./localization";
 
 export function activate(context: vscode.ExtensionContext) {
   // Create status bar item for mpremote status
@@ -578,10 +579,10 @@ export function activate(context: vscode.ExtensionContext) {
         console.log("[DEBUG] Starting manual file tree cache refresh...");
         await mp.refreshFileTreeCache();
         console.log("[DEBUG] File tree cache refresh completed");
-        vscode.window.showInformationMessage("File tree cache refreshed successfully");
+        Localization.showInfo("messages.fileTreeCacheRefreshed");
       } catch (error: any) {
         console.error("[DEBUG] File tree cache refresh failed:", error);
-        vscode.window.showErrorMessage(`File tree cache refresh failed: ${error?.message || error}`);
+        Localization.showError("messages.fileTreeCacheRefreshFailed", error?.message || error);
       }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.rebuildManifest", async () => {
@@ -615,7 +616,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("microPythonWorkBench.stopSerial", async () => {
       await closeReplTerminal();
-      vscode.window.showInformationMessage("Board: ESP32 REPL closed");
+      Localization.showInfo("messages.replClosed");
     }),
 
     vscode.commands.registerCommand("microPythonWorkBench.autoSuspendLs", async (pathArg: string) => {
@@ -656,7 +657,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.runFromView", async (cmd: string, ...args: any[]) => {
       try { await vscode.commands.executeCommand(cmd, ...args); } catch (e) {
         const msg = (e as any)?.message ?? String(e);
-  vscode.window.showErrorMessage(`Board command failed: ${msg}`);
+        Localization.showError("messages.boardCommandFailed", msg);
       }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncBaseline"); }),
@@ -729,7 +730,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       catch (e) {
         console.error(`[DEBUG] Auto-upload failed for ${rel}:`, e);
-        vscode.window.showWarningMessage(`Board auto-upload failed for ${rel}: ${String((e as any)?.message ?? e)}`);
+        Localization.showWarning("messages.boardAutoUploadFailed", rel, String((e as any)?.message ?? e));
       }
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
@@ -759,10 +760,10 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (e) {
         console.error('Failed to update legacy autoSync config', e);
       }
-      vscode.window.showInformationMessage(`Workspace auto-sync on save is now ${next ? 'ENABLED' : 'DISABLED'}`);
+      Localization.showInfo("messages.workspaceAutoSyncToggled", next ? Localization.t("messages.enabled") : Localization.t("messages.disabled"));
       try { await refreshAutoSyncUi(); } catch {}
     } catch (e) {
-      vscode.window.showErrorMessage('Failed to toggle workspace auto-sync: ' + String(e));
+      Localization.showError("messages.toggleAutoSyncFailed", String(e));
     }
   }));
 }
@@ -790,13 +791,13 @@ vscode.commands.registerCommand("microPythonWorkBench.rename", async (node: Esp3
     } else if (typeof mp.mv === "function") {
       await withAutoSuspend(() => mp.mv(oldPath, newPath));
     } else {
-      vscode.window.showErrorMessage("No rename/mv function found in mp.");
+      Localization.showError("messages.noRenameFunction");
       return;
     }
-    vscode.window.showInformationMessage(`Renombrado: ${oldPath} → ${newPath}`);
+    Localization.showInfo("messages.renameSuccess", oldPath, newPath);
     tree.refreshTree();
   } catch (err: any) {
-    vscode.window.showErrorMessage(`Error al renombrar: ${err?.message ?? err}`);
+    Localization.showError("messages.renameError", err?.message ?? err);
   }
 });
 */

@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { createIgnoreMatcher } from "../sync";
 import { Esp32Tree } from "../esp32Fs";
 import { Esp32DecorationProvider } from "../decorations";
+import { Localization } from "../localization";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -27,7 +28,7 @@ export const utilityCommands = {
 
   uploadActiveFile: async () => {
     const ed = vscode.window.activeTextEditor;
-    if (!ed) { vscode.window.showErrorMessage("No active editor"); return; }
+    if (!ed) { Localization.showError("messages.noActiveEditor"); return; }
     await ed.document.save();
     const ws = vscode.workspace.getWorkspaceFolder(ed.document.uri);
     const rel = ws ? path.relative(ws.uri.fsPath, ed.document.uri.fsPath) : path.basename(ed.document.uri.fsPath);
@@ -36,7 +37,7 @@ export const utilityCommands = {
         const matcher = await createIgnoreMatcher(ws.uri.fsPath);
         const relPosix = rel.replace(/\\\\/g, '/');
         if (matcher(relPosix, false)) {
-          vscode.window.showInformationMessage(`Upload skipped (ignored): ${relPosix}`);
+          Localization.showInfo("messages.uploadSkipped", relPosix);
           return;
         }
       } catch {}
@@ -47,18 +48,18 @@ export const utilityCommands = {
       // Assuming mp is available
       // await withAutoSuspend(() => mp.uploadReplacing(ed.document.uri.fsPath, dest));
       // tree.addNode(dest, false);
-      vscode.window.showInformationMessage(`Uploaded to ${dest}`);
+      Localization.showInfo("messages.uploadSuccess", dest);
       // tree.refreshTree();
     } catch (uploadError: any) {
       console.error(`[DEBUG] Failed to upload active file to board:`, uploadError);
-      vscode.window.showErrorMessage(`Failed to upload active file to board: ${uploadError?.message || uploadError}`);
+      Localization.showError("messages.uploadFailed", uploadError?.message || uploadError);
     }
   },
 
   runFromView: async (cmd: string, ...args: any[]) => {
     try { await vscode.commands.executeCommand(cmd, ...args); } catch (e) {
       const msg = (e as any)?.message ?? String(e);
-      vscode.window.showErrorMessage(`Board command failed: ${msg}`);
+      Localization.showError("messages.boardCommandFailed", msg);
     }
   },
 
