@@ -33,7 +33,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "@vscode/vsce package",
+    "package": "npx @vscode/vsce package",
     "test": "jest",
     "test:watch": "jest --watch"
   },
