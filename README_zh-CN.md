@@ -1,6 +1,6 @@
 # MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
 
----- fork of [DanielBustillos/mpy-workbench](https://github.com/DanielBustillos/mpy-workbench) 以修复问题 -----
+[English](README.md)
 
 受 Thonny 简洁性的启发，此扩展简化了在多个开发板上的 MicroPython 开发。它在 VS Code 中提供远程文件管理、集成的 REPL 和自动双向同步，从而实现更流畅的工作流程。
 
@@ -18,10 +18,10 @@
 - 🧠 **IntelliSense 代码补全** MicroPython 模块，支持自动检测和多语言
 
 **⚡ 连接到开发板并运行文件**
-![运行文件演示](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
+![运行文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
 
 **🔄 自动同步本地文件夹内容**
-![同步文件演示](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/sync%20new%20files.gif?raw=true)
+![同步文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/sync%20new%20files.gif?raw=true)
 
 ## 同步工具
 
@@ -141,6 +141,48 @@
 - **代码补全（可选）：** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展以获得增强的 IntelliSense 支持
 - 如果需要选择特定解释器，可以在扩展设置中调整 Python 路径。
 
+## 快速开始
+
+1. 从 VS Code 市场安装扩展，或在本地构建并安装 `.vsix`：
+
+```bash
+# 构建包（需要 vsce）
+npm ci
+npm run compile
+npm run package
+# 然后在 VS Code 扩展中选择 "Install from VSIX" 安装生成的 .vsix
+```
+
+2. 确保本机安装依赖：
+
+```bash
+# Python 3.8+（建议 >=3.10），mpremote 与 esptool
+python -m pip install --user mpremote esptool
+```
+
+3. 打开包含 MicroPython 项目的工作区，选择串口（`MPY 工作台：选择串口`），在文件视图中进行同步/上传操作。
+
+## 开发与测试
+
+- 构建：`npm run compile`（TypeScript 编译到 `dist/`）。
+- 测试：`npm test`（Jest）。CI 配置位于 `.github/workflows/ci.yml`。
+- 打包：`npm run package`（需要 `vsce`）。
+
+## 配置项
+
+常用设置（可在扩展设置中查看）：
+
+- `microPythonWorkBench.syncLocalRoot`：用于同步的本地目录（默认：空，表示工作区根目录）。
+- `microPythonWorkBench.autoSyncOnSave`：保存时是否自动同步（默认：`false`）。
+- `microPythonWorkBench.pythonPath`：用于执行 `esptool`/辅助命令的 Python 可执行文件路径。
+
+完整配置项请参见 `package.json` 中的 `contributes.configuration`。
+
+## 当前限制与说明
+
+- 固件目录与板子测试目前以 ESP32 系列为主（ESP32-S3、ESP32-C3）。若要支持其他板子，请先补充 `assets/firmwareCatalog.json` 条目并测试。
+- 仓库已配置 CI，会在多平台和 Node.js 版本上运行构建/测试，但单元测试覆盖尚不足——建议在本地运行 `npm test` 并为核心模块（`sync`、`board`、`completion`）补充测试用例。
+
 ## 固件烧录
 
 - 选择特定的串口（不是 `auto`），然后从命令面板或开发板操作视图运行 `MicroPython 工作台：烧录 MicroPython 固件`。
@@ -161,3 +203,9 @@
 ## 许可证
 
 MIT — 请参阅此仓库中的 `LICENSE` 文件。
+
+## 致谢
+
+- 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 `code_completion/` 目录提供了代码补全数据。
+ - 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 `code_completion/` 目录提供了代码补全数据。
+ - 感谢原始项目 `mpy-workbench`（Daniel Bustillos）提供了最初的设计与实现参考：https://github.com/DanielBustillos/mpy-workbench

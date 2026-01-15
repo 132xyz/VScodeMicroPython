@@ -1,6 +1,6 @@
 # MicroPython Workbench — MicroPython file manager for VS Code
 
----- fork of [DanielBustillos/mpy-workbench](https://github.com/DanielBustillos/mpy-workbench) to fix issues -----
+[中文](README_zh-CN.md)
 
 Inspired by Thonny’s simplicity, this extension streamlines MicroPython development across multiple boards. It provides remote file management, an integrated REPL, and automatic two-way synchronization, enabling a smoother workflow within VS Code.
 
@@ -17,11 +17,53 @@ The extension leverages **mpremote** for all board interactions, including file 
 - 🧭 Files view shows the detected board name and status bar displays last auto-sync time
 - 🧠 **IntelliSense code completion** for MicroPython modules with auto-detection and multi-language support
 
+## Quick Start
+
+1. Install the extension from the VS Code Marketplace or build and install the `.vsix`:
+
+```bash
+# build package (requires vsce)
+npm ci
+npm run compile
+npm run package
+# then install the generated .vsix in VS Code (Extensions > ... > Install from VSIX)
+```
+
+2. Ensure dependencies are available on your machine:
+
+```bash
+# Python 3.8+ (recommended >=3.10), mpremote and esptool
+python -m pip install --user mpremote esptool
+```
+
+3. Open a workspace containing your MicroPython project, pick a serial port (`MPY Workbench: Select Serial Port`) and use the Files view to sync/upload files.
+
+## Development & Tests
+
+- Build: `npm run compile` (TypeScript -> `dist/`).
+- Tests: `npm test` (Jest). CI is configured under `.github/workflows/ci.yml`.
+- Packaging: `npm run package` (requires `vsce`).
+
+## Configuration
+
+Key settings (see extension settings in VS Code):
+
+- `microPythonWorkBench.syncLocalRoot`: local folder to sync (default: `""` meaning workspace root).
+- `microPythonWorkBench.autoSyncOnSave`: enable auto-sync on save (default: `false`).
+- `microPythonWorkBench.pythonPath`: Python executable to use when invoking `esptool`/helpers.
+
+For full list of configuration options see `package.json` -> `contributes.configuration`.
+
+## Current limitations and notes
+
+- Firmware catalog and board testing currently focused on ESP32 variants (ESP32-S3, ESP32-C3). Expand catalog entries before relying on automatic detection for other boards.
+- The project includes a CI workflow that runs build/tests across multiple OS and Node.js versions; however unit test coverage is limited—please run `npm test` locally and extend tests for core modules (`sync`, `board`, `completion`).
+
 **⚡ Connect to board and run a file**
-![Run file demo](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/run-file.gif?raw=true)
+![Run file demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
 
 **🔄 Autosync local folder contents**
-![Sync files demo](https://github.com/DanielBustillos/mpy-workbench/blob/main/assets/sync%20new%20files.gif?raw=true)
+![Sync files demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/sync%20new%20files.gif?raw=true)
 
 ## Sync utilities
 
@@ -161,3 +203,9 @@ Issues and pull requests are welcome.
 ## License
 
 MIT — see the `LICENSE` file in this repository.
+
+## Acknowledgements
+
+- Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project provided the code completion data included in the `code_completion/` directory of this repository.
+ - Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project provided the code completion data included in the `code_completion/` directory of this repository.
+ - Thanks to the original `mpy-workbench` project by Daniel Bustillos for the initial design and implementation reference: https://github.com/DanielBustillos/mpy-workbench
