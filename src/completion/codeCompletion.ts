@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Localization } from './localization';
+import { Localization } from '../core/localization';
 
 /**
  * 代码补全管理器

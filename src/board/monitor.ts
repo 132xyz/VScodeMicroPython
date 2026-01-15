@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import * as vscode from "vscode";
-import { getPythonPath } from "./pythonInterpreter";
+import { getPythonPath } from "../python/pythonInterpreter";
 
 class SerialMonitor {
   private timer?: NodeJS.Timeout;

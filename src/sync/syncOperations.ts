@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { Esp32Tree } from "./esp32Fs";
-import { Esp32DecorationProvider } from "./decorations";
+import { Esp32Tree } from "../board/esp32Fs";
+import { Esp32DecorationProvider } from "../ui/decorations";
 import { buildManifest, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "./sync";
-import * as mp from "./mpremote";
+import * as mp from "../board/mpremote";
 
 const MPY_WORKBENCH_DIR = '.mpy-workbench';
 const MPY_MANIFEST_FILE = 'esp32sync.json';

@@ -2,11 +2,11 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { exec, execSync } from "node:child_process";
-import { Esp32Node } from "./types";
+import { Esp32Node } from "../core/types";
 import * as mp from "./mpremote";
-import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "./sync";
-import { Esp32DecorationProvider } from "./decorations";
-import { listDirPyRaw } from "./pyraw";
+import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "../sync/sync";
+import { Esp32DecorationProvider } from "../ui/decorations";
+import { listDirPyRaw } from "../python/pyraw";
 import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "./mpremoteCommands";
 
 // Helper to get workspace folder or throw error

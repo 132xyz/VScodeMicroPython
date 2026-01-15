@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { createIgnoreMatcher } from "../sync";
+import { createIgnoreMatcher } from "../sync/sync";
 import {
   disconnectReplTerminal,
   suspendSerialSessionsForAutoSync,
@@ -14,7 +14,7 @@ import {
   isReplOpen,
   closeReplTerminal,
   openReplTerminal
-} from "../mpremoteCommands";
+} from "../board/mpremoteCommands";
 
 // REPL commands implementation
 export const replCommands = {

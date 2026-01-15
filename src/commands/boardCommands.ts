@@ -5,8 +5,8 @@ import * as os from "node:os";
 import * as https from "node:https";
 import * as fsSync from "node:fs";
 import { execFile } from "node:child_process";
-import * as mp from "../mpremote";
-import { PythonInterpreterManager } from "../pythonInterpreter";
+import * as mp from "../board/mpremote";
+import { PythonInterpreterManager } from "../python/pythonInterpreter";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {

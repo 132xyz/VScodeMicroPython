@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../mpremote";
-import { rebuildManifest } from "../utilityOperations";
-import { cancelAllTasks } from "../utilityOperations";
+import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../board/mpremote";
+import { rebuildManifest } from "../core/utilityOperations";
+import { cancelAllTasks } from "../core/utilityOperations";
 
 // Debug commands implementation
 export const debugCommands = {

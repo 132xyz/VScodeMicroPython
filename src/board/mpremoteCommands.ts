@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { exec } from "node:child_process";
 import * as mp from "./mpremote";
-import { showInfo, showError, showWarning } from "./localization";
+import { showInfo, showError, showWarning } from "../core/localization";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;

@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import * as mp from "../mpremote";
-import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } from "../sync";
-import { createIgnoreMatcher } from "../sync";
-import { Esp32DecorationProvider } from "../decorations";
+import * as mp from "../board/mpremote";
+import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } from "../sync/sync";
+import { createIgnoreMatcher } from "../sync/sync";
+import { Esp32DecorationProvider } from "../ui/decorations";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {

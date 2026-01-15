@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import * as mp from "../mpremote";
-import { Esp32Tree } from "../esp32Fs";
-import { Esp32Node } from "../types";
-import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync";
-import { toLocalRelative, toDevicePath } from "../mpremoteCommands";
+import * as mp from "../board/mpremote";
+import { Esp32Tree } from "../board/esp32Fs";
+import { Esp32Node } from "../core/types";
+import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync/sync";
+import { toLocalRelative, toDevicePath } from "../board/mpremoteCommands";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {

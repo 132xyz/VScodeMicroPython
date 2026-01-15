@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
-import { Esp32Node } from "./types";
+import { Esp32Node } from "../core/types";
 import * as mp from "./mpremote";
-import { listDirPyRaw } from "./pyraw";
-import { createIgnoreMatcher } from "./sync";
+import { listDirPyRaw } from "../python/pyraw";
+import { createIgnoreMatcher } from "../sync/sync";
 
 type TreeNode = Esp32Node | "no-port";
 

@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { Esp32Tree } from "./esp32Fs";
-import { Esp32DecorationProvider } from "./decorations";
-import { buildManifest, saveManifest, createIgnoreMatcher } from "./sync";
+import { Esp32Tree } from "../board/esp32Fs";
+import { Esp32DecorationProvider } from "../ui/decorations";
+import { buildManifest, saveManifest, createIgnoreMatcher } from "../sync/sync";
 import { Localization } from "./localization";
 
 const MPY_WORKBENCH_DIR = '.mpy-workbench';
@@ -15,7 +15,7 @@ export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvi
   tree.clearCache();
   try {
     // Clear mpremote cache if available
-    const mp = await import("./mpremote");
+    const mp = await import("../board/mpremote");
     mp.clearFileTreeCache();
   } catch {}
   tree.refreshTree();

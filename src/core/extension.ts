@@ -1,23 +1,23 @@
 
 import * as vscode from "vscode";
-import { Esp32Tree } from "./esp32Fs";
+import { Esp32Tree } from "../board/esp32Fs";
 import { ActionsTree } from "./actions";
-import { SyncTree } from "./syncView";
+import { SyncTree } from "../sync/syncView";
 import { Esp32Node } from "./types";
-import * as mp from "./mpremote";
-import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus, runMpremote } from "./mpremote";
+import * as mp from "../board/mpremote";
+import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus, runMpremote } from "../board/mpremote";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import { exec, execFile } from "node:child_process";
 import * as os from "node:os";
 import * as https from "node:https";
-import { buildManifest, diffManifests, saveManifest, loadManifest, defaultIgnorePatterns, createIgnoreMatcher, Manifest } from "./sync";
-import { Esp32DecorationProvider } from "./decorations";
-import { listDirPyRaw } from "./pyraw";
-import { BoardOperations } from "./boardOperations";
-import { PythonInterpreterManager } from "./pythonInterpreter";
-// import { monitor } from "./monitor"; // switched to auto-suspend REPL strategy
+import { buildManifest, diffManifests, saveManifest, loadManifest, defaultIgnorePatterns, createIgnoreMatcher, Manifest } from "../sync/sync";
+import { Esp32DecorationProvider } from "../ui/decorations";
+import { listDirPyRaw } from "../python/pyraw";
+import { BoardOperations } from "../board/boardOperations";
+import { PythonInterpreterManager } from "../python/pythonInterpreter";
+// import { monitor } from "../board/monitor"; // switched to auto-suspend REPL strategy
 import { refresh, rebuildManifest, cancelAllTasks } from "./utilityOperations";
 import {
   disconnectReplTerminal,
@@ -34,18 +34,18 @@ import {
   openReplTerminal,
   toLocalRelative,
   toDevicePath
-} from "./mpremoteCommands";
+} from "../board/mpremoteCommands";
 
 // Import command modules
-import { fileCommands } from "./commands/fileCommands";
-import { syncCommands } from "./commands/syncCommands";
-import { boardCommands } from "./commands/boardCommands";
-import { replCommands } from "./commands/replCommands";
-import { debugCommands } from "./commands/debugCommands";
-import { utilityCommands } from "./commands/utilityCommands";
-import { mpremoteCommands } from "./commands/mpremoteCommands";
+import { fileCommands } from "../commands/fileCommands";
+import { syncCommands } from "../commands/syncCommands";
+import { boardCommands } from "../commands/boardCommands";
+import { replCommands } from "../commands/replCommands";
+import { debugCommands } from "../commands/debugCommands";
+import { utilityCommands } from "../commands/utilityCommands";
+import { mpremoteCommands } from "../commands/mpremoteCommands";
 import { Localization } from "./localization";
-import { codeCompletionManager } from "./codeCompletion";
+import { codeCompletionManager } from "../completion/codeCompletion";
 
 export function activate(context: vscode.ExtensionContext) {
   // Create status bar item for mpremote status

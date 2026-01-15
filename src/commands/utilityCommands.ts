@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { createIgnoreMatcher } from "../sync";
-import { Esp32Tree } from "../esp32Fs";
-import { Esp32DecorationProvider } from "../decorations";
-import { Localization } from "../localization";
+import { createIgnoreMatcher } from "../sync/sync";
+import { Esp32Tree } from "../board/esp32Fs";
+import { Esp32DecorationProvider } from "../ui/decorations";
+import { Localization } from "../core/localization";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -22,7 +22,7 @@ function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
 export const utilityCommands = {
   refresh: async (tree: Esp32Tree, decorations: Esp32DecorationProvider) => {
     // Import refresh function from utilityOperations
-    const { refresh } = await import("../utilityOperations");
+    const { refresh } = await import("../core/utilityOperations");
     await refresh(tree, decorations);
   },
 
