@@ -3,6 +3,8 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
+import * as os from "node:os";
+import * as crypto from "node:crypto";
 
 function normalizeConnect(c: string): string {
   if (c.startsWith("serial://")) return c.replace(/^serial:\/\//, "");
@@ -17,6 +19,76 @@ function normalizeConnect(c: string): string {
 
   console.log(`[DEBUG] normalizeConnect: Using as-is: ${c}`);
   return c;
+}
+
+// Helper: determine a safe device root for the current workspace when rootPath is '/'.
+// This function performs synchronous IO so mapping helpers can remain synchronous.
+function getEffectiveDeviceRootSync(): string {
+  try {
+    // Allow tests or environment to override the device root to avoid filesystem operations
+    const envOverride = process.env.MPY_DEVICE_ROOT;
+    if (envOverride && typeof envOverride === 'string' && envOverride.trim().length > 0) {
+      return envOverride.startsWith('/') ? envOverride : `/${envOverride}`;
+    }
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) {
+      // No workspace — return a transient device folder name to avoid using '/'
+      const name = `mpy_${Math.random().toString(16).slice(2, 10)}`;
+      return `/${name}`;
+    }
+    const wsPath = ws.uri.fsPath;
+    const workbenchDir = path.join(wsPath, '.mpy-workbench');
+    const cfgPath = path.join(workbenchDir, 'config.json');
+    try {
+      if (fs.existsSync(cfgPath)) {
+        const txt = fs.readFileSync(cfgPath, 'utf8');
+        const parsed = JSON.parse(txt || '{}');
+        if (parsed && typeof parsed.deviceRoot === 'string' && parsed.deviceRoot.trim().length > 0) {
+          return parsed.deviceRoot;
+        }
+      }
+    } catch (err) {
+      console.warn('[DEBUG] getEffectiveDeviceRootSync: failed reading config', err);
+    }
+    // Create a deterministic-ish random name and persist it
+    const rand = crypto.randomBytes(4).toString('hex');
+    const name = `mpy_${rand}`;
+    const deviceRoot = `/${name}`;
+    try {
+      if (!fs.existsSync(workbenchDir)) fs.mkdirSync(workbenchDir, { recursive: true });
+      const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8') || '{}') : {};
+      cfg.deviceRoot = deviceRoot;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+    } catch (err) {
+      console.warn('[DEBUG] getEffectiveDeviceRootSync: failed writing config, proceeding without persisting', err);
+    }
+    return deviceRoot;
+  } catch (err) {
+    // As a final fallback, return a random name but do not persist
+    const name = `mpy_${Math.random().toString(16).slice(2, 10)}`;
+    return `/${name}`;
+  }
+}
+
+// Map a local-relative path to a device path using configured rootPath; when rootPath is '/', use
+// the workspace-scoped device root computed by getEffectiveDeviceRootSync().
+export function toDevicePath(localRel: string, rootPath: string): string {
+  const normLocal = localRel ? localRel.replace(/^\/+/, '') : '';
+  const normRoot = rootPath === "/" ? getEffectiveDeviceRootSync() : (rootPath || "/").replace(/\/$/, '');
+  if (normRoot === "/") return `/${normLocal}`;
+  return normLocal ? `${normRoot}/${normLocal}` : `${normRoot}`;
+}
+
+// Map a device path to a local-relative path according to rootPath. Returns null when the device
+// path equals the effective device root (caller must handle this safely).
+export function toLocalRelative(devicePath: string, rootPath: string): string | null {
+  const normRoot = rootPath === "/" ? getEffectiveDeviceRootSync() : (rootPath || "/").replace(/\/$/, '');
+  const dp = devicePath.replace(/^\/+/, '');
+  if (normRoot === "/") return dp; // device root is '/', so localRel is devicePath without leading '/'
+  const rootNoSlash = normRoot.replace(/^\/+/, '');
+  if (dp === rootNoSlash) return null;
+  if (dp.startsWith(rootNoSlash + '/')) return dp.slice(rootNoSlash.length + 1);
+  return null; // outside configured root
 }
 
 let currentChild: ChildProcess | null = null;
@@ -103,6 +175,12 @@ class ConnectionManager {
     this.healthCheckTimer = setInterval(() => {
       this.cleanup();
     }, this.HEALTH_CHECK_INTERVAL);
+    // Ensure the timer does not keep the Node.js event loop alive (helps tests exit)
+    try {
+      if (this.healthCheckTimer && (this.healthCheckTimer as any).unref) (this.healthCheckTimer as any).unref();
+    } catch (e) {
+      // ignore if unref not available
+    }
   }
 
   // Stop health checks (cleanup)
@@ -1593,39 +1671,28 @@ export async function deleteAllInPath(rootPath: string): Promise<{deleted: strin
   const errors: string[] = [];
 
   try {
-    // For root path, we need to delete the contents, not the root directory itself
+    // If caller passed rootPath as "/", treat it as the workspace's configured device root
+    // to avoid destructive deletion of the device root directory. Resolve a safe deviceRoot
+    // (e.g. /mpy_<random>) from the workspace .mpy-workbench/config.json or create one.
+    let targetPath = rootPath;
     if (rootPath === "/") {
-      // First, get the list of items in the root directory
-      const items = await listTreeStats("/");
-      
-      // Filter to get only direct children of the root (depth 1)
-      const rootItems = items.filter(item => {
-        const pathParts = item.path.split('/').filter(part => part.length > 0);
-        return pathParts.length === 1; // Direct children of root
-      });
-
-      // Delete each root-level item individually (sequentially to avoid concurrent access)
-      for (const item of rootItems) {
-        try {
-          console.log(`[DEBUG] deleteAllInPath: Deleting ${item.path}...`);
-          await runMpremote(["connect", connect, "fs", "rm", "-r", item.path], { retryOnFailure: true });
-          deleted.push(item.path);
-          console.log(`[DEBUG] deleteAllInPath: Successfully deleted ${item.path}`);
-        } catch (error: any) {
-          errors.push(`Failed to delete ${item.path}: ${error?.message || error}`);
-          connectionManager.markUnhealthy(connect);
-          console.error(`[DEBUG] deleteAllInPath: Failed to delete ${item.path}:`, error);
-        }
-      }
-    } else {
-      // For non-root paths, we can delete the directory itself
       try {
-        await runMpremote(["connect", connect, "fs", "rm", "-r", rootPath], { retryOnFailure: true });
-        deleted.push(rootPath);
-      } catch (error: any) {
-        errors.push(`Failed to delete ${rootPath}: ${error?.message || error}`);
-        connectionManager.markUnhealthy(connect);
+        const deviceRoot = getEffectiveDeviceRootSync();
+        targetPath = deviceRoot;
+        console.log(`[DEBUG] deleteAllInPath: Resolved '/' to device root ${deviceRoot}`);
+      } catch (err) {
+        console.warn('[DEBUG] deleteAllInPath: Failed to resolve device root; aborting to avoid root deletion', err);
+        return { deleted: [], errors: ['Refusing to delete device root "/"'], deleted_count: 0, error_count: 1 };
       }
+    }
+
+    // For non-root (now targetPath), delete the directory itself
+    try {
+      await runMpremote(["connect", connect, "fs", "rm", "-r", targetPath], { retryOnFailure: true });
+      deleted.push(targetPath);
+    } catch (error: any) {
+      errors.push(`Failed to delete ${targetPath}: ${error?.message || error}`);
+      connectionManager.markUnhealthy(connect);
     }
 
     // Invalidate cache since filesystem changed

@@ -572,26 +572,37 @@ export class BoardOperations {
   }
 
   private relFromDevice(devicePath: string, rootPath: string): string {
-    const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/$/, "");
-    if (normRoot === "/") return devicePath.replace(/^\//, "");
-    if (devicePath.startsWith(normRoot + "/")) return devicePath.slice(normRoot.length + 1);
-    if (devicePath === normRoot) return "";
-    return devicePath.replace(/^\//, "");
+    // Delegate to central mapping to ensure consistent handling of '/' and workspace-scoped device root
+    try {
+      const mpModule = require('./mpremote') as any;
+      const res = mpModule.toLocalRelative(devicePath, rootPath);
+      return res === null ? "" : res;
+    } catch (e) {
+      // Fallback to previous behavior
+      const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/$/, "");
+      if (normRoot === "/") return devicePath.replace(/^\//, "");
+      if (devicePath.startsWith(normRoot + "/")) return devicePath.slice(normRoot.length + 1);
+      if (devicePath === normRoot) return "";
+      return devicePath.replace(/^\//, "");
+    }
   }
 
   private toDevicePath(localRel: string, rootPath: string): string {
-    const normalizedLocalPath = localRel.replace(/\/+/g, '/').replace(/\/$/, '');
-    const normalizedRootPath = rootPath.replace(/\/+/g, '/').replace(/\/$/, '');
-
-    if (normalizedRootPath === "") {
-      return "/" + normalizedLocalPath;
+    try {
+      const mpModule = require('./mpremote') as any;
+      return mpModule.toDevicePath(localRel, rootPath);
+    } catch (e) {
+      // Fallback to previous behavior
+      const normalizedLocalPath = localRel.replace(/\/+/, '/').replace(/\/$/, '');
+      const normalizedRootPath = rootPath.replace(/\/+/, '/').replace(/\/$/, '');
+      if (normalizedRootPath === "") {
+        return "/" + normalizedLocalPath;
+      }
+      if (normalizedLocalPath === "") {
+        return normalizedRootPath;
+      }
+      return normalizedRootPath + "/" + normalizedLocalPath;
     }
-
-    if (normalizedLocalPath === "") {
-      return normalizedRootPath;
-    }
-
-    return normalizedRootPath + "/" + normalizedLocalPath;
   }
 
   async checkDiffs(): Promise<void> {

@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.49",
+  "version": "0.1.53",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"

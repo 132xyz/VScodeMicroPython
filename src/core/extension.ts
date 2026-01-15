@@ -417,11 +417,18 @@ export function activate(context: vscode.ExtensionContext) {
   const syncTree = new SyncTree();
   console.log('[Extension] Creating sync view...');
   let syncView: vscode.TreeView<any> | undefined = undefined;
-  if (isViewContributed("microPythonWorkBenchSyncView")) {
+  try {
+    // Try to create the view regardless of package.json state. If the view is
+    // not declared in package.json, creating it at runtime still makes the
+    // UI available as a fallback (helps if package.json was modified or
+    // corrupted in development).
     syncView = vscode.window.createTreeView("microPythonWorkBenchSyncView", { treeDataProvider: syncTree });
     console.log('[Extension] Sync view created:', syncView ? 'success' : 'failed');
-  } else {
-    console.error('[Extension] View not contributed: microPythonWorkBenchSyncView');
+    if (!isViewContributed("microPythonWorkBenchSyncView")) {
+      console.warn('[Extension] Warning: microPythonWorkBenchSyncView not declared in package.json — created fallback view at runtime');
+    }
+  } catch (e) {
+    console.error('[Extension] Failed to create Sync view:', e);
   }
   const decorations = new Esp32DecorationProvider();
   context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorations));

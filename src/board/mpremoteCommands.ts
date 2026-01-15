@@ -412,19 +412,27 @@ async function strictConnectHandshake(interrupt: boolean) {
   }
 }
 
-export function toLocalRelative(devicePath: string, rootPath: string): string {
-  const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/$/, "");
-  if (normRoot === "/") return devicePath.replace(/^\//, "");
-  if (devicePath.startsWith(normRoot + "/")) return devicePath.slice(normRoot.length + 1);
-  if (devicePath === normRoot) return "";
-  // Fallback: strip leading slash
-  return devicePath.replace(/^\//, "");
+export function toLocalRelative(devicePath: string, rootPath: string): string | null {
+  // Delegate to central mapping in mpremote.ts which implements workspace-scoped device root
+  // and may return null when devicePath maps outside the configured sync root.
+  try {
+    return (mp as any).toLocalRelative(devicePath, rootPath);
+  } catch (e) {
+    console.warn('[mpremoteCommands] toLocalRelative delegation failed', e);
+    return null;
+  }
 }
 
 export function toDevicePath(localRel: string, rootPath: string): string {
-  const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/$/, "");
-  if (normRoot === "/") return "/" + localRel;
-  return normRoot + "/" + localRel;
+  try {
+    return (mp as any).toDevicePath(localRel, rootPath);
+  } catch (e) {
+    console.warn('[mpremoteCommands] toDevicePath delegation failed', e);
+    // Fallback: conservative mapping
+    const normRoot = rootPath === "/" ? "/" : rootPath.replace(/\/$/, "");
+    if (normRoot === "/") return "/" + (localRel || "");
+    return normRoot + "/" + (localRel || "");
+  }
 }
 
 export async function robustInterrupt(port?: string): Promise<void> {
