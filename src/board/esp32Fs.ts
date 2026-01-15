@@ -288,7 +288,21 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
     return vscode.Uri.joinPath(this.extUri(), "media", file);
   }
   private extUri() {
-    // Use the actual publisher.name from package.json
-    return vscode.extensions.getExtension("WebForks.MicroPython-WorkBench")!.extensionUri;
+    // Use the actual publisher.name from package.json when available.
+    // If the extension record cannot be found (development host or id mismatch),
+    // fall back to a safe URI so the tree does not crash when accessing icons.
+    try {
+      const ext = vscode.extensions.getExtension("WebForks.MicroPython-WorkBench");
+      if (ext && ext.extensionUri) return ext.extensionUri;
+    } catch (e) {
+      // ignore
+    }
+    // Fallback: use extension's current file location (dist folder) if available,
+    // otherwise use workspace root URI or an empty URI to avoid throwing.
+    try {
+      const ws = vscode.workspace.workspaceFolders?.[0];
+      if (ws) return ws.uri;
+    } catch {}
+    return vscode.Uri.parse('');
   }
 }

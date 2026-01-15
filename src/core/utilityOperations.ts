@@ -10,14 +10,24 @@ const MPY_WORKBENCH_DIR = '.mpy-workbench';
 const MPY_MANIFEST_FILE = 'esp32sync.json';
 
 export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvider) {
-  // Refresh file tree
-  tree.requireManualRefresh();
+  // Refresh file tree: allow immediate listing (clear manual block), clear caches,
+  // force mpremote to refresh, then notify the view to re-request children.
+  console.log('[DEBUG] utilityOperations.refresh: Allowing listing and clearing caches');
+  try {
+    tree.allowListing();
+  } catch {}
+  try {
+    tree.enableRawListForNext();
+  } catch {}
   tree.clearCache();
   try {
-    // Clear mpremote cache if available
     const mp = await import("../board/mpremote");
-    mp.clearFileTreeCache();
-  } catch {}
+    // Force remote cache refresh which will repopulate the tree on next listing
+    await mp.refreshFileTreeCache();
+  } catch (err) {
+    console.warn('[DEBUG] utilityOperations.refresh: mp.refreshFileTreeCache failed', err);
+  }
+  console.log('[DEBUG] utilityOperations.refresh: Triggering tree.refreshTree()');
   tree.refreshTree();
 }
 
