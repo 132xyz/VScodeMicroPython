@@ -48,6 +48,7 @@ import { Localization } from "./localization";
 import { codeCompletionManager } from "../completion/codeCompletion";
 
 export function activate(context: vscode.ExtensionContext) {
+  console.log('[Extension] Activating MicroPython WorkBench extension...');
   // Create status bar item for mpremote status
   const mpremoteStatusBarItem = mpremoteCommands.createStatusBarItem();
   context.subscriptions.push(mpremoteStatusBarItem);
@@ -60,8 +61,11 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // Initialize code completion manager
-  codeCompletionManager.initialize(context).catch(error => {
-    console.error('Failed to initialize code completion manager:', error);
+  console.log('[Extension] Initializing code completion manager...');
+  codeCompletionManager.initialize(context).then(() => {
+    console.log('[Extension] Code completion manager initialized successfully');
+  }).catch(error => {
+    console.error('[Extension] Failed to initialize code completion manager:', error);
   });
 
   // Helper to get workspace folder or throw error
@@ -375,11 +379,19 @@ export function activate(context: vscode.ExtensionContext) {
   refreshFilesViewTitle().catch(() => {});
 
   const tree = new Esp32Tree();
+  console.log('[Extension] Creating file system view...');
   const view = vscode.window.createTreeView("microPythonWorkBenchFsView", { treeDataProvider: tree });
+  console.log('[Extension] File system view created:', view ? 'success' : 'failed');
+
   const actionsTree = new ActionsTree();
+  console.log('[Extension] Creating actions view...');
   const actionsView = vscode.window.createTreeView("microPythonWorkBenchActionsView", { treeDataProvider: actionsTree });
+  console.log('[Extension] Actions view created:', actionsView ? 'success' : 'failed');
+
   const syncTree = new SyncTree();
+  console.log('[Extension] Creating sync view...');
   const syncView = vscode.window.createTreeView("microPythonWorkBenchSyncView", { treeDataProvider: syncTree });
+  console.log('[Extension] Sync view created:', syncView ? 'success' : 'failed');
   const decorations = new Esp32DecorationProvider();
   context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorations));
   // Export decorations for use in other modules

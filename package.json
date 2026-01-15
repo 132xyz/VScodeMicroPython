@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.26",
+  "version": "0.1.41",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -23,12 +23,13 @@
     "Debuggers"
   ],
   "activationEvents": [
-    "onLanguage:python"
+    "onLanguage:python",
+    "onStartupFinished"
   ],
   "recommends": [
     "ms-python.vscode-pylance"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/core/extension.js",
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
@@ -502,21 +503,8 @@
           "description": "%configuration.pythonPath.description%"
         },
         "microPythonWorkBench.enableCodeCompletion": {
-          "type": [
-            "string",
-            "boolean"
-          ],
-          "enum": [
-            "auto",
-            true,
-            false
-          ],
-          "default": "auto",
-          "enumDescriptions": [
-            "%configuration.enableCodeCompletion.enumDescriptions.auto%",
-            "%configuration.enableCodeCompletion.enumDescriptions.enabled%",
-            "%configuration.enableCodeCompletion.enumDescriptions.disabled%"
-          ],
+          "type": "boolean",
+          "default": false,
           "description": "%configuration.enableCodeCompletion.description%"
         }
       }

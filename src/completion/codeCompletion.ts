@@ -12,8 +12,10 @@ export class CodeCompletionManager {
   private statusBarItem: vscode.StatusBarItem;
 
   private constructor() {
+    console.log('[CodeCompletion] Creating status bar item...');
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.statusBarItem.command = 'microPythonWorkBench.toggleCodeCompletion';
+    console.log('[CodeCompletion] Status bar item created:', this.statusBarItem ? 'success' : 'failed');
     // 初始状态不显示，等待初始化
   }
 
@@ -28,6 +30,8 @@ export class CodeCompletionManager {
    * 初始化代码补全管理器
    */
   public async initialize(context: vscode.ExtensionContext): Promise<void> {
+    console.log('[CodeCompletion] Initializing code completion manager...');
+
     // 注册命令
     context.subscriptions.push(
       vscode.commands.registerCommand('microPythonWorkBench.toggleCodeCompletion', () => {
@@ -47,17 +51,11 @@ export class CodeCompletionManager {
       })
     );
 
-    // 监听工作区变化
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        this.handleConfigurationChange();
-      })
-    );
-
     // 监听活动编辑器变化
     context.subscriptions.push(
       vscode.window.onDidChangeActiveTextEditor(() => {
-        this.handleConfigurationChange();
+        console.log('[CodeCompletion] Active text editor changed:', vscode.window.activeTextEditor?.document.fileName);
+        this.updateStatusBar();
       })
     );
 
@@ -69,18 +67,12 @@ export class CodeCompletionManager {
    * 处理配置变化
    */
   private async handleConfigurationChange(): Promise<void> {
+    console.log('[CodeCompletion] Handling configuration change...');
+
     const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-    const enableCodeCompletion = config.get<string | boolean>('enableCodeCompletion', 'auto');
+    const enableCodeCompletion = config.get<boolean>('enableCodeCompletion', false);
 
-    let shouldEnable = false;
-
-    if (enableCodeCompletion === true) {
-      shouldEnable = true;
-    } else if (enableCodeCompletion === false) {
-      shouldEnable = false;
-    } else if (enableCodeCompletion === 'auto') {
-      shouldEnable = await this.shouldAutoEnable();
-    }
+    const shouldEnable = enableCodeCompletion;
 
     if (shouldEnable && !this.isEnabled) {
       await this.enableCodeCompletion();
@@ -89,59 +81,6 @@ export class CodeCompletionManager {
     }
 
     this.updateStatusBar();
-  }
-
-  /**
-   * 判断是否应该自动启用代码补全
-   */
-  private async shouldAutoEnable(): Promise<boolean> {
-    const activeEditor = vscode.window.activeTextEditor;
-    if (!activeEditor || activeEditor.document.languageId !== 'python') {
-      return false;
-    }
-
-    const filePath = activeEditor.document.uri.fsPath;
-    const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-    const syncLocalRoot = config.get<string>('syncLocalRoot', '');
-    const connect = config.get<string>('connect', 'auto');
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
-
-    if (!workspaceFolder) {
-      return false;
-    }
-
-    // 调试日志
-    console.log(`[CodeCompletion] Checking auto-enable for: ${filePath}`);
-    console.log(`[CodeCompletion] syncLocalRoot: ${syncLocalRoot}, connect: ${connect}`);
-
-    // 如果配置了同步目录
-    if (syncLocalRoot) {
-      const syncPath = path.isAbsolute(syncLocalRoot)
-        ? syncLocalRoot
-        : path.join(workspaceFolder.uri.fsPath, syncLocalRoot);
-
-      const relativeToSync = path.relative(syncPath, filePath);
-      // 如果文件在同步目录内（且不是外部文件）
-      if (!relativeToSync.startsWith('..') && !path.isAbsolute(relativeToSync)) {
-        console.log(`[CodeCompletion] File is inside syncLocalRoot: ${syncPath}`);
-        return true;
-      }
-      console.log(`[CodeCompletion] File is OUTSIDE syncLocalRoot: ${syncPath}`);
-      return false;
-    }
-
-    // 如果配置了连接但没有配置同步目录，全工作区启用
-    if (connect && connect !== 'auto') {
-      return true;
-    }
-
-    // 如果都没有配置，仅限工作区根目录下的文件
-    const relativeToRoot = path.relative(workspaceFolder.uri.fsPath, filePath);
-    if (!relativeToRoot.startsWith('..') && !relativeToRoot.includes(path.sep)) {
-      return true;
-    }
-
-    return false;
   }
 
   /**
@@ -198,17 +137,9 @@ export class CodeCompletionManager {
    */
   private async toggleCodeCompletion(): Promise<void> {
     const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-    const currentValue = config.get<string | boolean>('enableCodeCompletion', 'auto');
+    const currentValue = config.get<boolean>('enableCodeCompletion', false);
 
-    let newValue: string | boolean;
-
-    if (currentValue === 'auto') {
-      newValue = true; // 从自动切换到始终启用
-    } else if (currentValue === true) {
-      newValue = false; // 从启用切换到禁用
-    } else {
-      newValue = 'auto'; // 从禁用切换到自动
-    }
+    const newValue = !currentValue;
 
     await config.update('enableCodeCompletion', newValue, vscode.ConfigurationTarget.Workspace);
   }
@@ -333,14 +264,17 @@ export class CodeCompletionManager {
    * 更新状态栏
    */
   private updateStatusBar(): void {
+    console.log('[CodeCompletion] Updating status bar...');
+
     const activeEditor = vscode.window.activeTextEditor;
     const isPythonFile = activeEditor && activeEditor.document.languageId === 'python';
+    console.log('[CodeCompletion] Active editor:', activeEditor ? activeEditor.document.fileName : 'none');
+    console.log('[CodeCompletion] Is Python file:', isPythonFile);
+    console.log('[CodeCompletion] Code completion enabled:', this.isEnabled);
 
-    const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-    const enableCodeCompletion = config.get<string | boolean>('enableCodeCompletion', 'auto');
-
-    // 只有在打开 Python 文件且未完全禁用时才显示状态栏
-    if (!isPythonFile || enableCodeCompletion === false) {
+    // 只有在打开 Python 文件时才显示状态栏
+    if (!isPythonFile) {
+      console.log('[CodeCompletion] Hiding status bar: not a Python file');
       this.statusBarItem.hide();
       return;
     }
@@ -362,15 +296,17 @@ export class CodeCompletionManager {
     this.statusBarItem.text = text;
     this.statusBarItem.tooltip = tooltip;
     this.statusBarItem.color = color;
+    console.log('[CodeCompletion] Setting status bar - text:', text, 'enabled:', this.isEnabled);
     this.statusBarItem.show();
+    console.log('[CodeCompletion] Status bar item shown successfully');
   }
 
   /**
    * 获取当前状态
    */
-  public getStatus(): { isEnabled: boolean; mode: string | boolean } {
+  public getStatus(): { isEnabled: boolean; mode: boolean } {
     const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-    const enableCodeCompletion = config.get<string | boolean>('enableCodeCompletion', 'auto');
+    const enableCodeCompletion = config.get<boolean>('enableCodeCompletion', false);
 
     return {
       isEnabled: this.isEnabled,

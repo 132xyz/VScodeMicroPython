@@ -625,23 +625,15 @@ For more information, visit: https://pypi.org/project/mpremote/`;
    * Update status bar item based on mpremote availability
    */
   async updateStatusBarItem(statusBarItem: vscode.StatusBarItem): Promise<void> {
-    const { version, compatible } = await this.checkMpremoteVersion();
+    const { version } = await this.checkMpremoteVersion();
 
     if (!version) {
       statusBarItem.text = '$(warning) mpremote: Not Installed';
       statusBarItem.tooltip = 'Click to install mpremote';
       statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       statusBarItem.show();
-    } else if (!compatible) {
-      statusBarItem.text = `$(warning) mpremote: ${version} (Outdated)`;
-      statusBarItem.tooltip = 'mpremote version may be outdated. Click to update.';
-      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-      statusBarItem.show();
     } else {
-      statusBarItem.text = `$(check) mpremote: ${version}`;
-      statusBarItem.tooltip = 'mpremote is ready';
-      statusBarItem.backgroundColor = undefined;
-      statusBarItem.show();
+      statusBarItem.hide();
     }
   }
 };
