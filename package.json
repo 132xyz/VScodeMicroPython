@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "Mpy",
   "description": "Browse and manage MicroPython files on ESP32 and similar boards via mpremote.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
