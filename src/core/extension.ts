@@ -5,7 +5,7 @@ import { ActionsTree } from "./actions";
 import { SyncTree } from "../sync/syncView";
 import { Esp32Node } from "./types";
 import * as mp from "../board/mpremote";
-import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus, runMpremote } from "../board/mpremote";
+import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../board/mpremote";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
@@ -47,24 +47,20 @@ import { mpremoteCommands } from "../commands/mpremoteCommands";
 import { Localization } from "./localization";
 import { codeCompletionManager } from "../completion/codeCompletion";
 
-export function activate(context: vscode.ExtensionContext) {
-  console.log('[Extension] Activating MicroPython WorkBench extension...');
-  // Create status bar item for mpremote status
-  const mpremoteStatusBarItem = mpremoteCommands.createStatusBarItem();
-  context.subscriptions.push(mpremoteStatusBarItem);
+export async function activate(context: vscode.ExtensionContext) {
+  // Extension activated
+  // Silence noisy `console.log` messages unless explicit debug is enabled.
+  const _origConsoleLog = console.log;
+  console.log = (...args: any[]) => {
+    try {
+      const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.debug", false);
+      if (enabled) _origConsoleLog(...args);
+    } catch {}
+  };
+  // mpremote 已内置：不再显示或检查外部安装状态栏。
 
-  // Check mpremote availability and update status bar
-  mpremoteCommands.checkAndInstallMpremote().then(available => {
-    mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
-  }).catch(() => {
-    mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem);
-  });
-
-  // Initialize code completion manager
-  console.log('[Extension] Initializing code completion manager...');
-  codeCompletionManager.initialize(context).then(() => {
-    console.log('[Extension] Code completion manager initialized successfully');
-  }).catch(error => {
+  // Initialize code completion manager (errors are logged)
+  codeCompletionManager.initialize(context).catch(error => {
     console.error('[Extension] Failed to initialize code completion manager:', error);
   });
 
@@ -376,6 +372,30 @@ export function activate(context: vscode.ExtensionContext) {
   // Ensure no port is selected at startup
   vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", "auto", vscode.ConfigurationTarget.Global);
   updatePortContext();
+  // If workspace contains a top-level `mpy` folder and the user has not
+  // overridden `microPythonWorkBench.rootPath` (still default '/'), then
+  // automatically set the device root to '/mpy' to avoid operating on the
+  // workspace root directly.
+  try {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (ws) {
+      const inspected = vscode.workspace.getConfiguration(undefined, ws.uri).inspect<string>('microPythonWorkBench.rootPath');
+      const current = typeof inspected?.workspaceFolderValue === 'string' ? inspected.workspaceFolderValue : (typeof inspected?.workspaceValue === 'string' ? inspected.workspaceValue : (typeof inspected?.globalValue === 'string' ? inspected.globalValue : undefined));
+      if (!current || current === "/") {
+        const candidate = path.join(ws.uri.fsPath, 'mpy');
+        try {
+          if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).isDirectory()) {
+            await vscode.workspace.getConfiguration('microPythonWorkBench', ws.uri).update('rootPath', '/mpy', vscode.ConfigurationTarget.WorkspaceFolder);
+            console.log('[Extension] auto-set microPythonWorkBench.rootPath to /mpy because workspace contains mpy/ folder');
+          }
+        } catch (e) {
+          // ignore file system errors
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Extension] Failed to auto-set rootPath:', e);
+  }
   refreshFilesViewTitle().catch(() => {});
 
   // Helper: verify the view id is contributed in package.json before creating it
@@ -395,27 +415,20 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const tree = new Esp32Tree();
-  console.log('[Extension] Creating file system view...');
   let view: vscode.TreeView<any> | undefined = undefined;
   if (isViewContributed("microPythonWorkBenchFsView")) {
     view = vscode.window.createTreeView("microPythonWorkBenchFsView", { treeDataProvider: tree });
-    console.log('[Extension] File system view created:', view ? 'success' : 'failed');
   } else {
     console.error('[Extension] View not contributed: microPythonWorkBenchFsView');
   }
-
   const actionsTree = new ActionsTree();
-  console.log('[Extension] Creating actions view...');
   let actionsView: vscode.TreeView<any> | undefined = undefined;
   if (isViewContributed("microPythonWorkBenchActionsView")) {
     actionsView = vscode.window.createTreeView("microPythonWorkBenchActionsView", { treeDataProvider: actionsTree });
-    console.log('[Extension] Actions view created:', actionsView ? 'success' : 'failed');
   } else {
     console.error('[Extension] View not contributed: microPythonWorkBenchActionsView');
   }
-
   const syncTree = new SyncTree();
-  console.log('[Extension] Creating sync view...');
   let syncView: vscode.TreeView<any> | undefined = undefined;
   try {
     // Try to create the view regardless of package.json state. If the view is
@@ -423,7 +436,7 @@ export function activate(context: vscode.ExtensionContext) {
     // UI available as a fallback (helps if package.json was modified or
     // corrupted in development).
     syncView = vscode.window.createTreeView("microPythonWorkBenchSyncView", { treeDataProvider: syncTree });
-    console.log('[Extension] Sync view created:', syncView ? 'success' : 'failed');
+    // sync view created
     if (!isViewContributed("microPythonWorkBenchSyncView")) {
       console.warn('[Extension] Warning: microPythonWorkBenchSyncView not declared in package.json — created fallback view at runtime');
     }
@@ -584,9 +597,11 @@ export function activate(context: vscode.ExtensionContext) {
         return await fn();
       } finally {
         try {
-          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot start", { resumeReplCommand: opts.resumeReplCommand, replBehavior: opts.replBehavior });
-          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, replBehavior: opts.replBehavior });
-          console.log("[MPY auto-suspend] restoreSerialSessionsFromSnapshot done");
+          // restoreSerialSessionsFromSnapshot start
+          // Default to not reopening REPL unless explicitly requested via replBehavior.
+          const behavior = (opts.replBehavior ?? "none") as any;
+          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, replBehavior: behavior });
+          // restoreSerialSessionsFromSnapshot done
         } catch (err) {
           console.error("[DEBUG] restoreSerialSessionsFromSnapshot failed:", err);
         }
@@ -625,6 +640,16 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Try to show board name on startup if a fixed port is already selected
   refreshFilesViewTitle().catch(() => {});
+  // Internal command used by mpremote module to signal cache population
+  context.subscriptions.push(vscode.commands.registerCommand('microPythonWorkBench._cachePopulated', () => {
+    try {
+      // Allow listing and refresh the tree view
+      tree.allowListing();
+      tree.refreshTree();
+    } catch (e) {
+      console.warn('[Extension] _cachePopulated handler failed', e);
+    }
+  }));
   if (view) context.subscriptions.push(view);
   if (actionsView) context.subscriptions.push(actionsView);
   if (syncView) context.subscriptions.push(syncView);
@@ -633,13 +658,11 @@ export function activate(context: vscode.ExtensionContext) {
       utilityCommands.refresh(tree, decorations);
     }),
     vscode.commands.registerCommand("microPythonWorkBench.refreshFileTreeCache", async () => {
-      try {
-        console.log("[DEBUG] Starting manual file tree cache refresh...");
+        try {
         await mp.refreshFileTreeCache();
-        console.log("[DEBUG] File tree cache refresh completed");
         Localization.showInfo("messages.fileTreeCacheRefreshed");
       } catch (error: any) {
-        console.error("[DEBUG] File tree cache refresh failed:", error);
+        console.error("File tree cache refresh failed:", error);
         Localization.showError("messages.fileTreeCacheRefreshFailed", error?.message || error);
       }
     }),
@@ -649,9 +672,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.debugTreeParsing", debugCommands.debugTreeParsing),
     vscode.commands.registerCommand("microPythonWorkBench.debugFilesystemStatus", debugCommands.debugFilesystemStatus),
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", debugCommands.cancelAllTasks),
-    vscode.commands.registerCommand("microPythonWorkBench.installMpremote", mpremoteCommands.showMpremoteInstallationGuide),
-    vscode.commands.registerCommand("microPythonWorkBench.installMpremoteAutomatically", () => mpremoteCommands.installMpremoteAutomatically()),
-    vscode.commands.registerCommand("microPythonWorkBench.checkMpremoteStatus", () => mpremoteCommands.updateStatusBarItem(mpremoteStatusBarItem)),
+    // 已移除外部 mpremote 安装与状态检查命令
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", boardCommands.pickPort),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),
     vscode.commands.registerCommand("microPythonWorkBench.stop", replCommands.stop),
@@ -673,7 +694,7 @@ export function activate(context: vscode.ExtensionContext) {
       term.show(true);
     }),
     vscode.commands.registerCommand("microPythonWorkBench.stopSerial", async () => {
-      await closeReplTerminal();
+      await closeReplTerminal(true);
       Localization.showInfo("messages.replClosed");
     }),
 
@@ -771,11 +792,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (validModule) {
           resumeCmd = `import ${moduleName}`;
         } else {
-          console.log("[MPY auto-suspend] Skipping resume import; invalid module name derived from", deviceDest, "=>", moduleName);
+          // Skipping resume import; invalid module name derived
         }
       }
       try {
-        console.log("[MPY auto-suspend] auto-sync resume prepared:", { resumeCmd, behavior });
+        // auto-sync resume prepared
         await withAutoSuspend(
           () => mp.cpToDevice(doc.uri.fsPath, deviceDest),
           { resumeReplCommand: resumeCmd, replBehavior: behavior }

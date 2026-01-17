@@ -4,71 +4,71 @@ const fs = require('fs').promises;
 
 // Simular las funciones necesarias
 function toDevicePath(localRel: string, rootPath: string): string {
-  console.log(`[DEBUG] checkDiffs: Converting local path ${localRel} to device path with rootPath ${rootPath}`);
+  // 转换本地相对路径为设备路径（调试输出已移除）
 
   // Normalize paths
   const normalizedLocalPath = localRel.replace(/\/+/g, '/').replace(/\/$/, '');
   const normalizedRootPath = rootPath.replace(/\/+/g, '/').replace(/\/$/, '');
 
-  console.log(`[DEBUG] checkDiffs: Normalized paths - local: ${normalizedLocalPath}, root: ${normalizedRootPath}`);
+  // normalized paths
 
   // If root is just "/", add leading slash to local path
   if (normalizedRootPath === "") {
     const result = "/" + normalizedLocalPath;
-    console.log(`[DEBUG] checkDiffs: Root is /, result: ${result}`);
+    // 根目录为 /
     return result;
   }
 
   // If local path is empty, return root path
   if (normalizedLocalPath === "") {
-    console.log(`[DEBUG] checkDiffs: Local path is empty, result: ${normalizedRootPath}`);
+    // 本地路径为空
     return normalizedRootPath;
   }
 
   // Combine root and local path
   const result = normalizedRootPath + "/" + normalizedLocalPath;
-  console.log(`[DEBUG] checkDiffs: Combined paths, result: ${result}`);
+  // 返回组合路径结果
   return result;
 }
 
 function relFromDevice(devicePath: string, rootPath: string): string {
-  console.log(`[DEBUG] checkDiffs: Converting device path ${devicePath} with rootPath ${rootPath}`);
+  // 将设备路径转为本地相对路径（调试输出已移除）
 
   // Normalize paths to ensure consistent comparison
   const normalizedDevicePath = devicePath.replace(/\/+/g, '/').replace(/\/$/, '');
   const normalizedRootPath = rootPath.replace(/\/+/g, '/').replace(/\/$/, '');
 
-  console.log(`[DEBUG] checkDiffs: Normalized paths - device: ${normalizedDevicePath}, root: ${normalizedRootPath}`);
+  // normalized paths
 
   // If root is just "/", remove leading slash from device path
   if (normalizedRootPath === "") {
     const result = normalizedDevicePath.replace(/^\//, "");
-    console.log(`[DEBUG] checkDiffs: Root is /, result: ${result}`);
+    // 根路径为 /
     return result;
   }
 
   // If device path starts with root path, remove the root prefix
   if (normalizedDevicePath.startsWith(normalizedRootPath + "/")) {
     const result = normalizedDevicePath.slice(normalizedRootPath.length + 1);
-    console.log(`[DEBUG] checkDiffs: Path starts with root, result: ${result}`);
+    // path starts with root
     return result;
   }
 
   // If device path equals root path, return empty string
   if (normalizedDevicePath === normalizedRootPath) {
-    console.log(`[DEBUG] checkDiffs: Path equals root, result: ""`);
+    // path equals root
     return "";
   }
 
   // Fallback: remove leading slash if present
   const result = normalizedDevicePath.replace(/^\//, "");
-  console.log(`[DEBUG] checkDiffs: Fallback, result: ${result}`);
+  // fallback result
   return result;
 }
 
 // Función principal de prueba
 async function testCheckDiffs() {
-  console.log("[DEBUG] checkDiffs: Starting diff check with tree cache");
+  // starting diff check
 
   const rootPath = "/";
 
@@ -79,19 +79,13 @@ async function testCheckDiffs() {
     boardPath: "/test-folder/test_inside_folder.py"
   };
 
-  console.log("=== TEST DATA ===");
-  console.log("Local Path:", testData.localPath);
-  console.log("Local Relative:", testData.localRelative);
-  console.log("Board Path:", testData.boardPath);
-  console.log("Root Path:", rootPath);
-  console.log("=================");
+  // 输出测试数据（已省略）
 
   // Simular la lógica de comparación
   const localRel = testData.localRelative;
   const abs = testData.localPath;
 
-  console.log(`[DEBUG] checkDiffs: Comparing local file: ${localRel}`);
-  console.log(`[DEBUG] checkDiffs: Looking for device file with key: ${localRel}`);
+  // 比较本地文件与设备文件
 
   // Simular que encontramos el archivo en el dispositivo
   const deviceFile = {
@@ -100,60 +94,39 @@ async function testCheckDiffs() {
     isDir: false
   };
 
-  console.log(`[DEBUG] checkDiffs: Device file found: ${!!deviceFile}`);
+  // 设备文件是否找到
 
   if (deviceFile) {
-    console.log(`[DEBUG] checkDiffs: ✓ MATCH FOUND - Local: ${localRel} -> Device: ${deviceFile.path}`);
+    // 匹配到设备文件
 
     try {
       // Simular obtener el tamaño del archivo local
       const st = { size: 1024 }; // Simular stat del archivo local
-      console.log(`[DEBUG] checkDiffs: COMPARING - Local path: ${abs}, Board path: ${deviceFile.path}`);
-      console.log(`[DEBUG] checkDiffs: Size comparison for ${localRel}: local=${st.size}, device=${deviceFile.size}, same=${st.size === deviceFile.size}`);
+      // 比较大小
 
       if (st.size !== deviceFile.size) {
-        console.log(`[DEBUG] checkDiffs: RESULT - DIFFERENT: Size mismatch for ${localRel}: local=${st.size}, device=${deviceFile.size}`);
-        console.log(`[DIFF-LOG] Local path: ${abs}`);
-        console.log(`[DIFF-LOG] Board path searched: ${deviceFile.path}`);
-        console.log(`[DIFF-LOG] Device file found: true`);
-        console.log(`[DIFF-LOG] Result: MATCH FOUND - Local: ${localRel} -> Device: ${deviceFile.path}`);
-        console.log(`[DIFF-LOG] Size comparison: local=${st.size} bytes, device=${deviceFile.size} bytes, same=false`);
-        console.log(`[DIFF-LOG] Result: SIZE MISMATCH - File marked for sync`);
+        // 标记为不同（尺寸不一致）
       } else {
-        console.log(`[DEBUG] checkDiffs: RESULT - SAME: File ${localRel} has same size on both local and board`);
-        console.log(`[DIFF-LOG] Local path: ${abs}`);
-        console.log(`[DIFF-LOG] Board path searched: ${deviceFile.path}`);
-        console.log(`[DIFF-LOG] Device file found: true`);
-        console.log(`[DIFF-LOG] Result: MATCH FOUND - Local: ${localRel} -> Device: ${deviceFile.path}`);
-        console.log(`[DIFF-LOG] Size comparison: local=${st.size} bytes, device=${deviceFile.size} bytes, same=true`);
-        console.log(`[DIFF-LOG] Result: FILES IDENTICAL - No action needed`);
+        // 文件一致
       }
     } catch (error) {
-      console.log(`[DEBUG] checkDiffs: ERROR - Local file not accessible: ${abs}, error: ${error}`);
-      console.log(`[DIFF-LOG] Local path: ${abs}`);
-      console.log(`[DIFF-LOG] Board path searched: ${deviceFile.path}`);
-      console.log(`[DIFF-LOG] Device file found: true`);
-      console.log(`[DIFF-LOG] Result: LOCAL FILE NOT ACCESSIBLE - Error: ${error}`);
+      console.error(`checkDiffs: Local file not accessible: ${abs}, error: ${error}`);
     }
   } else {
-    console.log(`[DEBUG] checkDiffs: ✗ NO MATCH - Local: ${localRel} not found on device`);
-    console.log(`[DIFF-LOG] Local path: ${abs}`);
-    console.log(`[DIFF-LOG] Board path searched: ${testData.boardPath}`);
-    console.log(`[DIFF-LOG] Device file found: false`);
-    console.log(`[DIFF-LOG] Result: FILE MISSING ON BOARD - Will be marked as local-only`);
+    // 未在设备上找到文件，标记为本地唯一
   }
 
-  console.log(`[DIFF-LOG] ---`);
+  // diff log end
 
   // Probar las funciones de conversión de paths
-  console.log("\n=== PATH CONVERSION TESTS ===");
+  // PATH CONVERSION TESTS
   const devicePathFromLocal = toDevicePath(testData.localRelative, rootPath);
-  console.log(`toDevicePath("${testData.localRelative}", "${rootPath}") = "${devicePathFromLocal}"`);
+  // toDevicePath result omitted
 
   const localRelativeFromDevice = relFromDevice(testData.boardPath, rootPath);
-  console.log(`relFromDevice("${testData.boardPath}", "${rootPath}") = "${localRelativeFromDevice}"`);
+  // relFromDevice result omitted
 
-  console.log("\n=== TEST COMPLETED ===");
+  // test completed
 }
 
 // Ejecutar la prueba

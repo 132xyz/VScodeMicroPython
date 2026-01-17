@@ -1,5 +1,6 @@
 # Fuentes y configs que no necesita el usuario
 src/**
+!src/python/**
 tsconfig.json
 .vscode/**
 .git/**
@@ -11,6 +12,8 @@ node_modules/**
 # Mantén solo lo necesario
 !dist/**
 !media/**
+!assets/**
+!code_completion/**
 !scripts/**
 !readme.md
 !changelog.md

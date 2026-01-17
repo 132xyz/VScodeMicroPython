@@ -1,4 +1,4 @@
-import { runMpremote } from "./mpremote";
+import { MpRemoteManager } from "./MpRemoteManager";
 
 // Placeholder exports to make this a valid module
 export async function ls(p: string): Promise<string> {

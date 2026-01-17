@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { MpRemoteManager } from '../board/MpRemoteManager';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,13 +38,10 @@ export class PythonInterpreterManager {
                 if (validation.valid) {
                     this.cacheResult(pythonPath);
                     return pythonPath;
-                } else if (validation.missingMpremote) {
-                    // Show mpremote installation notification
-                    this.showMpremoteInstallationNotification(pythonPath);
                 }
             }
         } catch (error) {
-            console.log('Failed to get Python from extension API:', error);
+            console.error('Failed to get Python from extension API:', error);
         }
 
         try {
@@ -54,13 +52,10 @@ export class PythonInterpreterManager {
                 if (validation.valid) {
                     this.cacheResult(pythonPath);
                     return pythonPath;
-                } else if (validation.missingMpremote) {
-                    // Show mpremote installation notification
-                    this.showMpremoteInstallationNotification(pythonPath);
                 }
             }
         } catch (error) {
-            console.log('Failed to get Python from configuration:', error);
+            console.error('Failed to get Python from configuration:', error);
         }
 
         // Method 3: Try fallback options
@@ -71,10 +66,6 @@ export class PythonInterpreterManager {
                 if (validation.valid) {
                     this.cacheResult(fallback);
                     return fallback;
-                } else if (validation.missingMpremote) {
-                    // Show mpremote installation notification for the first valid Python we find
-                    this.showMpremoteInstallationNotification(fallback);
-                    // Continue looking for a working Python with mpremote
                 }
             } catch (error) {
                 // Continue to next fallback
@@ -127,7 +118,7 @@ export class PythonInterpreterManager {
 
             return null;
         } catch (error) {
-            console.log('Error accessing Python extension API:', error);
+            console.error('Error accessing Python extension API:', error);
             return null;
         }
     }
@@ -199,25 +190,10 @@ export class PythonInterpreterManager {
         try {
             // Test if Python executable exists and can run
             const { stdout } = await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.version)'], { timeout: 5000 });
-
-            // Check if mpremote is available for this Python environment.
-            // Prefer running as a module via the selected python to avoid relying on PATH.
-            try {
-                await execFileAsync(pythonPath, ['-m', 'mpremote', '--version'], { timeout: 5000 });
-            } catch (err) {
-                // Fallback: try invoking mpremote from PATH (older setups)
-                await execFileAsync('mpremote', ['--version'], { timeout: 5000 });
-            }
-
+            // Internal mpremote is bundled; no external check required
             return { valid: true, missingMpremote: false };
         } catch (error: any) {
             const errorMessage = error.message || String(error);
-
-            // Check if it's specifically an mpremote availability error
-            if (errorMessage.includes('mpremote') && (errorMessage.includes('not found') || errorMessage.includes('command not found'))) {
-                return { valid: false, missingMpremote: true, error: errorMessage };
-            }
-
             // Other Python-related errors
             return { valid: false, missingMpremote: false, error: errorMessage };
         }
@@ -226,109 +202,8 @@ export class PythonInterpreterManager {
     /**
      * Show notification for missing mpremote
      */
-    private static showMpremoteInstallationNotification(pythonPath: string): void {
-        // Check cooldown to avoid spamming notifications
-        const now = Date.now();
-        if (now - this.lastMpremoteNotification < this.NOTIFICATION_COOLDOWN) {
-            return; // Too soon since last notification
-        }
-        this.lastMpremoteNotification = now;
-
-        const isWindows = process.platform === 'win32';
-        const isMac = process.platform === 'darwin';
-
-        let installCommand: string;
-        let packageManager: string;
-
-        if (isWindows) {
-            installCommand = `${pythonPath} -m pip install mpremote`;
-            packageManager = 'pip';
-        } else if (isMac) {
-            installCommand = `${pythonPath} -m pip install mpremote`;
-            packageManager = 'pip (o usa Homebrew: brew install mpremote)';
-        } else {
-            // Linux
-            installCommand = `${pythonPath} -m pip install mpremote`;
-            packageManager = 'pip (o usa apt: sudo apt install python3-mpremote)';
-        }
-
-        const message = `MicroPython WorkBench requires the 'mpremote' package to communicate with your MicroPython board.`;
-
-        vscode.window.showWarningMessage(message, 'Install mpremote', 'More information').then(selection => {
-            if (selection === 'Install mpremote') {
-                // Try to install mpremote automatically
-                vscode.window.withProgress({
-                    location: vscode.ProgressLocation.Notification,
-                    title: 'Installing mpremote...',
-                    cancellable: false
-                }, async (progress) => {
-                    try {
-                        progress.report({ increment: 0, message: 'Installing mpremote...' });
-
-                        // Run the installation command
-                        const installProcess = require('child_process').exec(installCommand);
-
-                        return new Promise<void>((resolve, reject) => {
-                            let stdout = '';
-                            let stderr = '';
-                            if (installProcess.stdout) installProcess.stdout.on('data', (d: any) => { stdout += d.toString(); });
-                            if (installProcess.stderr) installProcess.stderr.on('data', (d: any) => { stderr += d.toString(); });
-
-                            installProcess.on('close', (code: number) => {
-                                if (code === 0) {
-                                    progress.report({ increment: 100, message: 'Installation completed' });
-                                    vscode.window.showInformationMessage(
-                                        'mpremote was installed successfully. Restart VS Code for the changes to take effect.'
-                                    );
-                                    // Clear cache so it will re-validate on next use
-                                    this.clearCache();
-                                    resolve();
-                                } else {
-                                    const combined = `Exit code: ${code}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
-                                    try {
-                                        const ch = vscode.window.createOutputChannel('mpremote install');
-                                        ch.appendLine('mpremote install failed');
-                                        ch.appendLine(combined);
-                                        ch.show(true);
-                                    } catch (e) {
-                                        console.error('[Extension] Failed to create output channel for mpremote install logs', e);
-                                    }
-                                    reject(new Error(`Installation failed with code ${code}. See 'mpremote install' output channel for details.`));
-                                }
-                            });
-
-                            installProcess.on('error', (error: any) => {
-                                const combinedErr = `Error: ${error && error.message ? error.message : String(error)}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
-                                try {
-                                    const ch = vscode.window.createOutputChannel('mpremote install');
-                                    ch.appendLine('mpremote install error');
-                                    ch.appendLine(combinedErr);
-                                    ch.show(true);
-                                } catch (e) {
-                                    console.error('[Extension] Failed to create output channel for mpremote install logs', e);
-                                }
-                                reject(new Error(`Installation process error: ${error && error.message ? error.message : String(error)}. See 'mpremote install' output channel for details.`));
-                            });
-                        });
-                    } catch (error: any) {
-                        vscode.window.showErrorMessage(
-                            `Error installing mpremote: ${error.message}. Install manually with: ${installCommand}`
-                        );
-                    }
-                });
-            } else if (selection === 'More information') {
-                // Open the README or show more detailed instructions
-                const moreInfoMessage = `To install mpremote:
-
-1. Open a terminal
-2. Run: ${installCommand}
-3. Restart VS Code
-
-Or visit: https://pypi.org/project/mpremote/`;
-
-                vscode.window.showInformationMessage(moreInfoMessage);
-            }
-        });
+    private static showMpremoteInstallationNotification(_pythonPath: string): void {
+        // No-op: mpremote is bundled internally; no external installation required.
     }
 
     /**
@@ -352,18 +227,12 @@ Or visit: https://pypi.org/project/mpremote/`;
      * This can be called on extension activation to proactively notify users
      */
     static async checkMpremoteAvailability(): Promise<boolean> {
+        // Always true as mpremote is bundled; only ensure Python is available.
         try {
             const pythonPath = await this.getPythonPath();
             const validation = await this.validatePythonPath(pythonPath);
-
-            if (!validation.valid && validation.missingMpremote) {
-                this.showMpremoteInstallationNotification(pythonPath);
-                return false;
-            }
-
             return validation.valid;
-        } catch (error) {
-            console.log('Error checking mpremote availability:', error);
+        } catch {
             return false;
         }
     }

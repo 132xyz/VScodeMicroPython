@@ -12,7 +12,6 @@ const MPY_MANIFEST_FILE = 'esp32sync.json';
 export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvider) {
   // Refresh file tree: allow immediate listing (clear manual block), clear caches,
   // force mpremote to refresh, then notify the view to re-request children.
-  console.log('[DEBUG] utilityOperations.refresh: Allowing listing and clearing caches');
   try {
     tree.allowListing();
   } catch {}
@@ -25,15 +24,15 @@ export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvi
     // Force remote cache refresh which will repopulate the tree on next listing
     await mp.refreshFileTreeCache();
   } catch (err) {
-    console.warn('[DEBUG] utilityOperations.refresh: mp.refreshFileTreeCache failed', err);
+    console.warn('utilityOperations.refresh: mp.refreshFileTreeCache failed', err);
   }
-  console.log('[DEBUG] utilityOperations.refresh: Triggering tree.refreshTree()');
+  // trigger tree refresh
   tree.refreshTree();
 }
 
 export async function rebuildManifest(tree: Esp32Tree) {
   try {
-    console.log("[DEBUG] Starting manifest rebuild...");
+  // starting manifest rebuild
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) {
       Localization.showError("messages.noWorkspaceFolder");
@@ -49,10 +48,10 @@ export async function rebuildManifest(tree: Esp32Tree) {
     const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
     await saveManifest(manifestPath, newManifest);
 
-    console.log("[DEBUG] Manifest rebuild completed");
+    // manifest rebuild completed
     Localization.showInfo("messages.manifestRebuilt", Object.keys(newManifest.files).length);
   } catch (error: any) {
-    console.error("[DEBUG] Manifest rebuild failed:", error);
+    console.error("Manifest rebuild failed:", error);
     Localization.showError("messages.manifestRebuildFailed", error?.message || error);
   }
 }
@@ -82,12 +81,9 @@ async function ensureWorkbenchIgnoreFile(wsPath: string) {
 
 export async function cancelAllTasks() {
   try {
-    console.log("[DEBUG] Starting to cancel all tasks...");
-    // Implementation to cancel tasks
-    // This might involve terminating running processes or clearing queues
-    console.log("[DEBUG] All tasks canceled successfully");
+    // cancel all tasks (implementation omitted)
   } catch (error: any) {
-    console.error("[DEBUG] Failed to cancel tasks:", error);
+    console.error("Failed to cancel tasks:", error);
     Localization.showError("messages.cancelTasksFailed", error?.message || error);
   }
 }

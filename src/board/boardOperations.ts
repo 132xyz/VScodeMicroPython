@@ -6,6 +6,7 @@ import { Esp32Node } from "../core/types";
 import * as mp from "./mpremote";
 import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "../sync/sync";
 import { Esp32DecorationProvider } from "../ui/decorations";
+import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { listDirPyRaw } from "../python/pyraw";
 import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "./mpremoteCommands";
 
@@ -168,16 +169,18 @@ export class BoardOperations {
         if (initialize !== "Initialize") return;
         // Create initial manifest to initialize sync
         await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
-        const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-        const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+        const localRootDir = getLocalSyncRoot();
+        const matcher = await createIgnoreMatcher(localRootDir);
+        const initialManifest = await buildManifest(localRootDir, matcher);
         const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
         await saveManifest(manifestPath, initialManifest);
         vscode.window.showInformationMessage("Local folder initialized for synchronization.");
       }
 
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
-      const matcher2 = await createIgnoreMatcher(ws.uri.fsPath);
-      const man = await buildManifest(ws.uri.fsPath, matcher2);
+      const localRootDir = getLocalSyncRoot();
+      const matcher2 = await createIgnoreMatcher(localRootDir);
+      const man = await buildManifest(localRootDir, matcher2);
 
       // Upload all files with progress using single mpremote fs cp command
       await vscode.window.withProgress({
@@ -222,13 +225,13 @@ export class BoardOperations {
             return depthA - depthB;
           });
 
-          console.log(`[DEBUG] syncBaseline: Need to create ${sortedDirectories.length} directories:`, sortedDirectories);
+          // Need to create directories (list suppressed)
 
           // Create directories in hierarchical order with retry logic
           let createdCount = 0;
           let failedDirectories: string[] = [];
 
-          console.log(`[DEBUG] syncBaseline: Starting directory creation for ${sortedDirectories.length} directories...`);
+          // 开始创建目录（调试输出已移除）
 
           for (const deviceDir of sortedDirectories) {
             let created = false;
@@ -238,14 +241,13 @@ export class BoardOperations {
             while (!created && attempts < maxAttempts) {
               attempts++;
               try {
-                console.log(`[DEBUG] syncBaseline: Creating directory ${deviceDir} (attempt ${attempts}/${maxAttempts})`);
                 await mp.mkdir(deviceDir);
                 this.tree.addNode(deviceDir, true); // Add folder to tree
                 created = true;
                 createdCount++;
-                console.log(`[DEBUG] syncBaseline: ✓ Created directory ${deviceDir} (${createdCount}/${sortedDirectories.length})`);
+                // 目录创建成功
               } catch (error: any) {
-                console.log(`[DEBUG] syncBaseline: ✗ Directory ${deviceDir} creation failed (attempt ${attempts}):`, error.message);
+                console.error(`syncBaseline: Directory ${deviceDir} creation failed (attempt ${attempts}):`, error.message);
 
                 if (attempts >= maxAttempts) {
                   failedDirectories.push(deviceDir);
@@ -258,14 +260,13 @@ export class BoardOperations {
             }
           }
 
-          console.log(`[DEBUG] syncBaseline: Directory creation completed. Created ${createdCount} out of ${sortedDirectories.length} directories.`);
+          // 目录创建完成
 
           if (failedDirectories.length > 0) {
-            console.error(`[DEBUG] syncBaseline: Failed to create ${failedDirectories.length} directories:`, failedDirectories);
+            console.error(`syncBaseline: Failed to create ${failedDirectories.length} directories:`, failedDirectories);
           }
 
           // Verify that ALL directories exist before proceeding with bulk upload
-          console.log(`[DEBUG] syncBaseline: Verifying ALL directories exist before bulk upload...`);
           let allDirectoriesExist = true;
           const verificationFailures: string[] = [];
 
@@ -273,37 +274,35 @@ export class BoardOperations {
             try {
               const exists = await mp.fileExists(deviceDir);
               if (!exists) {
-                console.error(`[DEBUG] syncBaseline: ✗ Directory ${deviceDir} does not exist!`);
+                console.error(`syncBaseline: Directory ${deviceDir} does not exist!`);
                 verificationFailures.push(deviceDir);
                 allDirectoriesExist = false;
               } else {
-                console.log(`[DEBUG] syncBaseline: ✓ Directory ${deviceDir} verified`);
+                // 目录已验证
               }
             } catch (error: any) {
-              console.error(`[DEBUG] syncBaseline: ✗ Error checking directory ${deviceDir}:`, error.message);
+              console.error(`syncBaseline: Error checking directory ${deviceDir}:`, error.message);
               verificationFailures.push(deviceDir);
               allDirectoriesExist = false;
             }
           }
 
           if (!allDirectoriesExist) {
-            console.error(`[DEBUG] syncBaseline: Cannot proceed with bulk upload - ${verificationFailures.length} directories missing:`, verificationFailures);
+            console.error(`syncBaseline: Cannot proceed with bulk upload - ${verificationFailures.length} directories missing:`, verificationFailures);
 
-            // Try to create the missing directories one more time
-            console.log(`[DEBUG] syncBaseline: Attempting to create missing directories...`);
+            // 尝试创建缺失目录
             for (const missingDir of verificationFailures) {
               try {
-                console.log(`[DEBUG] syncBaseline: Creating missing directory: ${missingDir}`);
                 await mp.mkdir(missingDir);
                 this.tree.addNode(missingDir, true);
-                console.log(`[DEBUG] syncBaseline: ✓ Successfully created missing directory: ${missingDir}`);
+                // 创建成功
               } catch (createError: any) {
-                console.error(`[DEBUG] syncBaseline: ✗ Failed to create missing directory ${missingDir}:`, createError.message);
+                console.error(`syncBaseline: Failed to create missing directory ${missingDir}:`, createError.message);
               }
             }
 
             // Verify again after the retry
-            console.log(`[DEBUG] syncBaseline: Re-verifying directories after retry...`);
+            // 重新验证缺失目录
             let stillMissing = [];
             for (const missingDir of verificationFailures) {
               try {
@@ -312,49 +311,47 @@ export class BoardOperations {
                   stillMissing.push(missingDir);
                 }
               } catch (error: any) {
-                console.error(`[DEBUG] syncBaseline: Error checking ${missingDir} after retry:`, error.message);
+                console.error(`syncBaseline: Error checking ${missingDir} after retry:`, error.message);
                 stillMissing.push(missingDir);
               }
             }
 
             if (stillMissing.length > 0) {
-              console.error(`[DEBUG] syncBaseline: Still missing ${stillMissing.length} directories after retry:`, stillMissing);
+              console.error(`syncBaseline: Still missing ${stillMissing.length} directories after retry:`, stillMissing);
               throw new Error(`Missing directories after retry: ${stillMissing.join(', ')}`);
             }
 
-            console.log(`[DEBUG] syncBaseline: ✓ All directories now exist after retry`);
+            // 所有目录现在存在
           }
 
-          console.log(`[DEBUG] syncBaseline: ✓ All directories verified - proceeding with bulk upload`);
+          // 目录验证通过，准备上传
 
           progress.report({ increment: 10, message: "Starting bulk upload..." });
 
-          // Use individual cp commands instead of bulk upload
-          console.log(`[DEBUG] syncBaseline: Using individual cp commands for upload`);
+          // 使用单文件上传方式
 
           // Verify all local files exist before building command
           const validFiles = [];
           const missingFiles = [];
           for (const relativePath of files) {
-            const localPath = path.join(ws.uri.fsPath, relativePath);
+            const localPath = path.join(localRootDir, relativePath);
 
             try {
               await fs.access(localPath);
               validFiles.push(relativePath);
-              console.log(`[DEBUG] syncBaseline: ✓ Local file exists: ${localPath}`);
             } catch (error) {
-              console.error(`[DEBUG] syncBaseline: ✗ Local file missing: ${localPath}`);
+              console.error(`syncBaseline: Local file missing: ${localPath}`);
               missingFiles.push(relativePath);
             }
           }
 
-          console.log(`[DEBUG] syncBaseline: ${validFiles.length}/${files.length} local files are accessible`);
+          // 本地文件可访问性检查完成
 
           // Warn user about missing files
           if (missingFiles.length > 0) {
-            console.warn(`[DEBUG] syncBaseline: Skipping ${missingFiles.length} missing files:`, missingFiles.slice(0, 5));
+            console.warn(`syncBaseline: Skipping ${missingFiles.length} missing files:`, missingFiles.slice(0, 5));
             if (missingFiles.length > 5) {
-              console.warn(`[DEBUG] syncBaseline: ... and ${missingFiles.length - 5} more`);
+              console.warn(`syncBaseline: ... and ${missingFiles.length - 5} more`);
             }
             vscode.window.showWarningMessage(
               `Found ${missingFiles.length} files in manifest that don't exist locally. These will be skipped. Consider rebuilding the manifest.`
@@ -364,13 +361,13 @@ export class BoardOperations {
           // Update total for progress reporting
           const actualTotal = validFiles.length;
 
-          console.log(`[DEBUG] syncBaseline: Starting individual uploads for ${actualTotal} files...`);
+          // 开始逐文件上传
 
           let uploaded = 0;
           let failed = 0;
 
           for (const relativePath of validFiles) {
-            const localPath = path.join(ws.uri.fsPath, relativePath);
+            const localPath = path.join(localRootDir, relativePath);
             const devicePath = path.posix.join(rootPath, relativePath);
 
             // Double-check file exists before attempting upload (in case it was deleted during the process)
@@ -383,36 +380,35 @@ export class BoardOperations {
             }
 
             try {
-              console.log(`[DEBUG] syncBaseline: Individual upload ${uploaded + 1}/${actualTotal}: ${localPath} -> ${devicePath}`);
-
+              // 上传单文件进度
               progress.report({
                 increment: (80 / actualTotal),
                 message: `Uploading ${relativePath} (${uploaded + 1}/${actualTotal})`
               });
 
               // Use cpToDevice which includes directory creation logic
-              console.log(`[DEBUG] syncBaseline: Executing cpToDevice: ${localPath} -> ${devicePath}`);
+              // 执行上传
 
               await mp.cpToDevice(localPath, devicePath);
 
               this.tree.addNode(devicePath, false); // Add file to tree
 
               uploaded++;
-              console.log(`[DEBUG] syncBaseline: ✓ Individual upload ${uploaded}/${actualTotal} successful: ${relativePath}`);
+              // 单文件上传成功
 
             } catch (individualError: any) {
               failed++;
-              console.error(`[DEBUG] syncBaseline: ✗ Individual upload failed for ${relativePath}:`, individualError.message);
+              console.error(`syncBaseline: Individual upload failed for ${relativePath}:`, individualError.message);
 
               // Continue with next file instead of failing completely
               // This allows partial success even if some files fail
             }
           }
 
-          console.log(`[DEBUG] syncBaseline: Individual uploads completed. ${uploaded} successful, ${failed} failed.`);
+          // 单文件上传完成： ${uploaded} 成功, ${failed} 失败
 
           if (failed > 0) {
-            console.warn(`[DEBUG] syncBaseline: ${failed} files failed to upload individually`);
+            console.warn(`syncBaseline: ${failed} files failed to upload individually`);
           }
 
           progress.report({ increment: 100, message: "All files uploaded successfully" });
@@ -422,7 +418,7 @@ export class BoardOperations {
       // Save manifest locally only (no device manifest to avoid .mpy-workbench folder on board)
       const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
       await saveManifest(manifestPath, man);
-      console.log(`[DEBUG] syncBaseline: ✓ Manifest saved locally: ${manifestPath}`);
+      // Manifest saved locally
 
       vscode.window.showInformationMessage("Board: Sync all files (Local → Board) completed");
       // Clear any diff/local-only markers after successful sync-all
@@ -438,7 +434,8 @@ export class BoardOperations {
     if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const deviceStats = await this.withAutoSuspend(() => mp.listTreeStats(rootPath));
-    const matcher = await createIgnoreMatcher(ws.uri.fsPath);
+    const localRootDir = getLocalSyncRoot();
+    const matcher = await createIgnoreMatcher(localRootDir);
     const toDownload = deviceStats
       .filter(stat => !stat.isDir)
       .filter(stat => {
@@ -451,7 +448,7 @@ export class BoardOperations {
       await this.withAutoSuspend(async () => {
         for (const stat of toDownload) {
           const rel = toLocalRelative(stat.path, rootPath);
-          const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+          const abs = path.join(localRootDir, ...rel.split("/"));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
           await mp.cpFromDevice(stat.path, abs);
@@ -469,12 +466,13 @@ export class BoardOperations {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) return;
 
-    console.log("[DEBUG] checkDiffs: Generating comparison plan file...");
+    // Generating comparison plan file...
 
     try {
       // Get local files
-      const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-      const localManifest = await buildManifest(ws.uri.fsPath, matcher);
+      const localRootDir = getLocalSyncRoot();
+      const matcher = await createIgnoreMatcher(localRootDir);
+      const localManifest = await buildManifest(localRootDir, matcher);
       const localFiles = Object.keys(localManifest.files);
 
       // Get device files
@@ -507,7 +505,7 @@ export class BoardOperations {
       // Files that exist locally - will be compared
       for (const localRel of localFiles) {
         const deviceFile = deviceFileMap.get(localRel);
-        const absLocalPath = path.join(ws.uri.fsPath, ...localRel.split('/'));
+        const absLocalPath = path.join(localRootDir, ...localRel.split('/'));
 
         if (deviceFile) {
           // File exists in both places - will be compared
@@ -553,18 +551,14 @@ export class BoardOperations {
       await fs.mkdir(path.dirname(planFilePath), { recursive: true });
       await fs.writeFile(planFilePath, JSON.stringify(comparisonPlan, null, 2), 'utf8');
 
-      console.log(`[DEBUG] checkDiffs: Comparison plan saved to: ${planFilePath}`);
-      console.log(`[DEBUG] checkDiffs: Plan includes ${comparisonPlan.comparisons.length} file operations`);
+      // Comparison plan saved to planFilePath; details suppressed
 
       // Show summary in console
       const compareCount = comparisonPlan.comparisons.filter(c => c.type === "comparison").length;
       const localOnlyCount = comparisonPlan.comparisons.filter(c => c.type === "local_only").length;
       const boardOnlyCount = comparisonPlan.comparisons.filter(c => c.type === "board_only").length;
 
-      console.log(`[DEBUG] checkDiffs: Plan Summary:`);
-      console.log(`[DEBUG] checkDiffs: - Files to compare: ${compareCount}`);
-      console.log(`[DEBUG] checkDiffs: - Local-only files: ${localOnlyCount}`);
-      console.log(`[DEBUG] checkDiffs: - Board-only files: ${boardOnlyCount}`);
+      // Plan summary: files to compare / local-only / board-only (counts suppressed)
 
     } catch (error: any) {
       console.error(`[DEBUG] checkDiffs: Failed to generate comparison plan: ${error.message}`);
@@ -618,7 +612,7 @@ export class BoardOperations {
       }
 
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
-      console.log(`[DEBUG] checkDiffs: rootPath: ${rootPath}`);
+      // checkDiffs rootPath
 
       // Check if workspace is initialized for sync
       const initialized = await isLocalSyncInitialized();
@@ -632,8 +626,9 @@ export class BoardOperations {
 
         // Create initial manifest to initialize sync
         await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
-        const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-        const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+        const localRootDir = getLocalSyncRoot();
+        const matcher = await createIgnoreMatcher(localRootDir);
+        const initialManifest = await buildManifest(localRootDir, matcher);
         const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
         await saveManifest(manifestPath, initialManifest);
         vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -642,8 +637,9 @@ export class BoardOperations {
       progress.report({ message: "Reading local files..." });
 
       // Apply ignore/filters locally before comparing
-      const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-      const localManifest = await buildManifest(ws.uri.fsPath, matcher);
+      const localRootDir = getLocalSyncRoot();
+      const matcher = await createIgnoreMatcher(localRootDir);
+      const localManifest = await buildManifest(localRootDir, matcher);
       const localFiles = Object.keys(localManifest.files);
 
       // Get all local directories
@@ -659,7 +655,7 @@ export class BoardOperations {
           await collectLocalDirs(abs, rel); // Recursively collect subdirectories
         }
       }
-      await collectLocalDirs(ws.uri.fsPath);
+      await collectLocalDirs(localRootDir);
 
       progress.report({ message: "Reading board files..." });
 
@@ -696,7 +692,7 @@ export class BoardOperations {
       const statPromises: Promise<void>[] = [];
 
       for (const localRel of localFiles) {
-        const absPath = path.join(ws.uri.fsPath, ...localRel.split('/'));
+        const absPath = path.join(localRootDir, ...localRel.split('/'));
         statPromises.push(
           fs.stat(absPath).then(stat => {
             localFileSizes.set(localRel, stat.size);
@@ -723,7 +719,7 @@ export class BoardOperations {
         } else {
           // File exists locally but not on board
           const devicePath = this.toDevicePath(localRel, rootPath);
-          console.log(`[DEBUG] checkDiffs: Adding local-only: localRel=${localRel}, devicePath=${devicePath}`);
+          // Adding local-only: ${localRel}
           localOnlySet.add(devicePath);
         }
       }
@@ -740,7 +736,7 @@ export class BoardOperations {
         const devicePath = this.toDevicePath(localDir, rootPath);
         const existsOnBoard = boardDirectories.has(devicePath);
         if (!existsOnBoard) {
-          console.log(`[DEBUG] checkDiffs: Adding local-only directory: localDir=${localDir}, devicePath=${devicePath}`);
+          // Adding local-only directory: ${localDir}
           localOnlyDirectories.add(devicePath);
         }
       }
@@ -796,8 +792,9 @@ export class BoardOperations {
 
       // Create initial manifest to initialize sync
       await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
-      const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-      const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+      const localRootDir = getLocalSyncRoot();
+      const matcher = await createIgnoreMatcher(localRootDir);
+      const initialManifest = await buildManifest(localRootDir, matcher);
       const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
       await saveManifest(manifestPath, initialManifest);
       vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -832,11 +829,7 @@ export class BoardOperations {
     const localOnlyFiles = this.decorations.getLocalOnlyFilesOnly();
 
     // Debug: Log what sync found
-    console.log("Debug - syncDiffsLocalToBoard:");
-    console.log("- decorations.getDiffsFilesOnly():", this.decorations.getDiffsFilesOnly());
-    console.log("- decorations.getLocalOnlyFilesOnly():", this.decorations.getLocalOnlyFilesOnly());
-    console.log("- diffs (filtered):", diffs);
-    console.log("- localOnlyFiles:", localOnlyFiles);
+    // debug summary suppressed for syncDiffsLocalToBoard
 
     const allFilesToSync = [...diffs, ...localOnlyFiles];
     if (allFilesToSync.length === 0) {
@@ -849,18 +842,17 @@ export class BoardOperations {
       const total = allFilesToSync.length;
       await this.withAutoSuspend(async () => {
         for (const devicePath of allFilesToSync) {
-          console.log(`[DEBUG] syncDiffsLocalToBoard: Processing devicePath: ${devicePath}, rootPath: ${rootPath}`);
+          // processing devicePath
           const rel = toLocalRelative(devicePath, rootPath);
-          console.log(`[DEBUG] syncDiffsLocalToBoard: rel: ${rel}`);
-          const abs = path.join(ws.uri.fsPath, ...rel.split('/'));
-          console.log(`[DEBUG] syncDiffsLocalToBoard: abs: ${abs}`);
+          const localRootDir = getLocalSyncRoot();
+          const abs = path.join(localRootDir, ...rel.split('/'));
 
           try {
             await fs.access(abs);
             // Check if it's a directory and skip it
             const stat = await fs.stat(abs);
             if (stat.isDirectory()) {
-              console.log(`[DEBUG] syncDiffsLocalToBoard: Skipping directory: ${abs}`);
+              // Skipping directory: ${abs}
               continue;
             }
           } catch (accessError: any) {
@@ -875,7 +867,7 @@ export class BoardOperations {
           try {
             await mp.uploadReplacing(abs, devicePath);
             this.tree.addNode(devicePath, false); // Add uploaded file to tree
-            console.log(`[DEBUG] syncDiffsLocalToBoard: Successfully uploaded: ${abs} -> ${devicePath}`);
+            // Successfully uploaded: ${abs} -> ${devicePath}
           } catch (uploadError: any) {
             console.error(`[DEBUG] syncDiffsLocalToBoard: Failed to upload ${abs} -> ${devicePath}, error: ${uploadError.message}`);
             // Continue with next file instead of failing completely
@@ -912,8 +904,9 @@ export class BoardOperations {
 
       // Create initial manifest to initialize sync
       await ensureWorkbenchIgnoreFile(ws.uri.fsPath);
-      const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-      const initialManifest = await buildManifest(ws.uri.fsPath, matcher);
+      const localRootDir = getLocalSyncRoot();
+      const matcher = await createIgnoreMatcher(localRootDir);
+      const initialManifest = await buildManifest(localRootDir, matcher);
       const manifestPath = path.join(ws.uri.fsPath, MPY_WORKBENCH_DIR, MPY_MANIFEST_FILE);
       await saveManifest(manifestPath, initialManifest);
       vscode.window.showInformationMessage("Local folder initialized for synchronization.");
@@ -951,7 +944,8 @@ export class BoardOperations {
     }
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Board: Sync Diffed Files Board → Local", cancellable: false }, async (progress) => {
       let done = 0;
-      const matcher = await createIgnoreMatcher(ws.uri.fsPath);
+      const localRootDir = getLocalSyncRoot();
+      const matcher = await createIgnoreMatcher(localRootDir);
       const allFilesToDownload = [...diffs, ...boardOnlyFiles];
       const filtered = allFilesToDownload.filter(devicePath => {
         const rel = toLocalRelative(devicePath, rootPath);
@@ -961,7 +955,7 @@ export class BoardOperations {
       await this.withAutoSuspend(async () => {
         for (const devicePath of filtered) {
           const rel = toLocalRelative(devicePath, rootPath);
-          const abs = path.join(ws.uri.fsPath, ...rel.split('/'));
+          const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
           await mp.cpFromDevice(devicePath, abs);
@@ -980,67 +974,35 @@ export class BoardOperations {
 
   async openFile(node: Esp32Node): Promise<void> {
     if (node.kind !== "file") return;
+
     const ws = vscode.workspace.workspaceFolders?.[0];
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
-    if (ws) {
-      const rel = toLocalRelative(node.path, rootPath);
-      const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+    const rel = toLocalRelative(node.path, rootPath);
+
+    // Determine target local path
+    const abs = ws ? path.join(ws.uri.fsPath, ...rel.split('/')) : path.join(getLocalSyncRoot(), ...rel.split('/'));
+    try {
       await fs.mkdir(path.dirname(abs), { recursive: true });
+    } catch {}
 
-      // Check if file is local-only (exists locally but not on board)
-      const isLocalOnly = (node as any).isLocalOnly;
+    // If file already exists locally, open it
+    try {
+      await fs.access(abs);
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
+      return;
+    } catch {}
 
-      if (isLocalOnly) {
-        // For local-only files, just open the local file directly
-        console.log(`[DEBUG] openFile: Opening local-only file: ${abs}`);
-      } else {
-        // For files that should exist on board, check if present locally first
-        const fileExistsLocally = await fs.access(abs).then(() => true).catch(() => false);
-        if (!fileExistsLocally) {
-          console.log(`[DEBUG] openFile: File not found locally, copying from board: ${node.path} -> ${abs}`);
-          try {
-            await this.withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
-            console.log(`[DEBUG] openFile: Successfully copied file from board`);
-          } catch (copyError: any) {
-            console.error(`[DEBUG] openFile: Failed to copy file from board:`, copyError);
-            vscode.window.showErrorMessage(`Failed to copy file from board: ${copyError?.message || copyError}`);
-            return; // Don't try to open the file if copy failed
-          }
-        } else {
-          console.log(`[DEBUG] openFile: File already exists locally: ${abs}`);
-        }
-      }
-
-      // Verify the file exists and has content before opening
-      try {
-        const stats = await fs.stat(abs);
-        console.log(`[DEBUG] openFile: Local file size: ${stats.size} bytes`);
-
-        if (stats.size === 0) {
-          console.warn(`[DEBUG] openFile: Local file is empty, this might indicate a copy failure`);
-          vscode.window.showWarningMessage(`File appears to be empty. The copy from board may have failed.`);
-        }
-
-        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
-        await vscode.window.showTextDocument(doc, { preview: false });
-        await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
-      } catch (openError: any) {
-        console.error(`[DEBUG] openFile: Failed to open local file:`, openError);
-        vscode.window.showErrorMessage(`Failed to open file: ${openError?.message || openError}`);
-      }
-    } else {
-      // Fallback: no workspace, use temp
-      const temp = vscode.Uri.joinPath(vscode.Uri.file(vscode.workspace.workspaceFolders![0].uri.fsPath), node.path.replace(/\//g, "_"));
-      await fs.mkdir(path.dirname(temp.fsPath), { recursive: true });
-      try {
-        await this.withAutoSuspend(() => mp.cpFromDevice(node.path, temp.fsPath));
-        const doc = await vscode.workspace.openTextDocument(temp);
-        await vscode.window.showTextDocument(doc, { preview: true });
-        await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", temp.fsPath);
-      } catch (copyError: any) {
-        console.error(`[DEBUG] openFile: Failed to copy file to temp location:`, copyError);
-        vscode.window.showErrorMessage(`Failed to copy file from board to temp location: ${copyError?.message || copyError}`);
-      }
+    // Otherwise, copy from device then open
+    try {
+      await this.withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
+      await vscode.window.showTextDocument(doc, { preview: false });
+      await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
+    } catch (err: any) {
+      console.error("openFile: Failed to copy/open file from board:", err);
+      vscode.window.showErrorMessage(`Failed to open file from board: ${err?.message || String(err)}`);
     }
   }
 

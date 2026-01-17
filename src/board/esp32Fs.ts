@@ -292,7 +292,9 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
     // If the extension record cannot be found (development host or id mismatch),
     // fall back to a safe URI so the tree does not crash when accessing icons.
     try {
-      const ext = vscode.extensions.getExtension("WebForks.MicroPython-WorkBench");
+      // Prefer the current extension id from package.json (publisher.name => WebForks.mpy)
+      const ext = vscode.extensions.getExtension("WebForks.mpy")
+        || vscode.extensions.getExtension("WebForks.MicroPython-WorkBench"); // legacy id for compatibility
       if (ext && ext.extensionUri) return ext.extensionUri;
     } catch (e) {
       // ignore

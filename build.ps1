@@ -6,7 +6,17 @@ param(
     [switch]$SkipVersion
 )
 
-# 检查是否需要增加版本号
+# 先编译，只有编译成功才会考虑增加版本号和打包
+Write-Host "Compiling..." -ForegroundColor Green
+npm run compile
+
+# 检查编译结果，失败则退出（不增加版本号、不打包）
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Error: compilation failed. Aborting version bump and packaging." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+# 编译成功后，按需增加版本号（除非用户通过 -SkipVersion 指定跳过）
 if (-not $SkipVersion) {
     # 自动增加版本号
     Write-Host "Reading current version from package.json..." -ForegroundColor Green
@@ -60,10 +70,6 @@ if (-not $SkipVersion) {
     $currentVersion = $packageJson.version
     Write-Host "Using current version: $currentVersion (no increment)" -ForegroundColor Cyan
 }
-
-# 编译和打包
-Write-Host "Compiling..." -ForegroundColor Green
-npm run compile
 
 # 清理根目录中的旧 .vsix 文件
 Write-Host "Cleaning old .vsix files from root directory..." -ForegroundColor Yellow

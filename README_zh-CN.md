@@ -178,7 +178,13 @@ python -m pip install --user mpremote esptool
 
 完整配置项请参见 `package.json` 中的 `contributes.configuration`。
 
-## 当前限制与说明
+## 使用要求
+
+- **Python 3.8+** - 扩展使用 Python 运行内置的 mpremote 工具
+- **mpremote** - ✅ **已内置，无需外部安装**
+- **固件烧录**：需要在同一 Python 环境中安装 `esptool`。使用 `pip install esptool` 安装。
+- **代码补全（可选）**：[Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展提供增强的 IntelliSense 支持
+- 如需使用特定的 Python 解释器，可在扩展设置中调整 Python 路径。
 
 - 固件目录与板子测试目前以 ESP32 系列为主（ESP32-S3、ESP32-C3）。若要支持其他板子，请先补充 `assets/firmwareCatalog.json` 条目并测试。
 - 仓库已配置 CI，会在多平台和 Node.js 版本上运行构建/测试，但单元测试覆盖尚不足——建议在本地运行 `npm test` 并为核心模块（`sync`、`board`、`completion`）补充测试用例。

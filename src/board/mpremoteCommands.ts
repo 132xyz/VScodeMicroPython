@@ -1,12 +1,52 @@
 import * as vscode from "vscode";
 import { exec } from "node:child_process";
+import * as path from "node:path";
+import * as fs from "node:fs";
 import * as mp from "./mpremote";
+import { MpRemoteManager } from './MpRemoteManager';
 import { showInfo, showError, showWarning } from "../core/localization";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
+let userClosedRepl = false;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const logAutoSuspend = (...args: any[]) => console.log("[MPY auto-suspend]", ...args);
+
+// Debug logging helper. Controlled by the `microPythonWorkBench.debug` setting (default: false).
+const debugLog = (...args: any[]) => {
+  try {
+    const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.debug", false);
+    if (enabled) console.debug(...args);
+  } catch {}
+};
+
+function getInternalPythonRoot(): string | null {
+  try {
+    const ext = vscode.extensions.getExtension('WebForks.mpy')
+      || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith('.mpy'))
+      || null;
+    let candidate: string | null = null;
+    if (ext) {
+      candidate = path.join(ext.extensionPath, 'src', 'python');
+    } else {
+      const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (ws) candidate = path.join(ws, 'VScodeMicroPython', 'src', 'python');
+    }
+    if (candidate) {
+      const mainPath = path.join(candidate, 'mpremote', '__main__.py');
+      if (fs.existsSync(mainPath)) return candidate;
+    }
+  } catch {}
+  return null;
+}
+
+const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
+
+async function buildShellCommand(args: string[]): Promise<string> {
+  const pythonPath = await MpRemoteManager.detectPythonPath();
+  const joined = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\\"')}"` : a).join(' ');
+  if (!pythonPath) throw new Error('Python interpreter not found');
+  return `"${pythonPath}" -m mpremote ${joined}`;
+}
 
 type LastRunCommand = {
   device: string;
@@ -33,6 +73,10 @@ export async function disconnectReplTerminal() {
   }
 }
 
+function setReplContext(open: boolean) {
+  try { vscode.commands.executeCommand('setContext', 'microPythonWorkBench.replOpen', open); } catch {}
+}
+
 export async function restartReplInExistingTerminal(opts: { show?: boolean } = {}) {
   try {
     const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
@@ -50,7 +94,7 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
     }
 
     // Reuse the existing terminal: send connect again
-    const cmd = `mpremote connect ${device}`;
+    const cmd = await buildShellCommand(["connect", device]);
     logAutoSuspend("Reusing REPL terminal; sending reconnect command:", cmd);
     replTerminal.sendText(cmd, true);
     await sleep(200);
@@ -122,6 +166,11 @@ export async function restoreSerialSessionsFromSnapshot(
   }
   if (snapshot.replWasOpen) {
     logAutoSuspend("Restoring REPL terminal");
+    // If user manually closed REPL, do not reopen automatically
+    if (userClosedRepl) {
+      logAutoSuspend("User manually closed REPL; skipping reopen");
+      return;
+    }
     if (opts.replBehavior === "none") {
       logAutoSuspend("REPL restore behavior is 'none'; not reopening REPL");
       return;
@@ -153,16 +202,12 @@ export async function restoreSerialSessionsFromSnapshot(
 }
 
 export async function checkMpremoteAvailability(): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    exec('mpremote --version', (err: any, stdout: string, stderr: string) => {
-      if (err) {
-        vscode.window.showWarningMessage('mpremote not found. Please install mpremote: pip install mpremote');
-        reject(err);
-      } else {
-        resolve();
-      }
-    });
-  });
+  // mpremote is bundled internally; always available if Python is present.
+  const ok = await MpRemoteManager.isModuleAvailable();
+  if (!ok) {
+    vscode.window.showErrorMessage('Python 解释器未找到或内置 mpremote 加载失败。请检查 Python 环境。');
+    throw new Error('Python interpreter not available');
+  }
 }
 
 export async function serialSendCtrlC(): Promise<void> {
@@ -171,7 +216,7 @@ export async function serialSendCtrlC(): Promise<void> {
     await robustInterrupt();
   } catch (error: any) {
     // The robust function already handles errors and shows messages
-    console.error(`[DEBUG] serialSendCtrlC: robustInterrupt failed: ${error}`);
+    console.error(`serialSendCtrlC: robustInterrupt failed: ${error}`);
   }
 }
 
@@ -181,7 +226,7 @@ export async function stop(): Promise<void> {
     await robustInterruptAndReset();
   } catch (error: any) {
     // The robust function already handles errors and shows messages
-    console.error(`[DEBUG] stop: robustInterruptAndReset failed: ${error}`);
+    console.error(`stop: robustInterruptAndReset failed: ${error}`);
   }
 }
 
@@ -205,7 +250,7 @@ export async function softReset(): Promise<void> {
   // Use mpremote connect with explicit port
   const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
   const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
-  const cmd = `mpremote connect ${device} reset`;
+  const cmd = await buildShellCommand(["connect", device, "reset"]);
   await new Promise<void>((resolve) => {
     exec(cmd, (error: any, stdout: any, stderr: any) => {
       if (error) {
@@ -249,8 +294,8 @@ export async function runActiveFile(): Promise<void> {
     } catch {}
   }
 
-  // Use mpremote run command
-  const cmd = `mpremote connect ${device} run "${filePath}"`;
+  // Use mpremote run command (prefer python -m mpremote)
+  const cmd = await buildShellCommand(["connect", device, "run", filePath]);
   rememberLastRunCommand(device, filePath, cmd);
   terminal.sendText(cmd, true);
   terminal.show(true);
@@ -284,9 +329,19 @@ function getRunTerminal(): vscode.Terminal {
     runTerminal = undefined;
   }
 
+  const internalRoot = getInternalPythonRoot();
+  const termEnv: { [key: string]: string } = {
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8'
+  };
+  if (internalRoot) {
+    const delim = path.delimiter;
+    termEnv.PYTHONPATH = process.env.PYTHONPATH ? `${internalRoot}${delim}${process.env.PYTHONPATH}` : internalRoot;
+  }
   runTerminal = vscode.window.createTerminal({
     name: "ESP32 Run File",
-    cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    env: termEnv
   });
   return runTerminal;
 }
@@ -312,13 +367,41 @@ export async function getReplTerminal(
     true
   );
 
-  // Simply execute mpremote connect command in terminal
-  const cmd = `mpremote connect ${device}`;
+  // Build the mpremote connect command
+  const cmd = await buildShellCommand(["connect", device]);
+
+  // Create a persistent terminal and send the connect command to it. Using
+  // shellArgs to run the command at shell startup causes the underlying
+  // shell process to exit when the command finishes, producing exit codes
+  // (like the observed exit code 1). Sending the command via `sendText`
+  // keeps the terminal alive for interactive REPL sessions.
+  // Create terminal with UTF-8 environment to improve Unicode handling on Windows
+  const internalRoot = getInternalPythonRoot();
+  const termEnv: { [key: string]: string } = {
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8'
+  };
+  if (internalRoot) {
+    const delim = require('node:path').delimiter;
+    termEnv.PYTHONPATH = process.env.PYTHONPATH ? `${internalRoot}${delim}${process.env.PYTHONPATH}` : internalRoot;
+  }
   replTerminal = vscode.window.createTerminal({
     name: "ESP32 REPL",
     shellPath: process.platform === 'win32' ? "cmd.exe" : (process.env.SHELL || '/bin/bash'),
-    shellArgs: process.platform === 'win32' ? ["/d", "/c", cmd] : ["-lc", cmd]
+    env: termEnv
   });
+  // On Windows, set code page to UTF-8 before running the connect command so
+  // console input/output handles Unicode correctly. Then send the connect command.
+  try {
+    if (process.platform === 'win32') {
+      replTerminal.sendText('chcp 65001 >nul', true);
+    }
+    replTerminal.sendText(cmd, true);
+  } catch (e) { /* ignore */ }
+
+  // Mark REPL as open in context and clear any prior manual-close flag
+  userClosedRepl = false;
+  setReplContext(true);
 
   // Send interrupt (Ctrl-C) to ensure device is responsive
   if (shouldInterrupt) {
@@ -340,10 +423,12 @@ export async function getReplTerminal(
 
 export function isReplOpen(): boolean {
   if (!replTerminal) return false;
-  return vscode.window.terminals.some(t => t === replTerminal);
+  const open = vscode.window.terminals.some(t => t === replTerminal);
+  setReplContext(open);
+  return open;
 }
 
-export async function closeReplTerminal() {
+export async function closeReplTerminal(userInitiated: boolean = false) {
   if (replTerminal) {
     try {
       replTerminal.dispose();
@@ -351,6 +436,8 @@ export async function closeReplTerminal() {
     replTerminal = undefined;
     await new Promise(r => setTimeout(r, 300));
   }
+  userClosedRepl = userInitiated || userClosedRepl;
+  setReplContext(false);
 }
 
 export async function openReplTerminal() {
@@ -446,7 +533,7 @@ export async function robustInterrupt(port?: string): Promise<void> {
         showInfo("messages.interruptSentViaRepl");
       return;
     } catch (error) {
-      console.log(`[DEBUG] robustInterrupt: REPL interrupt path failed, falling back: ${error}`);
+      debugLog(`robustInterrupt: REPL interrupt path failed, falling back: ${error}`);
     }
   }
 
@@ -462,51 +549,50 @@ export async function robustInterrupt(port?: string): Promise<void> {
     devicePort = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
   }
 
-  console.log(`[DEBUG] robustInterrupt: Starting for port ${devicePort}`);
+  debugLog(`robustInterrupt: Starting for port ${devicePort}`);
 
   // Check device connection
   try {
     const health = await mp.healthCheck(devicePort);
     if (!health.healthy) {
-      console.warn(`[DEBUG] robustInterrupt: Device at ${devicePort} is not healthy, but proceeding...`);
+      console.warn(`robustInterrupt: Device at ${devicePort} is not healthy, but proceeding...`);
       vscode.window.showWarningMessage(`Device at ${devicePort} may not be responding properly.`);
     } else {
-      console.log(`[DEBUG] robustInterrupt: Device at ${devicePort} is healthy (response time: ${health.responseTime}ms)`);
+      debugLog(`robustInterrupt: Device at ${devicePort} is healthy (response time: ${health.responseTime}ms)`);
     }
   } catch (error) {
-    console.warn(`[DEBUG] robustInterrupt: Health check failed: ${error}, proceeding...`);
+    console.warn(`robustInterrupt: Health check failed: ${error}, proceeding...`);
   }
 
   // Interrupt with Ctrl+C twice
   try {
-    console.log(`[DEBUG] robustInterrupt: Attempting interrupt via echo to ${devicePort}`);
+    debugLog(`robustInterrupt: Attempting interrupt via echo to ${devicePort}`);
     await new Promise<void>((resolve, reject) => {
       exec(`echo -e '\\x03\\x03' > ${devicePort}`, (error, stdout, stderr) => {
         if (error) {
-          console.log(`[DEBUG] robustInterrupt: echo interrupt failed: ${stderr || error.message}`);
+          debugLog(`robustInterrupt: echo interrupt failed: ${stderr || error.message}`);
           reject(error);
         } else {
-          console.log(`[DEBUG] robustInterrupt: echo interrupt succeeded`);
+          debugLog(`robustInterrupt: echo interrupt succeeded`);
           resolve();
         }
       });
     });
     vscode.window.showInformationMessage(`Board: Interrupt sent via echo to ${devicePort}`);
   } catch (error) {
-    console.log(`[DEBUG] robustInterrupt: Interrupt via echo failed: ${error}, trying mpremote`);
+    debugLog(`robustInterrupt: Interrupt via echo failed: ${error}, trying mpremote`);
     vscode.window.showWarningMessage(`Board: Direct serial interrupt failed, trying mpremote fallback...`);
-    try {
-      await mp.runMpremote(["connect", devicePort, "exec", "--no-follow", "import sys; sys.stdin.write(b'\\x03\\x03')"]);
-      console.log(`[DEBUG] robustInterrupt: Interrupt via mpremote succeeded`);
+      try {
+      await MpRemoteManager.run(["connect", devicePort, "exec", "--no-follow", "import sys; sys.stdin.write(b'\\x03\\x03')"], { retryOnFailure: true });
+      debugLog(`robustInterrupt: Interrupt via mpremote succeeded`);
       vscode.window.showInformationMessage(`Board: Interrupt sent via mpremote to ${devicePort}`);
     } catch (error2) {
-      console.error(`[DEBUG] robustInterrupt: Interrupt via mpremote also failed: ${error2}`);
+      console.error(`robustInterrupt: Interrupt via mpremote also failed: ${error2}`);
       vscode.window.showErrorMessage(`Board: Interrupt failed for ${devicePort}: echo error: ${error}, mpremote error: ${error2}`);
       throw new Error(`Failed to interrupt device on ${devicePort}: echo error: ${error}, mpremote error: ${error2}`);
     }
   }
-
-  console.log(`[DEBUG] robustInterrupt: Completed for port ${devicePort}`);
+  debugLog(`robustInterrupt: Completed for port ${devicePort}`);
 }
 
 export async function robustInterruptAndReset(port?: string): Promise<void> {
@@ -522,7 +608,7 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
       vscode.window.showInformationMessage("Board: Interrupt and soft reset sent via ESP32 REPL");
       return;
     } catch (error) {
-      console.log(`[DEBUG] robustInterruptAndReset: REPL path failed, falling back: ${error}`);
+      debugLog(`robustInterruptAndReset: REPL path failed, falling back: ${error}`);
     }
   }
 
@@ -538,32 +624,32 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
     devicePort = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
   }
 
-  console.log(`[DEBUG] robustInterruptAndReset: Starting for port ${devicePort}`);
+  debugLog(`robustInterruptAndReset: Starting for port ${devicePort}`);
 
   // Check device connection
   try {
-    const health = await mp.healthCheck(devicePort);
-    if (!health.healthy) {
-      console.warn(`[DEBUG] robustInterruptAndReset: Device at ${devicePort} is not healthy, but proceeding...`);
+      const health = await mp.healthCheck(devicePort);
+      if (!health.healthy) {
+        console.warn(`robustInterruptAndReset: Device at ${devicePort} is not healthy, but proceeding...`);
       vscode.window.showWarningMessage(`Device at ${devicePort} may not be responding properly.`);
     } else {
-      console.log(`[DEBUG] robustInterruptAndReset: Device at ${devicePort} is healthy (response time: ${health.responseTime}ms)`);
+        debugLog(`robustInterruptAndReset: Device at ${devicePort} is healthy (response time: ${health.responseTime}ms)`);
     }
   } catch (error) {
-    console.warn(`[DEBUG] robustInterruptAndReset: Health check failed: ${error}, proceeding...`);
+      console.warn(`robustInterruptAndReset: Health check failed: ${error}, proceeding...`);
   }
 
   // Step 1: Interrupt with Ctrl+C twice
   let interruptSuccess = false;
   try {
-    console.log(`[DEBUG] robustInterruptAndReset: Attempting interrupt via echo to ${devicePort}`);
+      debugLog(`robustInterruptAndReset: Attempting interrupt via echo to ${devicePort}`);
     await new Promise<void>((resolve, reject) => {
       exec(`echo -e '\\x03\\x03' > ${devicePort}`, (error, stdout, stderr) => {
         if (error) {
-          console.log(`[DEBUG] robustInterruptAndReset: echo interrupt failed: ${stderr || error.message}`);
+            debugLog(`robustInterruptAndReset: echo interrupt failed: ${stderr || error.message}`);
           reject(error);
         } else {
-          console.log(`[DEBUG] robustInterruptAndReset: echo interrupt succeeded`);
+            debugLog(`robustInterruptAndReset: echo interrupt succeeded`);
           resolve();
         }
       });
@@ -571,15 +657,15 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
     interruptSuccess = true;
     vscode.window.showInformationMessage(`Board: Interrupt sent via echo to ${devicePort}`);
   } catch (error) {
-    console.log(`[DEBUG] robustInterruptAndReset: Interrupt via echo failed: ${error}, trying mpremote`);
+      debugLog(`robustInterruptAndReset: Interrupt via echo failed: ${error}, trying mpremote`);
     vscode.window.showWarningMessage(`Board: Direct serial interrupt failed, trying mpremote fallback...`);
     try {
-      await mp.runMpremote(["connect", devicePort, "exec", "--no-follow", "import sys; sys.stdin.write(b'\\x03\\x03')"]);
-      console.log(`[DEBUG] robustInterruptAndReset: Interrupt via mpremote succeeded`);
+      await MpRemoteManager.run(["connect", devicePort, "exec", "--no-follow", "import sys; sys.stdin.write(b'\\x03\\x03')"], { retryOnFailure: true });
+        debugLog(`robustInterruptAndReset: Interrupt via mpremote succeeded`);
       interruptSuccess = true;
       vscode.window.showInformationMessage(`Board: Interrupt sent via mpremote to ${devicePort}`);
     } catch (error2) {
-      console.error(`[DEBUG] robustInterruptAndReset: Interrupt via mpremote also failed: ${error2}`);
+        console.error(`robustInterruptAndReset: Interrupt via mpremote also failed: ${error2}`);
       vscode.window.showErrorMessage(`Board: Interrupt failed for ${devicePort}: echo error: ${error}, mpremote error: ${error2}`);
       // Continue to reset even if interrupt fails
     }
@@ -587,32 +673,32 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
 
   // Step 2: Soft reset with Ctrl+D
   try {
-    console.log(`[DEBUG] robustInterruptAndReset: Attempting soft reset via echo to ${devicePort}`);
+      debugLog(`robustInterruptAndReset: Attempting soft reset via echo to ${devicePort}`);
     await new Promise<void>((resolve, reject) => {
       exec(`echo -e '\\x04' > ${devicePort}`, (error, stdout, stderr) => {
         if (error) {
-          console.log(`[DEBUG] robustInterruptAndReset: echo reset failed: ${stderr || error.message}`);
+            debugLog(`robustInterruptAndReset: echo reset failed: ${stderr || error.message}`);
           reject(error);
         } else {
-          console.log(`[DEBUG] robustInterruptAndReset: echo reset succeeded`);
+            debugLog(`robustInterruptAndReset: echo reset succeeded`);
           resolve();
         }
       });
     });
     vscode.window.showInformationMessage(`Board: Soft reset sent via echo to ${devicePort}`);
   } catch (error) {
-    console.log(`[DEBUG] robustInterruptAndReset: Soft reset via echo failed: ${error}, trying mpremote reset`);
+      debugLog(`robustInterruptAndReset: Soft reset via echo failed: ${error}, trying mpremote reset`);
     vscode.window.showWarningMessage(`Board: Direct serial reset failed, trying mpremote fallback...`);
     try {
-      await mp.runMpremote(["connect", devicePort, "reset"]);
-      console.log(`[DEBUG] robustInterruptAndReset: Soft reset via mpremote succeeded`);
+      await MpRemoteManager.run(["connect", devicePort, "reset"], { retryOnFailure: true });
+        debugLog(`robustInterruptAndReset: Soft reset via mpremote succeeded`);
       vscode.window.showInformationMessage(`Board: Soft reset sent via mpremote to ${devicePort}`);
     } catch (error2) {
-      console.error(`[DEBUG] robustInterruptAndReset: Soft reset via mpremote also failed: ${error2}`);
+        console.error(`robustInterruptAndReset: Soft reset via mpremote also failed: ${error2}`);
       vscode.window.showErrorMessage(`Board: Soft reset failed for ${devicePort}: echo error: ${error}, mpremote error: ${error2}`);
       throw new Error(`Failed to reset device on ${devicePort}: echo error: ${error}, mpremote error: ${error2}`);
     }
   }
 
-  console.log(`[DEBUG] robustInterruptAndReset: Completed for port ${devicePort}`);
+    debugLog(`robustInterruptAndReset: Completed for port ${devicePort}`);
 }

@@ -177,8 +177,8 @@ Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually
 
 ## Requirements
 
-- **Python 3.13.2**
-- **Mpremote v1.26.1**
+- **Python 3.8+** - The extension uses Python to run the bundled mpremote tool
+- **mpremote** - ✅ **Bundled with extension** (no external installation needed)
 - **Firmware flashing:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
 - **Code Completion (optional):** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) extension for enhanced IntelliSense support
 - The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.

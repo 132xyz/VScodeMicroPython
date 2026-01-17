@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.55",
+  "version": "0.1.73",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -288,22 +288,8 @@
         "title": "%commands.toggleWorkspaceAutoSync.title%"
       },
       {
-        "command": "microPythonWorkBench.installMpremote",
-        "title": "%commands.installMpremote.title%",
-        "icon": "$(package)"
-      },
-      {
         "command": "microPythonWorkBench.toggleCodeCompletion",
         "title": "%commands.toggleCodeCompletion.title%"
-      },
-      {
-        "command": "microPythonWorkBench.installMpremoteAutomatically",
-        "title": "%commands.installMpremoteAutomatically.title%",
-        "icon": "$(package)"
-      },
-      {
-        "command": "microPythonWorkBench.checkMpremoteStatus",
-        "title": "%commands.checkMpremoteStatus.title%"
       }
     ],
     "menus": {
@@ -345,7 +331,12 @@
         },
         {
           "command": "microPythonWorkBench.openReplFromView",
-          "when": "view == microPythonWorkBenchActionsView",
+          "when": "view == microPythonWorkBenchActionsView && !microPythonWorkBench.replOpen",
+          "group": "navigation@1"
+        },
+        {
+          "command": "microPythonWorkBench.stopSerial",
+          "when": "view == microPythonWorkBenchActionsView && microPythonWorkBench.replOpen",
           "group": "navigation@1"
         },
         {

@@ -6,6 +6,7 @@ import { Esp32Tree } from "../board/esp32Fs";
 import { Esp32Node } from "../core/types";
 import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync/sync";
 import { toLocalRelative, toDevicePath } from "../board/mpremoteCommands";
+import { getLocalSyncRoot } from "../core/workspaceUtils";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -50,7 +51,8 @@ export const fileCommands = {
       placeHolder: "main.py, lib/utils.py, ..."
     });
     if (!filename || filename.endsWith("/")) return;
-    const abs = path.join(ws.uri.fsPath, ...filename.split("/"));
+    const localRootDir = getLocalSyncRoot();
+    const abs = path.join(localRootDir, ...filename.split("/"));
     try {
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, "", { flag: "wx" });
@@ -99,7 +101,8 @@ export const fileCommands = {
         vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot open locally.`);
         return;
       }
-      const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+      const localRootDir = getLocalSyncRoot();
+      const abs = path.join(localRootDir, ...rel.split("/"));
       await fs.access(abs);
       const doc = await vscode.workspace.openTextDocument(abs);
       await vscode.window.showTextDocument(doc, { preview: true });
@@ -115,7 +118,8 @@ export const fileCommands = {
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const rel = toLocalRelative(node.path, rootPath);
     if (!rel) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot sync.`); return; }
-    const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+    const localRootDir = getLocalSyncRoot();
+    const abs = path.join(localRootDir, ...rel.split("/"));
     try {
       await fs.access(abs);
     } catch {
@@ -136,7 +140,8 @@ export const fileCommands = {
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const rel = toLocalRelative(node.path, rootPath);
     if (!rel) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot download.`); return; }
-    const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+    const localRootDir = getLocalSyncRoot();
+    const abs = path.join(localRootDir, ...rel.split("/"));
     try {
       await fs.access(abs);
     } catch {
@@ -161,7 +166,8 @@ export const fileCommands = {
         vscode.window.showErrorMessage(`Device path ${node.path} is outside configured sync root or maps to device root; cannot open locally.`);
         return;
       }
-      const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+      const localRootDir = getLocalSyncRoot();
+      const abs = path.join(localRootDir, ...rel.split("/"));
       await fs.mkdir(path.dirname(abs), { recursive: true });
 
       // Check if file is local-only (exists locally but not on board)
@@ -169,22 +175,17 @@ export const fileCommands = {
 
       if (isLocalOnly) {
         // For local-only files, just open the local file directly
-        console.log(`[DEBUG] openFile (extension): Opening local-only file: ${abs}`);
       } else {
         // For files that should exist on board, check if present locally first
         const fileExistsLocally = await fs.access(abs).then(() => true).catch(() => false);
         if (!fileExistsLocally) {
-          console.log(`[DEBUG] openFile (extension): File not found locally, copying from board: ${node.path} -> ${abs}`);
           try {
             await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
-            console.log(`[DEBUG] openFile (extension): Successfully copied file from board`);
           } catch (copyError: any) {
-            console.error(`[DEBUG] openFile (extension): Failed to copy file from board:`, copyError);
+            console.error(`openFile (extension) failed to copy from board:`, copyError);
             vscode.window.showErrorMessage(`Failed to copy file from board: ${copyError?.message || copyError}`);
             return; // Don't try to open the file if copy failed
           }
-        } else {
-          console.log(`[DEBUG] openFile (extension): File already exists locally: ${abs}`);
         }
       }
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
@@ -379,7 +380,8 @@ export const fileCommands = {
     try {
       // Create locally first
       const relLocal = devicePath.replace(/^\//, "");
-      const localPath = path.join(ws, relLocal);
+      const localRootDir = getLocalSyncRoot();
+      const localPath = path.join(localRootDir, relLocal);
       await fs.mkdir(path.dirname(localPath), { recursive: true });
       await fs.writeFile(localPath, "");
       // Upload to board
@@ -413,7 +415,8 @@ export const fileCommands = {
     try {
       await mp.mkdir(devicePath);
       const relLocal = devicePath.replace(/^\//, "");
-      const localPath = path.join(ws, relLocal);
+      const localRootDir = getLocalSyncRoot();
+      const localPath = path.join(localRootDir, relLocal);
       await fs.mkdir(localPath, { recursive: true });
       vscode.window.showInformationMessage(`Folder created: ${devicePath}`);
     } catch (err: any) {
@@ -450,8 +453,9 @@ export const fileCommands = {
     if (wsFolder) {
       // Compute local path from node.path
       const relPath = node.path.replace(/^\//, "");
-      const localOld = path.join(wsFolder, relPath);
-      const localNew = path.join(wsFolder, base.replace(/^\//, ""), newName);
+      const localRootDir = getLocalSyncRoot();
+      const localOld = path.join(localRootDir, relPath);
+      const localNew = path.join(localRootDir, base.replace(/^\//, ""), newName);
       try {
         await fs.rename(localOld, localNew);
       } catch (e) {

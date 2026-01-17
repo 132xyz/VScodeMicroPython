@@ -1,10 +1,26 @@
 import { execFile, ChildProcess, exec } from "node:child_process";
+import { MpRemoteManager } from './MpRemoteManager';
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
+
+// Debug logging helper controlled by `microPythonWorkBench.debug` setting (default: false)
+const debugLog = (...args: any[]) => {
+  try {
+    const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.debug", false);
+    if (enabled) console.debug(...args);
+  } catch {}
+};
+
+async function formatMpremoteCmd(args: string[], pythonPath?: string | null): Promise<string> {
+  const escaped = args.map(arg => arg.includes(' ') ? `"${arg.replace(/"/g, '\\"')}"` : arg).join(' ');
+  const py = pythonPath ?? await MpRemoteManager.detectPythonPath();
+  if (py) return `"${py}" -m mpremote ${escaped}`;
+  return `mpremote ${escaped}`;
+}
 
 function normalizeConnect(c: string): string {
   if (c.startsWith("serial://")) return c.replace(/^serial:\/\//, "");
@@ -13,11 +29,11 @@ function normalizeConnect(c: string): string {
   // On macOS, add /dev/ prefix if it's missing and looks like a cu.* device
   if (c.startsWith("cu.") && !c.startsWith("/dev/")) {
     const normalized = `/dev/${c}`;
-    console.log(`[DEBUG] normalizeConnect: Added /dev/ prefix: ${c} -> ${normalized}`);
+    debugLog(`normalizeConnect: Added /dev/ prefix: ${c} -> ${normalized}`);
     return normalized;
   }
 
-  console.log(`[DEBUG] normalizeConnect: Using as-is: ${c}`);
+  debugLog(`normalizeConnect: Using as-is: ${c}`);
   return c;
 }
 
@@ -74,7 +90,7 @@ function getEffectiveDeviceRootSync(): string {
 // the workspace-scoped device root computed by getEffectiveDeviceRootSync().
 export function toDevicePath(localRel: string, rootPath: string): string {
   const normLocal = localRel ? localRel.replace(/^\/+/, '') : '';
-  const normRoot = rootPath === "/" ? getEffectiveDeviceRootSync() : (rootPath || "/").replace(/\/$/, '');
+  const normRoot = (rootPath || "/").replace(/\/$/, '');
   if (normRoot === "/") return `/${normLocal}`;
   return normLocal ? `${normRoot}/${normLocal}` : `${normRoot}`;
 }
@@ -82,11 +98,11 @@ export function toDevicePath(localRel: string, rootPath: string): string {
 // Map a device path to a local-relative path according to rootPath. Returns null when the device
 // path equals the effective device root (caller must handle this safely).
 export function toLocalRelative(devicePath: string, rootPath: string): string | null {
-  const normRoot = rootPath === "/" ? getEffectiveDeviceRootSync() : (rootPath || "/").replace(/\/$/, '');
+  const normRoot = (rootPath || "/").replace(/\/$/, '');
   const dp = devicePath.replace(/^\/+/, '');
-  if (normRoot === "/") return dp; // device root is '/', so localRel is devicePath without leading '/'
+  if (normRoot === "/") return dp; // treat '/' as full device root mapping
   const rootNoSlash = normRoot.replace(/^\/+/, '');
-  if (dp === rootNoSlash) return null;
+  if (dp === rootNoSlash) return '';
   if (dp.startsWith(rootNoSlash + '/')) return dp.slice(rootNoSlash.length + 1);
   return null; // outside configured root
 }
@@ -266,139 +282,102 @@ async function detectPythonPath(): Promise<string | null> {
 
 export function runMpremote(
   args: string[],
-  opts: { cwd?: string; retryOnFailure?: boolean; env?: NodeJS.ProcessEnv; pythonPath?: string } = {}
-): Promise<{ stdout: string; stderr: string }>{
+  opts: { cwd?: string; retryOnFailure?: boolean; env?: NodeJS.ProcessEnv; pythonPath?: string; timeoutMs?: number } = {}
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise(async (resolve, reject) => {
     const maxRetries = opts.retryOnFailure !== false ? 2 : 0;
     let attempt = 0;
 
-    // Detect Python path if not provided
-    let pythonPath: string | undefined = opts.pythonPath;
-    if (!pythonPath) {
-      const detected = await detectPythonPath();
-      if (!detected) {
-        return reject(new Error("Python interpreter not found. Please ensure Python is installed and available in PATH."));
-      }
-      pythonPath = detected;
+    // Extract port from connect command for connection management
+    let port = "";
+    const connectIndex = args.indexOf("connect");
+    if (connectIndex !== -1 && connectIndex + 1 < args.length) {
+      port = args[connectIndex + 1];
     }
 
-    // Determine how to invoke mpremote for this environment.
-    // Prefer `python -m mpremote` using the detected python. If that python doesn't have the module,
-    // fall back to the global `mpremote` executable (if available in PATH).
-    let invocationMode: { type: 'python-module' } | { type: 'executable', cmd: string } = { type: 'python-module' };
-    try {
-      await new Promise<void>((res, rej) => {
-        execFile(pythonPath as string, ['-m', 'mpremote', '--version'], { timeout: 3000 }, (err) => {
-          if (err) rej(err); else res();
-        });
-      });
-      invocationMode = { type: 'python-module' };
-    } catch (err: any) {
-      // If python -m mpremote failed due to missing module, try global executable
-      try {
-        await new Promise<void>((res, rej) => {
-          execFile('mpremote', ['--version'], { timeout: 3000 }, (err) => {
-            if (err) rej(err); else res();
-          });
-        });
-        invocationMode = { type: 'executable', cmd: 'mpremote' };
-      } catch (err2) {
-        // Keep python-module as default; the later exec will surface the real error
-        invocationMode = { type: 'python-module' };
-      }
-    }
-
-    const executeCommand = () => {
+    const executeCommand = async () => {
       attempt++;
 
-      // Extract port from connect command for connection management
-      let port = "";
-      const connectIndex = args.indexOf("connect");
-      if (connectIndex !== -1 && connectIndex + 1 < args.length) {
-        port = args[connectIndex + 1];
-        // Check if operation is already in progress on this port
-        if (connectionManager.isOperationInProgress(port)) {
-          console.log(`[DEBUG] runMpremote: Operation already in progress on port ${port}, queuing...`);
-          // Wait a bit and retry
-          setTimeout(executeCommand, 100);
-          return;
-        }
-        // Get connection info from manager
-        const connection = connectionManager.getConnection(port);
-        // Mark operation as started
+      // If an operation is already in progress for this port, queue and retry shortly
+      if (port && connectionManager.isOperationInProgress(port)) {
+        console.log(`[DEBUG] runMpremote: Operation already in progress on port ${port}, queuing...`);
+        setTimeout(() => void executeCommand(), 100);
+        return;
+      }
+
+      if (port) {
         connectionManager.markOperationStarted(port);
-        // Mark as healthy initially
         connectionManager.markHealthy(port);
       }
 
-      const escapedArgs = args.map(arg => {
-        if (arg.includes('\n') || arg.includes('"') || arg.includes('$') || arg.includes('`')) {
-          return `'${arg.replace(/'/g, "'\\''")}'`;
-        }
-        return `"${arg}"`;
-      });
+      try {
+        const env = { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", ...(opts.env || {}) };
+        const res = await MpRemoteManager.run(args, { cwd: opts.cwd, env, retryOnFailure: opts.retryOnFailure, pythonPath: opts.pythonPath, timeoutMs: opts.timeoutMs });
 
-      // Use python -m mpremote instead of direct mpremote command
-      const cmd = invocationMode.type === 'executable'
-        ? `mpremote ${escapedArgs.join(' ')}`
-        : `"${pythonPath}" -m mpremote ${escapedArgs.join(' ')}`;
-
-      // Force UTF-8 output for mpremote to avoid cp1252 encoding failures on Windows consoles
-      const env = {
-        ...process.env,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        ...opts.env
-      };
-
-      const child = exec(cmd, { cwd: opts.cwd, env }, (err, stdout, stderr) => {
-        if (currentChild === child) currentChild = null;
-
-        if (err) {
-          const emsg = String(stderr || err?.message || "");
-          const errorStr = emsg.toLowerCase();
-
-          // Mark connection as unhealthy on certain errors
-          if (port && (errorStr.includes("device not configured") ||
-                        errorStr.includes("serial port not found") ||
-                        errorStr.includes("connection failed"))) {
-            connectionManager.markUnhealthy(port);
-          }
-
-          // Mark operation as completed (even on failure)
-          if (port) {
-            connectionManager.markOperationCompleted(port);
-          }
-
-          // Retry on transient errors
-          if (attempt <= maxRetries && (
-              errorStr.includes("device not configured") ||
-              errorStr.includes("connection timeout") ||
-              errorStr.includes("serial read failed") ||
-              errorStr.includes("failed to access") ||
-              errorStr.includes("it may be in use by another program")
-          )) {
-            console.log(`mpremote command failed (attempt ${attempt}/${maxRetries + 1}), retrying...`);
-            setTimeout(executeCommand, 500 * attempt); // Exponential backoff
-            return;
-          }
-
-          return reject(new Error(emsg || "mpremote error"));
-        }
-
-        // Mark connection as healthy on success
         if (port) {
           connectionManager.markHealthy(port);
-          // markHealthy already sets operationInProgress to false
+          connectionManager.markOperationCompleted(port);
         }
 
-        resolve({ stdout: String(stdout), stderr: String(stderr) });
-      });
+        return resolve(res);
+      } catch (err: any) {
+        const emsg = String(err?.message || err || "");
+        const errorStr = emsg.toLowerCase();
 
-      currentChild = child;
+        if (port && (errorStr.includes("device not configured") ||
+                     errorStr.includes("serial port not found") ||
+                     errorStr.includes("connection failed"))) {
+          connectionManager.markUnhealthy(port);
+        }
+
+        if (port) connectionManager.markOperationCompleted(port);
+
+        if (attempt <= maxRetries && (
+          errorStr.includes("device not configured") ||
+          errorStr.includes("connection timeout") ||
+          errorStr.includes("serial read failed") ||
+          errorStr.includes("failed to access") ||
+          errorStr.includes("it may be in use by another program")
+        )) {
+          console.log(`mpremote command failed (attempt ${attempt}/${maxRetries + 1}), retrying...`);
+
+          // If the error indicates the serial port may be in use, try to cancel any
+          // active mpremote child process managed by MpRemoteManager, then close terminals.
+          if (errorStr.includes("it may be in use by another program") || errorStr.includes("failed to access")) {
+            try {
+              // Cancel active child process first to free the port
+              try { MpRemoteManager.cancelActive(); } catch (e) { console.warn('[DEBUG] runMpremote: cancelActive failed', e); }
+
+              const terms = vscode.window.terminals.slice();
+              for (const t of terms) {
+                const name = (t.name || '').toLowerCase();
+                if (name.includes('esp32 repl') || name.includes('repl') || name.includes('esp32 run') || name.includes('run file')) {
+                  try {
+                    console.log('[DEBUG] runMpremote: Disposing terminal that may hold serial port:', t.name);
+                    // Try gentle interrupt first
+                    try { t.sendText('\x18', false); } catch {}
+                    t.dispose();
+                  } catch (e) {
+                    console.warn('[DEBUG] runMpremote: Failed to dispose terminal', t.name, e);
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[DEBUG] runMpremote: Error while attempting to cancel child/close terminals:', e);
+            }
+          }
+
+          // Delay slightly longer after attempting to free the port
+          setTimeout(() => void executeCommand(), 700 * attempt);
+          return;
+        }
+
+        return reject(new Error(emsg || "mpremote error"));
+      }
     };
 
-    executeCommand();
+    // Start first attempt
+    void executeCommand();
   });
 }
 
@@ -429,7 +408,7 @@ const TREE_CACHE_DURATION = 30000; // 30 seconds
 // Populate the global cache with complete file tree
 async function populateFileTreeCache(): Promise<void> {
   try {
-    console.log(`[DEBUG] populateFileTreeCache: Starting cache population`);
+    debugLog(`populateFileTreeCache: Starting cache population`);
 
     // First, try to load from existing tree-paths.json file
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -444,37 +423,47 @@ async function populateFileTreeCache(): Promise<void> {
 
           // Use cached file if it's less than 30 seconds old
           if (fileAge < 30000) {
-            console.log(`[DEBUG] populateFileTreeCache: Loading from existing tree-paths.json (age: ${fileAge}ms)`);
+            debugLog(`populateFileTreeCache: Loading from existing tree-paths.json (age: ${fileAge}ms)`);
             const cachedData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            console.log(`[DEBUG] populateFileTreeCache: Loaded ${cachedData.length} items from cache file`);
+            debugLog(`populateFileTreeCache: Loaded ${cachedData.length} items from cache file`);
 
             const treeRoot = buildTreeFromParsedLines(cachedData);
-            console.log(`[DEBUG] populateFileTreeCache: Built tree with ${treeRoot.children.length} root children from cache`);
+            debugLog(`populateFileTreeCache: Built tree with ${treeRoot.children.length} root children from cache`);
 
             globalFileTreeCache = treeRoot;
             lastTreeUpdate = Date.now();
 
-            console.log(`[DEBUG] populateFileTreeCache: Cache populated from file with ${cachedData.length} items`);
+            debugLog(`populateFileTreeCache: Cache populated from file with ${cachedData.length} items`);
             return;
           } else {
-            console.log(`[DEBUG] populateFileTreeCache: Cached file too old (${fileAge}ms), refreshing...`);
+            debugLog(`populateFileTreeCache: Cached file too old (${fileAge}ms), refreshing...`);
           }
         }
       } catch (cacheError) {
-        console.log(`[DEBUG] populateFileTreeCache: Could not load from cache file:`, cacheError);
+        debugLog(`populateFileTreeCache: Could not load from cache file:`, cacheError);
       }
     }
 
     // Fallback: fetch fresh data from device
-    const connect = normalizeConnect(vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto") || "auto");
-    console.log(`[DEBUG] populateFileTreeCache: Fetching complete file tree from device`);
+    const connectSetting = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto") || "auto";
+    const connect = normalizeConnect(connectSetting);
+    // If user has configured "auto" and there is no active connection, do not probe device —
+    // probing on "auto" can cause spurious attempts when user hasn't intentionally connected.
+    if (connectSetting === "auto" && MpRemoteManager.getActiveConnectionPort() === null) {
+      debugLog(`populateFileTreeCache: connect=auto and no active connection — skipping device probe`);
+      // Ensure we have an empty root so callers can render an empty tree
+      globalFileTreeCache = { name: '/', isDir: true, children: [], fullPath: '/' };
+      lastTreeUpdate = Date.now();
+      return;
+    }
+    debugLog(`populateFileTreeCache: Fetching complete file tree from device`);
     const { stdout } = await runMpremote(["connect", connect, "fs", "tree"], { retryOnFailure: true });
 
-    console.log(`[DEBUG] populateFileTreeCache: Raw tree output:\n${stdout}`);
+    debugLog(`populateFileTreeCache: Raw tree output:\n${stdout}`);
 
     // Parse into hierarchical structure
     const parsedLines = parseTreeLines(String(stdout || ""));
-    console.log(`[DEBUG] populateFileTreeCache: Parsed ${parsedLines.length} lines:`, parsedLines.map(l => `${l.fullPath} (depth: ${l.depth})`));
+    debugLog(`populateFileTreeCache: Parsed ${parsedLines.length} lines:`, parsedLines.map(l => `${l.fullPath} (depth: ${l.depth})`));
 
     // Save parsed paths to file in .mpy-workbench
     try {
@@ -490,21 +479,27 @@ async function populateFileTreeCache(): Promise<void> {
 
         // Save the parsed paths as JSON
         fs.writeFileSync(filePath, JSON.stringify(parsedLines, null, 2));
-        console.log(`[DEBUG] Saved ${parsedLines.length} parsed paths to ${filePath}`);
+        debugLog(`Saved ${parsedLines.length} parsed paths to ${filePath}`);
       }
     } catch (error) {
-      console.error(`[DEBUG] Failed to save parsed paths:`, error);
+      console.error(`Failed to save parsed paths:`, error);
     }
 
     const treeRoot = buildTreeFromParsedLines(parsedLines);
-    console.log(`[DEBUG] populateFileTreeCache: Built tree with ${treeRoot.children.length} root children`);
+    debugLog(`populateFileTreeCache: Built tree with ${treeRoot.children.length} root children`);
 
     globalFileTreeCache = treeRoot;
     lastTreeUpdate = Date.now();
 
-    console.log(`[DEBUG] populateFileTreeCache: Cache populated with ${parsedLines.length} items`);
+    debugLog(`populateFileTreeCache: Cache populated with ${parsedLines.length} items`);
+    // Notify extension host that cache is available so UI can auto-refresh
+    try {
+      await vscode.commands.executeCommand('microPythonWorkBench._cachePopulated');
+    } catch (e) {
+      // ignore if command not registered
+    }
   } catch (error) {
-    console.error(`[DEBUG] populateFileTreeCache: Failed to populate cache:`, error);
+    console.error(`populateFileTreeCache: Failed to populate cache:`, error);
     throw error;
   }
 }
@@ -991,6 +986,14 @@ export async function lsTyped(p: string): Promise<{ name: string; isDir: boolean
     console.log(`[DEBUG] lsTyped: Cache valid = ${cacheValid}, lastTreeUpdate = ${lastTreeUpdate}, now = ${Date.now()}`);
 
     if (!cacheValid) {
+      // If this is the very first listing after activation and the user has not
+      // opted-in to auto-connect on activate, skip auto-population to avoid
+      // starting mpremote without explicit user action.
+      const allowOnActivate = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.connectOnActivate", false);
+      if (lastTreeUpdate === 0 && !allowOnActivate) {
+        console.log(`[DEBUG] lsTyped: Skipping auto-populate on activation (connectOnActivate=false)`);
+        return [];
+      }
       console.log(`[DEBUG] lsTyped: Cache invalid, populating...`);
       await populateFileTreeCache();
       console.log(`[DEBUG] lsTyped: Cache populated, globalFileTreeCache exists = ${!!globalFileTreeCache}`);
@@ -1080,7 +1083,8 @@ export async function detectBoardInfo(): Promise<BoardDetectInfo | null> {
   const script = "import os,json,machine;info=os.uname();uid=machine.unique_id().hex() if hasattr(machine,'unique_id') else '';sysname=getattr(info,'sysname','');mach=getattr(info,'machine','');release=getattr(info,'release','');print(json.dumps({'machine':mach,'sysname':sysname,'release':release,'id':uid}))";
 
   try {
-    const { stdout } = await runMpremote(["connect", connect, "exec", script]);
+    // Some boards may respond slowly when entering raw REPL; use a longer timeout here
+    const { stdout } = await runMpremote(["connect", connect, "exec", script], { timeoutMs: 20000 });
     const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
     const jsonLine = [...lines].reverse().find(l => l.startsWith("{") && l.endsWith("}"));
     if (!jsonLine) return null;
@@ -1115,11 +1119,11 @@ export async function listSerialPorts(): Promise<{port: string, name: string}[]>
     }).filter(Boolean) as {port: string, name: string}[];
 
     if (devices.length === 0) {
-      vscode.window.showWarningMessage("No ESP32 devices detected. Make sure mpremote is installed and available in PATH.");
+      vscode.window.showWarningMessage("未检测到设备。请确保设备已连接且 Python 环境可用。");
     }
     return devices;
   } catch (err: any) {
-    vscode.window.showWarningMessage("Error executing mpremote to detect ports: " + (err?.message || err));
+    vscode.window.showWarningMessage("执行内置 mpremote 检测端口时出错：" + (err?.message || err));
     return [];
   }
 }
@@ -1172,7 +1176,7 @@ export async function cpFromDevice(devicePath: string, localPath: string): Promi
     const devicePathWithPrefix = deviceArg === "/" ? ":" : `:${deviceArg}`;
     // Build args and always try with -r; mpremote tolerates -r for files
     const baseArgs = ["connect", connect, "fs", "cp", "-r", devicePathWithPrefix, localPath];
-    const command = `mpremote ${baseArgs.map(arg => `"${arg}"`).join(' ')}`;
+    const command = await formatMpremoteCmd(baseArgs);
 
     console.log(`[DEBUG] cpFromDevice: Executing command: ${command}`);
     console.log(`[DEBUG] cpFromDevice: Device path: ${devicePath} -> ${deviceArg} -> ${devicePathWithPrefix} (isDir=${isDir})`);
@@ -1191,7 +1195,7 @@ export async function cpFromDevice(devicePath: string, localPath: string): Promi
     connectionManager.markUnhealthy(connect);
     // Include command and file paths in error message for better debugging
     const deviceArg = devicePath && devicePath !== "/" ? devicePath.replace(/^\//, "") : "/";
-    const command = `mpremote connect ${connect} fs cp ${info?.isDir ? "-r " : ""}"${deviceArg}" "${localPath}"`;
+    const command = await formatMpremoteCmd(["connect", connect, "fs", "cp", info?.isDir ? "-r" : "", `:${deviceArg}`, localPath]);
     const enhancedError = new Error(`Failed to copy from device: ${error?.message || error}\nCommand: ${command}\nOriginal device path: ${devicePath}\nNormalized device path: ${deviceArg}\nLocal path: ${localPath}`);
     throw enhancedError;
   }
@@ -1230,7 +1234,7 @@ export async function cpToDevice(localPath: string, devicePath: string): Promise
     // For cp TO device FROM local, device path needs : prefix
     const devicePathWithPrefix = deviceArg === "/" ? ":" : `:${deviceArg}`;
     const commandArgs = ["connect", connect, "fs", "cp", localPath, devicePathWithPrefix];
-    const command = `mpremote ${commandArgs.map(arg => `"${arg}"`).join(' ')}`;
+    const command = await formatMpremoteCmd(commandArgs);
 
     console.log(`[DEBUG] cpToDevice: Executing command: ${command}`);
     console.log(`[DEBUG] cpToDevice: Device path: ${devicePath} -> ${deviceArg} -> ${devicePathWithPrefix}`);

@@ -10,14 +10,13 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
   refreshTree(): void { this._onDidChangeTreeData.fire(); }
   // Diagnostic helper: log when the view is asked to refresh
-  logRefresh(): void { console.log('[DEBUG] SyncTree: refresh requested'); }
+  logRefresh(): void { /* debug log removed */ }
 
   getTreeItem(element: SyncActionNode): vscode.TreeItem {
     return this.getTreeItemForAction(element);
   }
 
   async getChildren(): Promise<SyncActionNode[]> {
-    console.log('[DEBUG] SyncTree: getChildren called');
     return this.getActionNodes();
   }
 
@@ -39,7 +38,7 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
   }
 
   async getActionNodes(): Promise<SyncActionNode[]> {
-    console.log('[DEBUG] SyncTree: getActionNodes building nodes');
+    // building action nodes
     // Determina el estado actual de autosync para mostrarlo en el label
     let autoSyncLabel = "Toggle AutoSync";
     try {
@@ -65,7 +64,7 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
         autoSyncLabel = enabled ? 'AutoSync: ON (click to disable)' : 'AutoSync: OFF (click to enable)';
       }
     } catch {}
-    console.log('[DEBUG] SyncTree: getActionNodes ready, label=', autoSyncLabel);
+    // action nodes ready
     return [
       { id: "toggleAutoSync", label: autoSyncLabel, command: "microPythonWorkBench.toggleWorkspaceAutoSync" },
       { id: "baseline", label: "Upload all files (Local → Board)", command: "microPythonWorkBench.syncBaseline" },

@@ -12,10 +12,8 @@ export class CodeCompletionManager {
   private statusBarItem: vscode.StatusBarItem;
 
   private constructor() {
-    console.log('[CodeCompletion] Creating status bar item...');
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.statusBarItem.command = 'microPythonWorkBench.toggleCodeCompletion';
-    console.log('[CodeCompletion] Status bar item created:', this.statusBarItem ? 'success' : 'failed');
     // 初始状态不显示，等待初始化
   }
 
@@ -30,7 +28,7 @@ export class CodeCompletionManager {
    * 初始化代码补全管理器
    */
   public async initialize(context: vscode.ExtensionContext): Promise<void> {
-    console.log('[CodeCompletion] Initializing code completion manager...');
+    // 初始化代码补全管理器
 
     // 注册命令
     context.subscriptions.push(
@@ -54,7 +52,6 @@ export class CodeCompletionManager {
     // 监听活动编辑器变化
     context.subscriptions.push(
       vscode.window.onDidChangeActiveTextEditor(() => {
-        console.log('[CodeCompletion] Active text editor changed:', vscode.window.activeTextEditor?.document.fileName);
         this.updateStatusBar();
       })
     );
@@ -67,7 +64,7 @@ export class CodeCompletionManager {
    * 处理配置变化
    */
   private async handleConfigurationChange(): Promise<void> {
-    console.log('[CodeCompletion] Handling configuration change...');
+    // 处理配置变化
 
     const config = vscode.workspace.getConfiguration('microPythonWorkBench');
     const enableCodeCompletion = config.get<boolean>('enableCodeCompletion', false);
@@ -167,8 +164,8 @@ export class CodeCompletionManager {
     try {
         await vscode.commands.executeCommand('python.analysis.restartLanguageServer');
     } catch (e) {
-        // 命令可能不存在（如果未安装 Pylance），忽略错误
-        console.log('[CodeCompletion] Failed to restart Pylance:', e);
+        // 命令可能不存在（如果未安装 Pylance），记录为错误
+        console.error('[CodeCompletion] Failed to restart Pylance:', e);
     }
   }
 
@@ -207,20 +204,20 @@ export class CodeCompletionManager {
     const globalExtraPaths = globalPythonConfig.get<string[]>('analysis.extraPaths', []) || [];
     const newGlobalExtraPaths = globalExtraPaths.filter(p => !isExtensionPath(p));
     if (newGlobalExtraPaths.length !== globalExtraPaths.length) {
-        await globalPythonConfig.update('analysis.extraPaths', newGlobalExtraPaths, vscode.ConfigurationTarget.Global);
+      await globalPythonConfig.update('analysis.extraPaths', newGlobalExtraPaths, vscode.ConfigurationTarget.Global);
     }
 
     // 清理全局 autoComplete.extraPaths
     const globalAutoCompletePaths = globalPythonConfig.get<string[]>('autoComplete.extraPaths', []) || [];
     const newGlobalAutoCompletePaths = globalAutoCompletePaths.filter(p => !isExtensionPath(p));
     if (newGlobalAutoCompletePaths.length !== globalAutoCompletePaths.length) {
-        await globalPythonConfig.update('autoComplete.extraPaths', newGlobalAutoCompletePaths, vscode.ConfigurationTarget.Global);
+      await globalPythonConfig.update('autoComplete.extraPaths', newGlobalAutoCompletePaths, vscode.ConfigurationTarget.Global);
     }
 
     // 清理全局 analysis.stubPath
     const globalStubPath = globalPythonConfig.get<string>('analysis.stubPath', '');
     if (isExtensionPath(globalStubPath)) {
-        await globalPythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Global);
+      await globalPythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Global);
     }
 
 
@@ -230,15 +227,15 @@ export class CodeCompletionManager {
     const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []);
     const newExtraPaths = extraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
     if (newExtraPaths.length !== extraPaths.length) {
-        await pythonConfig.update('analysis.extraPaths', newExtraPaths, vscode.ConfigurationTarget.Workspace);
+      await pythonConfig.update('analysis.extraPaths', newExtraPaths, vscode.ConfigurationTarget.Workspace);
     }
 
     // 清理 autoComplete.extraPaths
     const autoCompleteExtraPaths = pythonConfig.get<string[]>('autoComplete.extraPaths', []);
     const newAutoCompleteExtraPaths = autoCompleteExtraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
-    if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
-         await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
-    }
+        if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
+          await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
+        }
 
     // 更新 analysis.stubPath
     const currentStubPath = pythonConfig.get<string>('analysis.stubPath', '');
@@ -264,17 +261,11 @@ export class CodeCompletionManager {
    * 更新状态栏
    */
   private updateStatusBar(): void {
-    console.log('[CodeCompletion] Updating status bar...');
-
     const activeEditor = vscode.window.activeTextEditor;
     const isPythonFile = activeEditor && activeEditor.document.languageId === 'python';
-    console.log('[CodeCompletion] Active editor:', activeEditor ? activeEditor.document.fileName : 'none');
-    console.log('[CodeCompletion] Is Python file:', isPythonFile);
-    console.log('[CodeCompletion] Code completion enabled:', this.isEnabled);
 
     // 只有在打开 Python 文件时才显示状态栏
     if (!isPythonFile) {
-      console.log('[CodeCompletion] Hiding status bar: not a Python file');
       this.statusBarItem.hide();
       return;
     }
@@ -296,9 +287,7 @@ export class CodeCompletionManager {
     this.statusBarItem.text = text;
     this.statusBarItem.tooltip = tooltip;
     this.statusBarItem.color = color;
-    console.log('[CodeCompletion] Setting status bar - text:', text, 'enabled:', this.isEnabled);
     this.statusBarItem.show();
-    console.log('[CodeCompletion] Status bar item shown successfully');
   }
 
   /**
