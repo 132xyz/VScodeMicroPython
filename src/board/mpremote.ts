@@ -7,6 +7,8 @@ import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
 
+// (no-op) module load debug removed
+
 // Debug logging helper controlled by `microPythonWorkBench.debug` setting (default: false)
 const debugLog = (...args: any[]) => {
   try {
@@ -90,17 +92,28 @@ function getEffectiveDeviceRootSync(): string {
 // the workspace-scoped device root computed by getEffectiveDeviceRootSync().
 export function toDevicePath(localRel: string, rootPath: string): string {
   const normLocal = localRel ? localRel.replace(/^\/+/, '') : '';
-  const normRoot = (rootPath || "/").replace(/\/$/, '');
-  if (normRoot === "/") return `/${normLocal}`;
+  const rawRoot = (rootPath || "/");
+  if (rawRoot === "/") {
+    const effective = getEffectiveDeviceRootSync();
+    return effective + (normLocal ? `/${normLocal}` : '');
+  }
+  const normRoot = rawRoot.replace(/\/$/, '');
   return normLocal ? `${normRoot}/${normLocal}` : `${normRoot}`;
 }
 
 // Map a device path to a local-relative path according to rootPath. Returns null when the device
 // path equals the effective device root (caller must handle this safely).
 export function toLocalRelative(devicePath: string, rootPath: string): string | null {
-  const normRoot = (rootPath || "/").replace(/\/$/, '');
+  const rawRoot = (rootPath || "/");
   const dp = devicePath.replace(/^\/+/, '');
-  if (normRoot === "/") return dp; // treat '/' as full device root mapping
+  if (rawRoot === "/") {
+    const effective = getEffectiveDeviceRootSync();
+    const effNo = effective.replace(/^\/+/, '');
+    if (dp === effNo) return null;
+    if (dp.startsWith(effNo + '/')) return dp.slice(effNo.length + 1);
+    return null;
+  }
+  const normRoot = rawRoot.replace(/\/$/, '');
   const rootNoSlash = normRoot.replace(/^\/+/, '');
   if (dp === rootNoSlash) return '';
   if (dp.startsWith(rootNoSlash + '/')) return dp.slice(rootNoSlash.length + 1);
