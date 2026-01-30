@@ -51,15 +51,14 @@ export class Localization {
     // 2. if VS Code language is Chinese -> embedded `zhTranslations` (prefer Chinese)
     // 3. defaultTranslations (English)
     // 4. finally the key
-    let message: string | undefined;
+    let message: string;
     if (translations && translations[key]) {
-      message = translations[key];
+      message = String(translations[key]);
     } else if ((vscode.env && typeof vscode.env.language === 'string') && vscode.env.language.startsWith('zh')) {
-      message = zhTranslations[key] || defaultTranslations[key];
+      message = String(zhTranslations[key] || defaultTranslations[key] || key);
     } else {
-      message = defaultTranslations[key] || (translations && translations[key]);
+      message = String(defaultTranslations[key] || (translations && translations[key]) || key);
     }
-    if (!message) message = key;
 
     // Lightweight debug: if debug enabled, print where the localization came from
     try {
