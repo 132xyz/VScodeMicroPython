@@ -28,9 +28,9 @@ describe('path mapping and device root behavior', () => {
     }
   });
 
-  test('toLocalRelative returns null for deviceRoot itself and correct rel for child paths', () => {
+  test('toLocalRelative returns empty string for deviceRoot itself and correct rel for child paths', () => {
     const dr = process.env.MPY_DEVICE_ROOT!;
-    expect(mp.toLocalRelative(dr, '/')).toBeNull();
+    expect(mp.toLocalRelative(dr, '/')).toBe('');
     const child = dr + '/a/b.py';
     expect(mp.toLocalRelative(child, '/')).toBe('a/b.py');
   });

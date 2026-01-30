@@ -106,13 +106,26 @@ export function toDevicePath(localRel: string, rootPath: string): string {
 export function toLocalRelative(devicePath: string, rootPath: string): string | null {
   const rawRoot = (rootPath || "/");
   const dp = devicePath.replace(/^\/+/, '');
+
+  // New semantics: always map device paths into the local sync directory by
+  // returning a local-relative path. For a configured non-root `rootPath`, we
+  // strip that prefix; for `rootPath === '/'` we simply strip the leading
+  // slash from the device path so that `/foo/bar.py` -> `foo/bar.py` (which
+  // will resolve under the local sync root).
   if (rawRoot === "/") {
+    // If workspace-scoped effective device root is being used (tests or
+    // persisted config), map paths under that root specially so that the
+    // effective root itself maps to '' (the local sync root) and children
+    // map to their relative paths. For other absolute device paths, fall
+    // back to simple leading-slash stripping so they still map under the
+    // local sync directory.
     const effective = getEffectiveDeviceRootSync();
     const effNo = effective.replace(/^\/+/, '');
-    if (dp === effNo) return null;
+    if (dp === effNo) return '';
     if (dp.startsWith(effNo + '/')) return dp.slice(effNo.length + 1);
-    return null;
+    return dp;
   }
+
   const normRoot = rawRoot.replace(/\/$/, '');
   const rootNoSlash = normRoot.replace(/^\/+/, '');
   if (dp === rootNoSlash) return '';

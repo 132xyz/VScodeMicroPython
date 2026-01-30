@@ -97,7 +97,7 @@ export const fileCommands = {
       const ws = getWorkspaceFolder();
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
       const rel = toLocalRelative(node.path, rootPath);
-      if (!rel) {
+      if (rel === null) {
         vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot open locally.`);
         return;
       }
@@ -117,7 +117,7 @@ export const fileCommands = {
     if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const rel = toLocalRelative(node.path, rootPath);
-    if (!rel) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot sync.`); return; }
+    if (rel === null) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot sync.`); return; }
     const localRootDir = getLocalSyncRoot();
     const abs = path.join(localRootDir, ...rel.split("/"));
     try {
@@ -139,7 +139,7 @@ export const fileCommands = {
     if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     const rel = toLocalRelative(node.path, rootPath);
-    if (!rel) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot download.`); return; }
+    if (rel === null) { vscode.window.showErrorMessage(`Device path ${node.path} is outside the configured sync root or maps to device root; cannot download.`); return; }
     const localRootDir = getLocalSyncRoot();
     const abs = path.join(localRootDir, ...rel.split("/"));
     try {
@@ -280,14 +280,24 @@ export const fileCommands = {
     if (ws) {
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
       const rel = toLocalRelative(node.path, rootPath);
-      if (!rel) {
+      if (rel === null) {
         // Mapping failed or corresponds to device root; avoid deleting workspace root or invalid paths
         vscode.window.showWarningMessage(`Local deletion skipped: '${node.path}' does not map to a safe local path.`);
       } else {
-        const abs = path.join(ws.uri.fsPath, ...rel.split("/"));
+        // Resolve against configured local sync root to avoid touching workspace root
         try {
-          await fs.rm(abs, { recursive: true, force: true });
-        } catch {}
+          const localRootDir = getLocalSyncRoot();
+          const abs = path.join(localRootDir, ...rel.split("/"));
+          // Safety: ensure abs is within localRootDir
+          const relCheck = path.relative(localRootDir, abs).replace(/\\/g, '/');
+          if (relCheck.startsWith('..')) {
+            vscode.window.showWarningMessage(`Local deletion skipped: '${abs}' is outside the configured local sync root.`);
+          } else {
+            try { await fs.rm(abs, { recursive: true, force: true }); } catch {}
+          }
+        } catch (err) {
+          vscode.window.showWarningMessage(`Local deletion skipped: local sync root not configured.`);
+        }
       }
     }
     // tree.removeNode(node.path);

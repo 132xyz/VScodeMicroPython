@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.77",
+  "version": "0.1.86",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -266,6 +266,11 @@
         "command": "microPythonWorkBench.openReplFromView",
         "title": "%commands.openReplFromView.title%",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "microPythonWorkBench.stopSerial",
+        "title": "%commands.stopSerial.title%",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "microPythonWorkBench.deleteAllBoard",

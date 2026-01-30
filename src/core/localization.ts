@@ -31,36 +31,30 @@ export class Localization {
       'messages.codeCompletionDisableFailed': '禁用代码补全失败: {0}'
     };
 
+    // Try to load package-level translations; fall back to embedded defaults
+    let translations: { [key: string]: string } | undefined;
     try {
-      // 尝试使用传统的 NLS 方式
-      const nls = require('../package.nls.json');
-      const zhCn = require('../package.nls.zh-cn.json');
-
-      // 检查当前语言环境
-      const locale = vscode.env.language;
-      let translations = nls; // 默认英文
-
-      if (locale.startsWith('zh')) {
-        translations = zhCn;
-      }
-
-      let message = translations[key] || nls[key] || defaultTranslations[key] || zhTranslations[key] || key;
-    } catch (error) {
-      // 如果 require 失败，使用内置翻译
-      const locale = vscode.env.language;
-      let message = defaultTranslations[key] || key;
-
-      if (locale.startsWith('zh')) {
-        message = zhTranslations[key] || defaultTranslations[key] || key;
-      }
+      // Attempt several relative paths depending on runtime location
+      let nls: any;
+      try { nls = require('../../package.nls.json'); } catch { try { nls = require('../package.nls.json'); } catch { nls = undefined; } }
+      let zhCn: any;
+      try { zhCn = require('../../package.nls.zh-cn.json'); } catch { try { zhCn = require('../package.nls.zh-cn.json'); } catch { zhCn = undefined; } }
+      const locale = (vscode.env && vscode.env.language) ? vscode.env.language : 'en';
+      if (locale.startsWith('zh') && zhCn) translations = zhCn;
+      else if (nls) translations = nls;
+    } catch (e) {
+      translations = undefined;
     }
 
-    let message = defaultTranslations[key] || key;
-    if (vscode.env.language.startsWith('zh')) {
-      message = zhTranslations[key] || defaultTranslations[key] || key;
+    // Resolve message: translation file -> defaults -> key
+    let message = (translations && translations[key]) || defaultTranslations[key] || (vscode.env.language.startsWith('zh') ? zhTranslations[key] : undefined) || key;
+
+    // If no translation and args provided, include args in fallback message for context
+    if (message === key && args.length > 0) {
+      return `${key}: ${args.map(a => String(a)).join(' ')}`;
     }
 
-    // 简单的参数替换
+    // Simple placeholder replacement
     if (args.length > 0) {
       args.forEach((arg, index) => {
         message = message.replace(new RegExp(`\\{${index}\\}`, 'g'), String(arg));

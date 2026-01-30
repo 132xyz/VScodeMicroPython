@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { Esp32Tree } from "../board/esp32Fs";
 import { ActionsTree } from "./actions";
 import { SyncTree } from "../sync/syncView";
+import { getLocalSyncRoot } from "./workspaceUtils";
 import { Esp32Node } from "./types";
 import * as mp from "../board/mpremote";
 import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../board/mpremote";
@@ -346,6 +347,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Returns true if autosync should run for this workspace (VS Code setting wins, legacy .mpy-workbench fallback)
   async function workspaceAutoSyncEnabled(wsPath: string): Promise<boolean> {
+    // First check extension workspaceState (session/workspace-scoped storage)
+    try {
+      const wsStateVal = context.workspaceState.get<boolean>('autoSyncOnSave');
+      if (typeof wsStateVal === 'boolean') return wsStateVal;
+    } catch {}
     const { value: settingValue, defaultValue } = readAutoSyncSettingFromVsCode(wsPath);
     if (typeof settingValue === 'boolean') return settingValue;
 
@@ -458,10 +464,8 @@ export async function activate(context: vscode.ExtensionContext) {
   autoSyncStatus.tooltip = 'Toggle workspace Auto-Sync on Save';
   context.subscriptions.push(autoSyncStatus);
 
-  // Status bar item to show last auto-sync time
-  const autoSyncLastStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 95);
-  autoSyncLastStatus.tooltip = 'Last successful auto-sync time';
-  context.subscriptions.push(autoSyncLastStatus);
+  // NOTE: We no longer create a separate status bar item for "last auto-sync".
+  // The last-sync information is shown in the tooltip of `autoSyncStatus`.
 
   // Output channel for auto-sync events
   const autoSyncOutput = vscode.window.createOutputChannel("MicroPython AutoSync");
@@ -469,22 +473,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const formatTime = (d: Date) => d.toLocaleTimeString();
   function updateLastAutoSyncStatus(ts?: Date, detail?: string, enabled?: boolean) {
+    const baseHint = 'Toggle workspace Auto-Sync on Save (saved to extension workspace state, not written to settings)';
     if (enabled === false) {
-      autoSyncLastStatus.text = 'MPY: LastSync --';
-      autoSyncLastStatus.tooltip = 'Auto-sync is disabled';
-      autoSyncLastStatus.show();
+      autoSyncStatus.tooltip = `Auto-sync is disabled\n${baseHint}`;
       return;
     }
     if (!ts) {
-      autoSyncLastStatus.text = 'MPY: LastSync --';
-      autoSyncLastStatus.tooltip = 'No auto-sync yet';
-      autoSyncLastStatus.show();
+      autoSyncStatus.tooltip = `No auto-sync yet\n${baseHint}`;
       return;
     }
     const t = formatTime(ts);
-    autoSyncLastStatus.text = `MPY: LastSync ${t}`;
-    autoSyncLastStatus.tooltip = detail ? `Last auto-sync at ${t}\n${detail}` : `Last auto-sync at ${t}`;
-    autoSyncLastStatus.show();
+    autoSyncStatus.tooltip = detail ? `Last auto-sync at ${t}\n${detail}\n${baseHint}` : `Last auto-sync at ${t}\n${baseHint}`;
   }
 
   // Status bar item for canceling all tasks
@@ -645,6 +644,9 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       // Allow listing and refresh the tree view
       tree.allowListing();
+      // Clear the tree's incremental node cache so it will re-query the
+      // populated global file-tree cache instead of returning stale nodes.
+      try { tree.clearCache(); } catch {}
       tree.refreshTree();
     } catch (e) {
       console.warn('[Extension] _cachePopulated handler failed', e);
@@ -715,6 +717,12 @@ export async function activate(context: vscode.ExtensionContext) {
         tree.requireManualRefresh();
         tree.clearCache();
         try { mp.clearFileTreeCache(); } catch {}
+        // When the configured connect port changes, proactively refresh the
+        // device file tree so the Files view auto-populates for the newly
+        // selected device without requiring the user to click Refresh.
+        // This intentionally bypasses the `connectOnActivate` activation-time
+        // gating because the user explicitly changed the connect setting.
+        try { mp.refreshFileTreeCache().catch(()=>{}); } catch {}
         tree.refreshTree();
       }
     }),
@@ -755,31 +763,41 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(async (doc) => {
       const ws = vscode.workspace.getWorkspaceFolder(doc.uri);
-      if (!ws) return;
-      // Only create .mpy-workbench directory if workspace is initialized
-      const initialized = await isLocalSyncInitialized();
-      if (!initialized) return;
-      // ensure project config folder exists
-  await ensureMpyWorkbenchDir(ws.uri.fsPath);
-      const enabled = await workspaceAutoSyncEnabled(ws.uri.fsPath);
-      if (!enabled) {
-        const now = Date.now();
-        if (now - lastLocalOnlyNotice > 5000) {
-          vscode.window.setStatusBarMessage("Board: Auto sync disabled — saved locally only (workspace)", 3000);
-          lastLocalOnlyNotice = now;
-        }
-        return; // save locally only
-      }
-      const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
-      const rel = path.relative(ws.uri.fsPath, doc.uri.fsPath).replace(/\\/g, "/");
-      try {
-        const matcher = await createIgnoreMatcher(ws.uri.fsPath);
-        if (matcher(rel, false)) {
-          // Skip auto-upload for ignored files
+        if (!ws) return;
+        // Determine configured local sync root; refuse to operate on workspace root implicitly
+        let localRootDir: string;
+        try {
+          localRootDir = getLocalSyncRoot();
+        } catch (err) {
+          // Local sync root not configured — skip auto-upload to avoid touching workspace root
+          const now = Date.now();
+          if (now - lastLocalOnlyNotice > 5000) {
+            vscode.window.setStatusBarMessage("Board: Auto sync skipped — local sync root not configured (see microPythonWorkBench.syncLocalRoot)", 5000);
+            lastLocalOnlyNotice = now;
+          }
           return;
         }
-      } catch {}
-      const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
+        // Only create .mpy-workbench directory if workspace is initialized (and local root present)
+        const initialized = await isLocalSyncInitialized();
+        if (!initialized) return;
+        // ensure project config folder exists
+    await ensureMpyWorkbenchDir(ws.uri.fsPath);
+        const enabled = await workspaceAutoSyncEnabled(ws.uri.fsPath);
+        if (!enabled) {
+        return; // save locally only
+      }
+        const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
+        const rel = path.relative(localRootDir, doc.uri.fsPath).replace(/\\/g, "/");
+        // If file is outside the configured local sync root, do not auto-upload
+        if (rel.startsWith('..') || path.isAbsolute(rel)) return;
+        try {
+          const matcher = await createIgnoreMatcher(localRootDir);
+          if (matcher(rel, false)) {
+            // Skip auto-upload for ignored files
+            return;
+          }
+        } catch {}
+        const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
       const rawBehavior = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.replRestoreBehavior", "none");
       const behavior = normalizeReplBehavior(rawBehavior);
       let resumeCmd: string | undefined;
@@ -824,25 +842,17 @@ export async function activate(context: vscode.ExtensionContext) {
       const ws = getWorkspaceFolder();
       const current = await workspaceAutoSyncEnabled(ws.uri.fsPath);
       const next = !current;
-      // Update VS Code workspace folder settings - writes to $project/.vscode/settings.json
-      // Must use WorkspaceFolder target and pass resource URI for correct folder targeting
-      await vscode.workspace.getConfiguration('microPythonWorkBench', ws.uri).update(
-        'autoSyncOnSave',
-        next,
-        vscode.ConfigurationTarget.WorkspaceFolder
-      );
-      // Keep legacy .mpy-workbench config in sync for backward compatibility
-      try {
-        const cfg = await readWorkspaceConfig(ws.uri.fsPath);
-        cfg.autoSyncOnSave = next;
-        await writeWorkspaceConfig(ws.uri.fsPath, cfg);
-      } catch (e) {
-        console.error('Failed to update legacy autoSync config', e);
-      }
-      Localization.showInfo("messages.workspaceAutoSyncToggled", next ? Localization.t("messages.enabled") : Localization.t("messages.disabled"));
+      // Persist the toggle to extension workspaceState (per-workspace storage), do not write VS Code settings
+      await context.workspaceState.update('autoSyncOnSave', next);
+      // Do NOT write to VS Code settings or package.json; this is intentionally kept as extension-scoped persistence
       try { await refreshAutoSyncUi(); } catch {}
     } catch (e) {
-      Localization.showError("messages.toggleAutoSyncFailed", String(e));
+      try {
+        const msg = String((e as any)?.message || e);
+        Localization.showError("messages.toggleAutoSyncFailed", msg);
+      } catch (inner) {
+        Localization.showError("messages.toggleAutoSyncFailed", String(e));
+      }
     }
   }));
 }

@@ -2,7 +2,9 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as mp from "../board/mpremote";
+import { toLocalRelative } from "../board/mpremoteCommands";
 import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } from "../sync/sync";
+import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { createIgnoreMatcher } from "../sync/sync";
 import { Esp32DecorationProvider } from "../ui/decorations";
 
@@ -46,11 +48,7 @@ async function isLocalSyncInitialized(): Promise<boolean> {
   }
 }
 
-// Helper to convert device path to local relative
-function toLocalRelative(devicePath: string, rootPath: string): string {
-  const rel = devicePath.replace(new RegExp(`^${rootPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), "").replace(/^\//, "");
-  return rel;
-}
+// NOTE: use central `toLocalRelative` from mpremoteCommands
 
 // Sync commands implementation
 export const syncCommands = {
@@ -64,24 +62,12 @@ export const syncCommands = {
       // }
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
-      const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
-      let localRootDir = ws.uri.fsPath;
-      if (syncLocalRoot) {
-        if (path.isAbsolute(syncLocalRoot)) {
-          localRootDir = syncLocalRoot;
-        } else {
-          localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
-        }
-        try {
-          await fs.access(localRootDir);
-        } catch {
-          const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
-          if (create === "Create") {
-            await fs.mkdir(localRootDir, { recursive: true });
-          } else {
-            localRootDir = ws.uri.fsPath;
-          }
-        }
+      let localRootDir: string;
+      try {
+        localRootDir = getLocalSyncRoot();
+      } catch (err) {
+        vscode.window.showErrorMessage('Local sync root not configured. Create a "mpy" folder in the workspace or set "microPythonWorkBench.syncLocalRoot".');
+        return;
       }
       const initialized = await isLocalSyncInitialized();
       if (!initialized) {
@@ -182,24 +168,12 @@ export const syncCommands = {
     try {
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
-      const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
-      let localRootDir = ws.uri.fsPath;
-      if (syncLocalRoot) {
-        if (path.isAbsolute(syncLocalRoot)) {
-          localRootDir = syncLocalRoot;
-        } else {
-          localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
-        }
-        try {
-          await fs.access(localRootDir);
-        } catch {
-          const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
-          if (create === "Create") {
-            await fs.mkdir(localRootDir, { recursive: true });
-          } else {
-            localRootDir = ws.uri.fsPath;
-          }
-        }
+      let localRootDir: string;
+      try {
+        localRootDir = getLocalSyncRoot();
+      } catch (err) {
+        vscode.window.showErrorMessage('Local sync root not configured. Create a "mpy" folder in the workspace or set "microPythonWorkBench.syncLocalRoot".');
+        return;
       }
       const initialized = await isLocalSyncInitialized();
       if (!initialized) {
@@ -243,6 +217,10 @@ export const syncCommands = {
           for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const rel = toLocalRelative(file.path, rootPath);
+            if (rel === null) {
+              // Skip files that don't map into the local sync root
+              continue;
+            }
             const abs = path.join(localRootDir, ...rel.split('/'));
 
             progress.report({ increment: (i / total) * 100, message: `Downloading ${rel}` });
@@ -276,24 +254,12 @@ export const syncCommands = {
   syncDiffsLocalToBoard: async () => {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
-    const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
-    let localRootDir = ws.uri.fsPath;
-    if (syncLocalRoot) {
-      if (path.isAbsolute(syncLocalRoot)) {
-        localRootDir = syncLocalRoot;
-      } else {
-        localRootDir = path.join(ws.uri.fsPath, syncLocalRoot);
-      }
-      try {
-        await fs.access(localRootDir);
-      } catch {
-        const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
-        if (create === "Create") {
-          await fs.mkdir(localRootDir, { recursive: true });
-        } else {
-          localRootDir = ws.uri.fsPath;
-        }
-      }
+    let localRootDir: string;
+    try {
+      localRootDir = getLocalSyncRoot();
+    } catch (err) {
+      vscode.window.showErrorMessage('Local sync root not configured. Create a "mpy" folder in the workspace or set "microPythonWorkBench.syncLocalRoot".');
+      return;
     }
     const initialized = await isLocalSyncInitialized();
     if (!initialized) {
@@ -344,24 +310,12 @@ export const syncCommands = {
   syncDiffsBoardToLocal: async () => {
     const ws2 = vscode.workspace.workspaceFolders?.[0];
     if (!ws2) { vscode.window.showErrorMessage("No workspace folder open"); return; }
-    const syncLocalRoot = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.syncLocalRoot", "");
-    let localRootDir = ws2.uri.fsPath;
-    if (syncLocalRoot) {
-      if (path.isAbsolute(syncLocalRoot)) {
-        localRootDir = syncLocalRoot;
-      } else {
-        localRootDir = path.join(ws2.uri.fsPath, syncLocalRoot);
-      }
-      try {
-        await fs.access(localRootDir);
-      } catch {
-        const create = await vscode.window.showWarningMessage(`Sync local root '${syncLocalRoot}' does not exist. Create it?`, "Create", "Use Workspace Root");
-        if (create === "Create") {
-          await fs.mkdir(localRootDir, { recursive: true });
-        } else {
-          localRootDir = ws2.uri.fsPath;
-        }
-      }
+    let localRootDir: string;
+    try {
+      localRootDir = getLocalSyncRoot();
+    } catch (err) {
+      vscode.window.showErrorMessage('Local sync root not configured. Create a "mpy" folder in the workspace or set "microPythonWorkBench.syncLocalRoot".');
+      return;
     }
     const initialized = await isLocalSyncInitialized();
     if (!initialized) {
@@ -416,12 +370,14 @@ export const syncCommands = {
       const matcher = await createIgnoreMatcher(ws2.uri.fsPath);
       const filtered = diffs2.filter(devicePath => {
         const rel = toLocalRelative(devicePath, rootPath2);
+        if (rel === null) return false;
         return !matcher(rel, false);
       });
       const total = filtered.length;
       await withAutoSuspend(async () => {
         for (const devicePath of filtered) {
           const rel = toLocalRelative(devicePath, rootPath2);
+          if (rel === null) continue;
           const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
