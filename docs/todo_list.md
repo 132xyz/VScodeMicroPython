@@ -5,3 +5,5 @@
 
 
 我现在不打算支持esptool工具的自动烧录功能,请检查整个项目,并给出完整全面的移除计划
+
+代码提示: https://github.com/Josverl/micropython-stubs.git
