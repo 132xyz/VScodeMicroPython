@@ -3,12 +3,13 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { exec, execSync } from "node:child_process";
 import { Esp32Node } from "../core/types";
-import * as mp from "./mpremote";
+import { getDeviceAdapter } from "./deviceAdapter";
+import { refreshFileTreeCache } from "../cache/fileTreeCache";
 import { buildManifest, diffManifests, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "../sync/sync";
 import { Esp32DecorationProvider } from "../ui/decorations";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { listDirPyRaw } from "../python/pyraw";
-import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "./mpremoteCommands";
+import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "../terminal/ReplTerminalManager";
 
 // Helper to get workspace folder or throw error
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -241,7 +242,7 @@ export class BoardOperations {
             while (!created && attempts < maxAttempts) {
               attempts++;
               try {
-                await mp.mkdir(deviceDir);
+                await getDeviceAdapter().mkdir(deviceDir);
                 this.tree.addNode(deviceDir, true); // Add folder to tree
                 created = true;
                 createdCount++;
@@ -272,7 +273,7 @@ export class BoardOperations {
 
           for (const deviceDir of sortedDirectories) {
             try {
-              const exists = await mp.fileExists(deviceDir);
+              const exists = await getDeviceAdapter().fileExists(deviceDir);
               if (!exists) {
                 console.error(`syncBaseline: Directory ${deviceDir} does not exist!`);
                 verificationFailures.push(deviceDir);
@@ -293,7 +294,7 @@ export class BoardOperations {
             // 尝试创建缺失目录
             for (const missingDir of verificationFailures) {
               try {
-                await mp.mkdir(missingDir);
+                await getDeviceAdapter().mkdir(missingDir);
                 this.tree.addNode(missingDir, true);
                 // 创建成功
               } catch (createError: any) {
@@ -306,7 +307,7 @@ export class BoardOperations {
             let stillMissing = [];
             for (const missingDir of verificationFailures) {
               try {
-                const exists = await mp.fileExists(missingDir);
+                const exists = await getDeviceAdapter().fileExists(missingDir);
                 if (!exists) {
                   stillMissing.push(missingDir);
                 }
@@ -389,7 +390,7 @@ export class BoardOperations {
               // Use cpToDevice which includes directory creation logic
               // 执行上传
 
-              await mp.cpToDevice(localPath, devicePath);
+              await getDeviceAdapter().cpToDevice(localPath, devicePath);
 
               this.tree.addNode(devicePath, false); // Add file to tree
 
@@ -433,7 +434,7 @@ export class BoardOperations {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
-    const deviceStats = await this.withAutoSuspend(() => mp.listTreeStats(rootPath));
+    const deviceStats = await this.withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
     const localRootDir = getLocalSyncRoot();
     const matcher = await createIgnoreMatcher(localRootDir);
     const toDownload = deviceStats
@@ -451,7 +452,7 @@ export class BoardOperations {
           const abs = path.join(localRootDir, ...rel.split("/"));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(stat.path, abs);
+          await getDeviceAdapter().cpFromDevice(stat.path, abs);
           this.tree.addNode(stat.path, false); // Add downloaded file to tree
         }
       });
@@ -476,8 +477,8 @@ export class BoardOperations {
       const localFiles = Object.keys(localManifest.files);
 
       // Get device files
-      await mp.refreshFileTreeCache();
-      const deviceStats = await mp.listTreeStats(rootPath);
+      await refreshFileTreeCache();
+      const deviceStats = await getDeviceAdapter().listTreeStats(rootPath);
       const deviceFiles = deviceStats.filter(e => !e.isDir);
 
       // Apply ignore rules to device files
@@ -660,7 +661,7 @@ export class BoardOperations {
       progress.report({ message: "Reading board files..." });
 
       // Get all board files and sizes in one optimized call
-      const boardData = await mp.getBoardFilesAndSizes(rootPath);
+      const boardData = await getDeviceAdapter().getBoardFilesAndSizes(rootPath);
       const boardFiles = boardData.files;
       const boardDirectories = boardData.directories;
 
@@ -823,7 +824,7 @@ export class BoardOperations {
       }
     }
 
-    const deviceStats = await this.withAutoSuspend(() => mp.listTreeStats(rootPath));
+    const deviceStats = await this.withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
     const filesSet = new Set(deviceStats.filter(e => !e.isDir).map(e => e.path));
     const diffs = this.decorations.getDiffsFilesOnly().filter(p => filesSet.has(p));
     const localOnlyFiles = this.decorations.getLocalOnlyFilesOnly();
@@ -865,7 +866,7 @@ export class BoardOperations {
           progress.report({ message: `${action} ${rel} (${++done}/${total})` });
 
           try {
-            await mp.uploadReplacing(abs, devicePath);
+            await getDeviceAdapter().uploadReplacing(abs, devicePath);
             this.tree.addNode(devicePath, false); // Add uploaded file to tree
             // Successfully uploaded: ${abs} -> ${devicePath}
           } catch (uploadError: any) {
@@ -914,7 +915,7 @@ export class BoardOperations {
 
     const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     // Get current diffs and filter to files by comparing with current device stats
-    const deviceStats = await this.withAutoSuspend(() => mp.listTreeStats(rootPath));
+    const deviceStats = await this.withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
     const filesSet = new Set(deviceStats.filter(e => !e.isDir).map(e => e.path));
     const diffs = this.decorations.getDiffsFilesOnly().filter(p => filesSet.has(p));
     const boardOnlyFiles = this.decorations.getBoardOnlyFilesOnly().filter(p => filesSet.has(p));
@@ -958,7 +959,7 @@ export class BoardOperations {
           const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(devicePath, abs);
+          await getDeviceAdapter().cpFromDevice(devicePath, abs);
           this.tree.addNode(devicePath, false); // Add downloaded file to tree
         }
       });
@@ -996,7 +997,7 @@ export class BoardOperations {
 
     // Otherwise, copy from device then open
     try {
-      await this.withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await this.withAutoSuspend(() => getDeviceAdapter().cpFromDevice(node.path, abs));
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
       await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
@@ -1011,7 +1012,7 @@ export class BoardOperations {
     const name = await vscode.window.showInputBox({ prompt: "New folder name", validateInput: v => v ? undefined : "Required" });
     if (!name) return;
     const target = base === "/" ? `/${name}` : `${base}/${name}`;
-    await this.withAutoSuspend(() => mp.mkdir(target));
+    await this.withAutoSuspend(() => getDeviceAdapter().mkdir(target));
     this.tree.addNode(target, true);
   }
 
@@ -1030,7 +1031,7 @@ export class BoardOperations {
         // Fast path: one-shot delete (file or directory)
         const isDir = node.kind === "dir";
         progress.report({ increment: 60, message: isDir ? "Removing directory..." : "Removing file..." });
-        await this.withAutoSuspend(() => mp.deleteAny(node.path));
+        await this.withAutoSuspend(() => getDeviceAdapter().deleteAny(node.path));
         progress.report({ increment: 100, message: "Deletion complete!" });
         vscode.window.showInformationMessage(`Successfully deleted ${node.path} from board`);
         this.tree.removeNode(node.path);

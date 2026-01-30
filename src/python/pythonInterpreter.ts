@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MpRemoteManager } from '../board/MpRemoteManager';
+// MpRemoteManager import removed - using new backend architecture
 
 const execFileAsync = promisify(execFile);
 
@@ -234,6 +234,72 @@ export class PythonInterpreterManager {
             return validation.valid;
         } catch {
             return false;
+        }
+    }
+
+    /**
+     * Check whether a Python package can be imported.
+     */
+    static async isPackageInstalled(pythonPath: string, pkgName: string): Promise<boolean> {
+        try {
+            await execFileAsync(pythonPath, ['-c', `import ${pkgName}`], { timeout: 5000 });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Install a Python package using pip. Throws on failure.
+     */
+    static async installPackage(pythonPath: string, pkgName: string): Promise<void> {
+        // Use --upgrade to be resilient
+        const args = ['-m', 'pip', 'install', pkgName, '--upgrade'];
+        const { stdout, stderr } = await execFileAsync(pythonPath, args, { timeout: 120000 });
+        if (stderr && stderr.toString().trim()) {
+            // pip may write warnings to stderr; don't treat as fatal unless process failed
+        }
+        return;
+    }
+
+    /**
+     * Ensure backend Python dependencies (e.g. pyserial) are available.
+     * If missing, prompt the user to install; optionally auto-install if user agrees.
+     */
+    static async ensureBackendDependencies(context?: vscode.ExtensionContext): Promise<void> {
+        const pythonPath = await this.getPythonPath();
+        if (!pythonPath) return;
+
+        const skipKey = 'mpy.skipInstallPyserial';
+        const neverAsk = context?.globalState.get<boolean>(skipKey, false);
+        if (neverAsk) return;
+
+        const pkg = 'serial';
+        const installed = await this.isPackageInstalled(pythonPath, pkg);
+        if (installed) return;
+
+        const choice = await vscode.window.showWarningMessage(
+            '后端需要 Python 包 `pyserial` 以访问串口。是否由扩展自动安装？',
+            '安装',
+            '跳过',
+            '不再询问'
+        );
+
+        if (choice === '不再询问') {
+            await context?.globalState.update(skipKey, true);
+            return;
+        }
+
+        if (choice === '安装') {
+            try {
+                await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在安装 pyserial...' }, async () => {
+                    await this.installPackage(pythonPath, 'pyserial');
+                });
+                vscode.window.showInformationMessage('pyserial 安装成功');
+            } catch (error: any) {
+                console.error('[PythonInterpreter] Failed to install pyserial:', error);
+                vscode.window.showErrorMessage(`自动安装 pyserial 失败：${error?.message ?? String(error)}`);
+            }
         }
     }
 

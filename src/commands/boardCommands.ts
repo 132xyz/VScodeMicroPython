@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as https from "node:https";
 import * as fsSync from "node:fs";
 import { execFile } from "node:child_process";
-import * as mp from "../board/mpremote";
+import { getDeviceAdapter } from "../board/deviceAdapter";
 import { PythonInterpreterManager } from "../python/pythonInterpreter";
 
 // Helper function to get workspace folder
@@ -22,24 +22,51 @@ function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
 
 // Board commands implementation
 export const boardCommands = {
+  // Prevent concurrent pickPort invocations (avoid duplicate rapid requests)
   pickPort: async () => {
-    // Always get the most recent port list before showing the selector
-    const devices = await mp.listSerialPorts();
-    const items: vscode.QuickPickItem[] = [
-      { label: "auto", description: "Auto-detect device" },
-      ...devices.map(d => ({ label: d.port, description: d.name || "serial port" }))
-    ];
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select Board serial port" });
-    if (!picked) return;
-    const value = picked.label === "auto" ? "auto" : picked.label;
-    await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", value, vscode.ConfigurationTarget.Global);
-    // updatePortContext(); // Assuming this function exists
-    // tree.requireManualRefresh();
-    // await refreshFilesViewTitle();
-    vscode.window.showInformationMessage(`Board connect set to ${value}`);
-    // tree.clearCache();
-    // tree.refreshTree();
-    // (no prompt) just refresh the tree after selecting port
+    // Module-level concurrency guard (stores running promise)
+    if ((boardCommands as any)._pickPortInProgress) {
+      // Inform user that an operation is already in progress
+      vscode.window.showInformationMessage("Port selection already in progress, please wait...");
+      return;
+    }
+
+    (boardCommands as any)._pickPortInProgress = (async () => {
+      try {
+        // Show a short UI progress while listing ports
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: "Listing serial ports...",
+          cancellable: false,
+        }, async () => {
+          // Always get the most recent port list before showing the selector
+          const devices = await getDeviceAdapter().listSerialPorts();
+          const items: vscode.QuickPickItem[] = [
+            { label: "auto", description: "Auto-detect device" },
+            ...devices.map(d => ({ label: d.port, description: d.name || "serial port" }))
+          ];
+
+          const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select Board serial port" });
+          if (!picked) return;
+          const value = picked.label === "auto" ? "auto" : picked.label;
+          await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", value, vscode.ConfigurationTarget.Global);
+          // updatePortContext(); // Assuming this function exists
+          // tree.requireManualRefresh();
+          // await refreshFilesViewTitle();
+          vscode.window.showInformationMessage(`Board connect set to ${value}`);
+          // tree.clearCache();
+          // tree.refreshTree();
+        });
+      } catch (err: any) {
+        console.error("[boardCommands] pickPort failed:", err);
+        vscode.window.showErrorMessage(`Failed to list serial ports: ${err?.message ?? String(err)}`);
+      } finally {
+        // Clear guard
+        (boardCommands as any)._pickPortInProgress = null;
+      }
+    })();
+
+    return (boardCommands as any)._pickPortInProgress;
   },
 
   setPort: async (port: string) => {
@@ -62,7 +89,7 @@ export const boardCommands = {
       }
 
       // Detect board info to identify the firmware
-      const info = await mp.detectBoardInfo();
+      const info = await getDeviceAdapter().detectBoardInfo();
       const machine = info?.machine || info?.sysname || "";
       const catalog = await loadFirmwareCatalog(vscode.extensions.getExtension("WebForks.MicroPython-WorkBench")?.extensionPath || "");
       let entry = findFirmwareForMachine(machine, catalog);

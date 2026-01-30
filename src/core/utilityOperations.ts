@@ -20,11 +20,11 @@ export async function refresh(tree: Esp32Tree, decorations: Esp32DecorationProvi
   } catch {}
   tree.clearCache();
   try {
-    const mp = await import("../board/mpremote");
+    const { refreshFileTreeCache } = await import("../cache/fileTreeCache");
     // Force remote cache refresh which will repopulate the tree on next listing
-    await mp.refreshFileTreeCache();
+    await refreshFileTreeCache();
   } catch (err) {
-    console.warn('utilityOperations.refresh: mp.refreshFileTreeCache failed', err);
+    console.warn('utilityOperations.refresh: refreshFileTreeCache failed', err);
   }
   // trigger tree refresh
   tree.refreshTree();

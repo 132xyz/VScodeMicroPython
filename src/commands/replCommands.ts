@@ -14,7 +14,7 @@ import {
   isReplOpen,
   closeReplTerminal,
   openReplTerminal
-} from "../board/mpremoteCommands";
+} from "../terminal/ReplTerminalManager";
 
 // REPL commands implementation
 export const replCommands = {

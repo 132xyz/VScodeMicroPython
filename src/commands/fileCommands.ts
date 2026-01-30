@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import * as mp from "../board/mpremote";
+import { getDeviceAdapter } from "../board/deviceAdapter";
 import { Esp32Tree } from "../board/esp32Fs";
 import { Esp32Node } from "../core/types";
 import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync/sync";
-import { toLocalRelative, toDevicePath } from "../board/mpremoteCommands";
+import { toLocalRelative, toDevicePath } from "../utils/pathMapping";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 
 // Helper function to get workspace folder
@@ -75,7 +75,7 @@ export const fileCommands = {
           vscode.window.showInformationMessage(`File saved (ignored for upload): ${filename}`);
         } else {
           try {
-            await withAutoSuspend(() => mp.cpToDevice(abs, devicePath));
+            await withAutoSuspend(() => getDeviceAdapter().cpToDevice(abs, devicePath));
             vscode.window.showInformationMessage(`File saved locally and uploaded to board: ${filename}`);
             // Assuming tree is accessible - may need to pass as parameter
             // tree.addNode(devicePath, false);
@@ -126,9 +126,9 @@ export const fileCommands = {
       const pick = await vscode.window.showWarningMessage(`Local file not found: ${rel}. Download from board first?`, { modal: true }, "Download");
       if (pick !== "Download") return;
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await withAutoSuspend(() => getDeviceAdapter().cpFromDevice(node.path, abs));
     }
-    await withAutoSuspend(() => mp.cpToDevice(abs, node.path));
+    await withAutoSuspend(() => getDeviceAdapter().cpToDevice(abs, node.path));
     // tree.addNode(node.path, false); // Add uploaded file to tree
     vscode.window.showInformationMessage(`Synced local → board: ${rel}`);
   },
@@ -147,12 +147,12 @@ export const fileCommands = {
     } catch {
       // Local file doesn't exist, just download it
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await withAutoSuspend(() => getDeviceAdapter().cpFromDevice(node.path, abs));
       vscode.window.showInformationMessage(`Downloaded board → local: ${rel}`);
       return;
     }
     // Local file exists, overwrite it with board version
-    await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+    await withAutoSuspend(() => getDeviceAdapter().cpFromDevice(node.path, abs));
     vscode.window.showInformationMessage(`Synced board → local: ${rel}`);
   },
 
@@ -180,7 +180,7 @@ export const fileCommands = {
         const fileExistsLocally = await fs.access(abs).then(() => true).catch(() => false);
         if (!fileExistsLocally) {
           try {
-            await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+            await withAutoSuspend(() => getDeviceAdapter().cpFromDevice(node.path, abs));
           } catch (copyError: any) {
             console.error(`openFile (extension) failed to copy from board:`, copyError);
             vscode.window.showErrorMessage(`Failed to copy file from board: ${copyError?.message || copyError}`);
@@ -212,7 +212,7 @@ export const fileCommands = {
     const name = await vscode.window.showInputBox({ prompt: "New folder name", validateInput: v => v ? undefined : "Required" });
     if (!name) return;
     const target = base === "/" ? `/${name}` : `${base}/${name}`;
-    await withAutoSuspend(() => mp.mkdir(target));
+    await withAutoSuspend(() => getDeviceAdapter().mkdir(target));
     // tree.addNode(target, true);
   },
 
@@ -235,7 +235,7 @@ export const fileCommands = {
         // Fast path: one-shot delete (file or directory)
         const isDir = node.kind === "dir";
         progress.report({ increment: 60, message: isDir ? "Removing directory..." : "Removing file..." });
-        await withAutoSuspend(() => mp.deleteAny(node.path));
+        await withAutoSuspend(() => getDeviceAdapter().deleteAny(node.path));
         progress.report({ increment: 100, message: "Deletion complete!" });
         vscode.window.showInformationMessage(`Successfully deleted ${node.path} from board`);
         // tree.removeNode(node.path);
@@ -266,7 +266,7 @@ export const fileCommands = {
         // Fast path: one-shot delete on board
         const isDir = node.kind === "dir";
         progress.report({ increment: 50, message: isDir ? "Removing directory from board..." : "Removing file from board..." });
-        await withAutoSuspend(() => mp.deleteAny(node.path));
+        await withAutoSuspend(() => getDeviceAdapter().deleteAny(node.path));
         progress.report({ increment: 70, message: "Board deletion complete!" });
         vscode.window.showInformationMessage(`Successfully deleted ${node.path} from board`);
         // tree.removeNode(node.path);
@@ -312,7 +312,7 @@ export const fileCommands = {
 
       try {
         // Get list of files to show progress
-        const items = await withAutoSuspend(() => mp.listTreeStats(rootPath));
+        const items = await withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
         const totalItems = items.length;
 
         if (totalItems === 0) {
@@ -324,12 +324,12 @@ export const fileCommands = {
         progress.report({ increment: 20, message: `Found ${totalItems} items to delete...` });
 
         // Usar nuestra nueva función para eliminar todo
-        const result = await withAutoSuspend(() => mp.deleteAllInPath(rootPath));
+        const result = await withAutoSuspend(() => getDeviceAdapter().deleteAllInPath(rootPath));
 
         progress.report({ increment: 80, message: "Verifying deletion..." });
 
         // Verificar lo que queda
-        const remaining = await withAutoSuspend(() => mp.listTreeStats(rootPath));
+        const remaining = await withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
 
         progress.report({ increment: 100, message: "Deletion complete!" });
 
@@ -386,7 +386,7 @@ export const fileCommands = {
       await fs.writeFile(localPath, "");
       // Upload to board
       try {
-        await mp.uploadReplacing(localPath, devicePath);
+        await getDeviceAdapter().uploadReplacing(localPath, devicePath);
         vscode.window.showInformationMessage(`File created: ${devicePath}`);
       } catch (uploadError: any) {
         console.error(`[DEBUG] Failed to upload new file to board:`, uploadError);
@@ -413,7 +413,7 @@ export const fileCommands = {
     if (!newName) return;
     const devicePath = baseDevice === "/" ? `/${newName.replace(/^\//, "")}` : `${baseDevice}/${newName.replace(/^\//, "")}`;
     try {
-      await mp.mkdir(devicePath);
+      await getDeviceAdapter().mkdir(devicePath);
       const relLocal = devicePath.replace(/^\//, "");
       const localRootDir = getLocalSyncRoot();
       const localPath = path.join(localRootDir, relLocal);
@@ -443,7 +443,7 @@ export const fileCommands = {
     const newPath = base === "/" ? `/${newName}` : `${base}/${newName}`;
     // Try to rename on board first
     try {
-      await mp.mvOnDevice(oldPath, newPath);
+      await getDeviceAdapter().mvOnDevice(oldPath, newPath);
     } catch (err: any) {
       vscode.window.showErrorMessage(`Error renaming on board: ${err?.message ?? err}`);
       return;

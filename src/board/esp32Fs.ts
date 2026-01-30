@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { Esp32Node } from "../core/types";
-import * as mp from "./mpremote";
+import { getDeviceAdapter } from "./deviceAdapter";
 import { listDirPyRaw } from "../python/pyraw";
 import { createIgnoreMatcher } from "../sync/sync";
 
@@ -168,7 +168,7 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
       const usePyRaw = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.usePyRawList", false);
       entries = await vscode.commands.executeCommand<{ name: string; isDir: boolean }[]>("microPythonWorkBench.autoSuspendLs", path);
       if (!entries) {
-        entries = usePyRaw ? await listDirPyRaw(path) : await mp.lsTyped(path);
+        entries = usePyRaw ? await listDirPyRaw(path) : await getDeviceAdapter().lsTyped(path);
       }
       
       // Create nodes from board files
@@ -305,6 +305,11 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (ws) return ws.uri;
     } catch {}
-    return vscode.Uri.parse('');
+    // Fallback to current working directory as a safe file URI
+    try {
+      return vscode.Uri.file(process.cwd());
+    } catch {
+      return vscode.Uri.parse('');
+    }
   }
 }

@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../board/mpremote";
+import { refreshFileTreeCache } from "../cache/fileTreeCache";
+import { getDeviceAdapter } from "../board/deviceAdapter";
 import { rebuildManifest } from "../core/utilityOperations";
 import { cancelAllTasks } from "../core/utilityOperations";
 
@@ -10,7 +11,7 @@ export const debugCommands = {
   debugTreeParsing: async () => {
     try {
       console.log("[DEBUG] Starting tree parsing debug...");
-      await debugTreeParsing();
+      await getDeviceAdapter().debugTreeParsing();
       console.log("[DEBUG] Tree parsing debug completed");
       vscode.window.showInformationMessage("Tree parsing debug completed - check console for details");
     } catch (error: any) {
@@ -22,7 +23,7 @@ export const debugCommands = {
   debugFilesystemStatus: async () => {
     try {
       console.log("[DEBUG] Starting filesystem status debug...");
-      await debugFilesystemStatus();
+      await getDeviceAdapter().debugFilesystemStatus();
       console.log("[DEBUG] Filesystem status debug completed");
       vscode.window.showInformationMessage("Filesystem status debug completed - check console for details");
     } catch (error: any) {

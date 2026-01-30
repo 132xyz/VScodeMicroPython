@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import * as mp from "../board/mpremote";
+import { getDeviceAdapter } from "../board/deviceAdapter";
+import { toLocalRelative as toLocalRelativeUtil } from "../utils/pathMapping";
 import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } from "../sync/sync";
 import { createIgnoreMatcher } from "../sync/sync";
 import { Esp32DecorationProvider } from "../ui/decorations";
@@ -145,7 +146,7 @@ export const syncCommands = {
 
           for (const dir of sortedDirectories) {
             try {
-              await mp.mkdir(dir);
+              await getDeviceAdapter().mkdir(dir);
             } catch (e) {
               // Directory might already exist, ignore error
             }
@@ -161,7 +162,7 @@ export const syncCommands = {
 
             progress.report({ increment: 10 + (i / total) * 85, message: `Uploading ${relativePath}` });
 
-            await mp.uploadReplacing(localPath, devicePath);
+            await getDeviceAdapter().uploadReplacing(localPath, devicePath);
           }
         });
       });
@@ -222,7 +223,7 @@ export const syncCommands = {
       const rootPath = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
 
       // Get all files from board
-      const deviceStats = await withAutoSuspend(() => mp.listTreeStats(rootPath));
+      const deviceStats = await withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath));
 
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -248,7 +249,7 @@ export const syncCommands = {
             progress.report({ increment: (i / total) * 100, message: `Downloading ${rel}` });
 
             await fs.mkdir(path.dirname(abs), { recursive: true });
-            await mp.cpFromDevice(file.path, abs);
+            await getDeviceAdapter().cpFromDevice(file.path, abs);
           }
         });
       });
@@ -383,7 +384,7 @@ export const syncCommands = {
 
     const rootPath2 = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
     // Get current diffs and filter to files by comparing with current device stats
-    const deviceStats2 = await withAutoSuspend(() => mp.listTreeStats(rootPath2));
+    const deviceStats2 = await withAutoSuspend(() => getDeviceAdapter().listTreeStats(rootPath2));
     // Placeholder for diffs filtering
     const diffs2: string[] = [];
 
@@ -425,7 +426,7 @@ export const syncCommands = {
           const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(devicePath, abs);
+          await getDeviceAdapter().cpFromDevice(devicePath, abs);
           // tree.addNode(devicePath, false); // Add downloaded file to tree
         }
       });

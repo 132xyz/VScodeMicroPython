@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import { Esp32Tree } from "../board/esp32Fs";
 import { Esp32DecorationProvider } from "../ui/decorations";
 import { buildManifest, saveManifest, loadManifest, createIgnoreMatcher, Manifest } from "./sync";
-import * as mp from "../board/mpremote";
+// mpremote import removed - functions use DeviceAdapter when implemented
 
 const MPY_WORKBENCH_DIR = '.mpy-workbench';
 const MPY_MANIFEST_FILE = 'esp32sync.json';

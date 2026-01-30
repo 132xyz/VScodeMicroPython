@@ -4,8 +4,29 @@ import { Esp32Tree } from "../board/esp32Fs";
 import { ActionsTree } from "./actions";
 import { SyncTree } from "../sync/syncView";
 import { Esp32Node } from "./types";
-import * as mp from "../board/mpremote";
-import { refreshFileTreeCache, debugTreeParsing, debugFilesystemStatus } from "../board/mpremote";
+
+// 新模块导入 - 替代旧的 mpremote
+import { getDeviceAdapter, DeviceAdapter } from "../board/deviceAdapter";
+import { DeviceAdapterImpl } from "../board/deviceAdapterImpl";
+import { fileTreeCache, clearFileTreeCache, refreshFileTreeCache } from "../cache/fileTreeCache";
+import { toDevicePath, toLocalRelative } from "../utils/pathMapping";
+import {
+  ReplTerminalManager,
+  replTerminalManager,
+  getReplTerminal,
+  openReplTerminal,
+  closeReplTerminal,
+  isReplOpen,
+  serialSendCtrlC,
+  stop,
+  softReset,
+  runActiveFile,
+  suspendSerialSessionsForAutoSync,
+  restoreSerialSessionsFromSnapshot,
+  disconnectReplTerminal,
+} from "../terminal/ReplTerminalManager";
+import { checkMpremoteAvailability } from "../python/pythonDetector";
+
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
@@ -19,22 +40,8 @@ import { BoardOperations } from "../board/boardOperations";
 import { PythonInterpreterManager } from "../python/pythonInterpreter";
 // import { monitor } from "../board/monitor"; // switched to auto-suspend REPL strategy
 import { refresh, rebuildManifest, cancelAllTasks } from "./utilityOperations";
-import {
-  disconnectReplTerminal,
-  suspendSerialSessionsForAutoSync,
-  restoreSerialSessionsFromSnapshot,
-  checkMpremoteAvailability,
-  serialSendCtrlC,
-  stop,
-  softReset,
-  runActiveFile,
-  getReplTerminal,
-  isReplOpen,
-  closeReplTerminal,
-  openReplTerminal,
-  toLocalRelative,
-  toDevicePath
-} from "../board/mpremoteCommands";
+
+// 注意：会话管理和 REPL 操作已从 terminal/ReplTerminalManager 导入
 
 // Import command modules
 import { fileCommands } from "../commands/fileCommands";
@@ -43,7 +50,7 @@ import { boardCommands } from "../commands/boardCommands";
 import { replCommands } from "../commands/replCommands";
 import { debugCommands } from "../commands/debugCommands";
 import { utilityCommands } from "../commands/utilityCommands";
-import { mpremoteCommands } from "../commands/mpremoteCommands";
+// mpremoteCommands 已弃用，功能移至 terminal/ReplTerminalManager
 import { Localization } from "./localization";
 import { codeCompletionManager } from "../completion/codeCompletion";
 
@@ -57,12 +64,25 @@ export async function activate(context: vscode.ExtensionContext) {
       if (enabled) _origConsoleLog(...args);
     } catch {}
   };
-  // mpremote 已内置：不再显示或检查外部安装状态栏。
-
   // Initialize code completion manager (errors are logged)
   codeCompletionManager.initialize(context).catch(error => {
     console.error('[Extension] Failed to initialize code completion manager:', error);
   });
+
+  // Initialize DeviceAdapter (required before any device operations)
+  try {
+    // Ensure backend Python dependencies are present (pyserial)
+    try {
+      await PythonInterpreterManager.ensureBackendDependencies(context);
+    } catch (depErr) {
+      console.error('[Extension] Dependency check failed:', depErr);
+    }
+
+    await DeviceAdapterImpl.getInstance().initialize(context);
+  } catch (error) {
+    console.error('[Extension] Failed to initialize DeviceAdapter:', error);
+    vscode.window.showErrorMessage(`DeviceAdapter 初始化失败: ${error}`);
+  }
 
   // Helper to get workspace folder or throw error
   function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -365,7 +385,7 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         if (view) view.title = "Files";
         tree.clearCache();
-        try { mp.clearFileTreeCache(); } catch {}
+        try { clearFileTreeCache(); } catch {}
       } catch {}
     }
   };
@@ -572,7 +592,7 @@ export async function activate(context: vscode.ExtensionContext) {
   async function ensureIdle(): Promise<void> {
     // Keep this lightweight: do not chain kill/ctrl-c automatically.
     // Optionally perform a quick check to nudge the connection.
-    try { await mp.ls("/"); } catch {}
+    try { await getDeviceAdapter().ls("/"); } catch {}
     if (listingInProgress) {
       const d = vscode.workspace.getConfiguration().get<number>("microPythonWorkBench.preListDelayMs", 150);
       if (d > 0) await new Promise(r => setTimeout(r, d));
@@ -622,7 +642,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!connect || connect === "auto") return;
 
     try {
-      const info = await withAutoSuspend(() => mp.detectBoardInfo(), { preempt: false });
+      const info = await withAutoSuspend(() => getDeviceAdapter().detectBoardInfo(), { preempt: false });
       if (!info) return;
       const parts: string[] = [];
       if (info.machine) parts.push(info.machine);
@@ -659,7 +679,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("microPythonWorkBench.refreshFileTreeCache", async () => {
         try {
-        await mp.refreshFileTreeCache();
+        await refreshFileTreeCache();
         Localization.showInfo("messages.fileTreeCacheRefreshed");
       } catch (error: any) {
         console.error("File tree cache refresh failed:", error);
@@ -702,7 +722,7 @@ export async function activate(context: vscode.ExtensionContext) {
       listingInProgress = true;
       try {
         const usePyRaw = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.usePyRawList", false);
-        return await withAutoSuspend(() => (usePyRaw ? listDirPyRaw(pathArg) : mp.lsTyped(pathArg)), { preempt: false });
+        return await withAutoSuspend(() => (usePyRaw ? listDirPyRaw(pathArg) : getDeviceAdapter().lsTyped(pathArg)), { preempt: false });
       } finally {
         listingInProgress = false;
       }
@@ -714,7 +734,7 @@ export async function activate(context: vscode.ExtensionContext) {
         refreshFilesViewTitle().catch(() => {});
         tree.requireManualRefresh();
         tree.clearCache();
-        try { mp.clearFileTreeCache(); } catch {}
+        try { clearFileTreeCache(); } catch {}
         tree.refreshTree();
       }
     }),
@@ -798,7 +818,7 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         // auto-sync resume prepared
         await withAutoSuspend(
-          () => mp.cpToDevice(doc.uri.fsPath, deviceDest),
+          () => getDeviceAdapter().cpToDevice(doc.uri.fsPath, deviceDest),
           { resumeReplCommand: resumeCmd, replBehavior: behavior }
         );
         tree.addNode(deviceDest, false);

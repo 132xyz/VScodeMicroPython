@@ -1,0 +1,9 @@
+# mpy_backend dependencies
+# MicroPython Backend for VSCode Extension
+
+# Serial communication
+pyserial>=3.5
+
+# Type checking (development only)
+# mypy>=1.0.0
+# types-pyserial
