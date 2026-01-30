@@ -39,13 +39,13 @@ npm run package
 python -m pip install --user esptool
 ```
 
-3. Open a workspace containing your MicroPython project, pick a serial port (`MPY Workbench: Select Serial Port`) and use the Files view to sync/upload files.
-
-## Development & Tests
-
-- Build: `npm run compile` (TypeScript -> `dist/`).
-- Tests: `npm test` (Jest). CI is configured under `.github/workflows/ci.yml`.
-- Packaging: `npm run package` (requires `vsce`).
+ ```bash
+ # Python 3.8+ (recommended >=3.10)
+ # `mpremote` is required by this extension. Install it into the Python environment
+ # you want the extension to use, for example:
+ #
+ # python -m pip install --user mpremote
+ # ```
 
 ## Configuration
 

@@ -1149,7 +1149,7 @@ export async function listSerialPorts(): Promise<{port: string, name: string}[]>
     }
     return devices;
   } catch (err: any) {
-    vscode.window.showWarningMessage("执行内置 mpremote 检测端口时出错：" + (err?.message || err));
+    vscode.window.showWarningMessage("执行 mpremote 检测端口时出错：" + (err?.message || err));
     return [];
   }
 }

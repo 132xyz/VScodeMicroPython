@@ -66,7 +66,11 @@ class MpRemoteManagerClass {
     const candidates = process.platform === 'win32' ? ['python', 'python3', 'py', 'py -3'] : ['python3', 'python'];
     for (const c of candidates) {
       try {
-        await execFileAsync(c, ['--version']);
+        // execFile can accept an executable plus args; handle simple candidate strings
+        const parts = c.split(' ').filter(p => p.length > 0);
+        const exe = parts[0];
+        const args = parts.slice(1).concat(['--version']);
+        await execFileAsync(exe, args);
         return c;
       } catch { }
     }
@@ -75,11 +79,12 @@ class MpRemoteManagerClass {
 
   async isModuleAvailable(pythonPath?: string | null): Promise<boolean> {
     const py = pythonPath ?? await this.detectPythonPath();
-    const root = this.getInternalPythonRoot();
-    if (!py || !root) return false;
+    if (!py) return false;
     try {
-      const env = { ...process.env, PYTHONPATH: root };
-      await execFileAsync(py, ['-m', 'mpremote', '--version'], { timeout: 5000, env });
+      const parts = py.split(' ').filter(p => p.length > 0);
+      const exe = parts[0];
+      const args = parts.slice(1).concat(['-m', 'mpremote', '--version']);
+      await execFileAsync(exe, args, { timeout: 5000 });
       return true;
     } catch {
       return false;
@@ -113,15 +118,16 @@ class MpRemoteManagerClass {
 
   async checkVersion(): Promise<VersionInfo> {
     const pythonPath = await this.detectPythonPath();
-    const root = this.getInternalPythonRoot();
-    if (!pythonPath || !root) return { version: null, compatible: false, source: 'unknown' };
+    if (!pythonPath) return { version: null, compatible: false, source: 'unknown' };
     try {
-      const env = { ...process.env, PYTHONPATH: root };
-      const { stdout } = await execFileAsync(pythonPath, ['-m', 'mpremote', '--version'], { timeout: 5000, env });
+      const parts = pythonPath.split(' ').filter(p => p.length > 0);
+      const exe = parts[0];
+      const args = parts.slice(1).concat(['-m', 'mpremote', '--version']);
+      const { stdout } = await execFileAsync(exe, args, { timeout: 5000 });
       const match = stdout.match(/(\d+\.\d+\.\d+)/);
       const version = match ? match[1] : null;
-      const parts = version ? version.split('.').map(Number) : [];
-      const compatible = parts.length >= 2 ? (parts[0] > 1 || (parts[0] === 1 && parts[1] >= 20)) : false;
+      const partsNum = version ? version.split('.').map(Number) : [];
+      const compatible = partsNum.length >= 2 ? (partsNum[0] > 1 || (partsNum[0] === 1 && partsNum[1] >= 20)) : false;
       return { version, compatible, source: 'python-module' };
     } catch {
       return { version: null, compatible: false, source: 'unknown' };
@@ -137,24 +143,23 @@ class MpRemoteManagerClass {
     await prev;
     // Prefer python -m when available; use exec to obtain ChildProcess so it can be cancelled
     const pythonPath = opts.pythonPath || await this.detectPythonPath();
-    const internalRoot = this.getInternalPythonRoot();
     // If this invocation opens a connection, remember the port while running
     const connIndex = args.findIndex(a => a === 'connect');
     if (connIndex >= 0 && args.length > connIndex + 1) {
       this.activeConnectionPort = args[connIndex + 1];
     }
     const escaped = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\"')}"` : a).join(' ');
-    const cmd = `"${pythonPath}" -m mpremote ${escaped}`;
+    // Build execFile arguments to handle pythonPath that may contain extra args (e.g. 'py -3')
+    const parts = (pythonPath || 'python').split(' ').filter(p => p.length > 0);
+    const exe = parts[0];
+    const preArgs = parts.slice(1);
+    const execArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
-    if (internalRoot) {
-      const delim = path.delimiter;
-      env.PYTHONPATH = env.PYTHONPATH ? `${internalRoot}${delim}${env.PYTHONPATH}` : internalRoot;
-    }
     const execOpt: any = { cwd: opts.cwd, env };
 
     return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       try {
-        const child = exec(cmd, execOpt, (err, stdout, stderr) => {
+        const child = execFile(exe, execArgs, execOpt, (err, stdout, stderr) => {
           try {
             if (this.activeChild === child) this.activeChild = null;
             if (this.activeChildKillTimeout) { clearTimeout(this.activeChildKillTimeout); this.activeChildKillTimeout = undefined; }
@@ -199,15 +204,12 @@ class MpRemoteManagerClass {
     await prev;
 
     const pythonPath = opts.pythonPath || await this.detectPythonPath();
-    const internalRoot = this.getInternalPythonRoot();
-    const spawnCmd = [pythonPath, ['-m', 'mpremote', ...args].join(' ')].join(' ');
-    // For simplicity, use exec to get a ChildProcess via exec (exec returns ChildProcess)
+    const parts = (pythonPath || 'python').split(' ').filter(p => p.length > 0);
+    const exe = parts[0];
+    const preArgs = parts.slice(1);
+    const spawnArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
-    if (internalRoot) {
-      const delim = path.delimiter;
-      env.PYTHONPATH = env.PYTHONPATH ? `${internalRoot}${delim}${env.PYTHONPATH}` : internalRoot;
-    }
-    const child = exec(spawnCmd as string, { cwd: opts.cwd, env });
+    const child = execFile(exe, spawnArgs, { cwd: opts.cwd, env });
     this.activeChild = child;
     // If this spawn is a connect <port> create, remember the port
     const connIndex = args.findIndex(a => a === 'connect');
@@ -229,8 +231,27 @@ class MpRemoteManagerClass {
   }
 
   async install(_pythonPath?: string, _opts: { silent?: boolean } = {}): Promise<void> {
-    // Installation is no longer required; mpremote is bundled internally.
-    return;
+    // Installation helper: attempts to install mpremote into given pythonPath.
+    const pythonPath = _pythonPath ?? await this.detectPythonPath();
+    if (!pythonPath) throw new Error('No python interpreter found');
+    const parts = pythonPath.split(' ').filter(p => p.length > 0);
+    const exe = parts[0];
+    const preArgs = parts.slice(1);
+    // Ensure pip is available
+    try {
+      await execFileAsync(exe, preArgs.concat(['-m', 'pip', '--version']), { timeout: 10000 });
+    } catch (e) {
+      throw new Error('pip not available for the selected Python');
+    }
+
+    // Run pip install --upgrade mpremote
+    try {
+      await execFileAsync(exe, preArgs.concat(['-m', 'pip', 'install', '--upgrade', 'mpremote']), { timeout: 120000 });
+      return;
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      throw new Error(`Installation failed: ${msg}`);
+    }
   }
 
   cancelActive(): void {

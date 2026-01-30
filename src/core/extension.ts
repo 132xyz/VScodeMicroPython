@@ -58,7 +58,8 @@ export async function activate(context: vscode.ExtensionContext) {
       if (enabled) _origConsoleLog(...args);
     } catch {}
   };
-  // mpremote 已内置：不再显示或检查外部安装状态栏。
+  // mpremote 不再作为扩展内置分发：优先使用系统/用户 Python 中已安装的 mpremote，
+  // 如果缺失会提示用户安装或通过扩展自动安装。
 
   // Initialize code completion manager (errors are logged)
   codeCompletionManager.initialize(context).catch(error => {
@@ -549,6 +550,13 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize status bar on activation
   refreshAutoSyncUi();
   cancelTasksStatus.show();
+
+  // On startup, check whether mpremote is available in the selected Python
+  // environment and prompt the user to install if missing. Run non-blocking
+  // so activation isn't delayed.
+  PythonInterpreterManager.checkMpremoteAvailability().catch(err => {
+    console.debug('[Extension] mpremote availability check failed (non-fatal):', err);
+  });
 
   // Ensure sensible ignore files exist or are upgraded from old stub
   try {

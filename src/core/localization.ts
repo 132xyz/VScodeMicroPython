@@ -46,8 +46,29 @@ export class Localization {
       translations = undefined;
     }
 
-    // Resolve message: translation file -> defaults -> key
-    let message = (translations && translations[key]) || defaultTranslations[key] || (vscode.env.language.startsWith('zh') ? zhTranslations[key] : undefined) || key;
+    // Resolve message with better fallbacks:
+    // 1. translation file (if present)
+    // 2. if VS Code language is Chinese -> embedded `zhTranslations` (prefer Chinese)
+    // 3. defaultTranslations (English)
+    // 4. finally the key
+    let message: string | undefined;
+    if (translations && translations[key]) {
+      message = translations[key];
+    } else if ((vscode.env && typeof vscode.env.language === 'string') && vscode.env.language.startsWith('zh')) {
+      message = zhTranslations[key] || defaultTranslations[key];
+    } else {
+      message = defaultTranslations[key] || (translations && translations[key]);
+    }
+    if (!message) message = key;
+
+    // Lightweight debug: if debug enabled, print where the localization came from
+    try {
+      const enabled = vscode.workspace.getConfiguration().get<boolean>('microPythonWorkBench.debug', false);
+      if (enabled) {
+        const src = (translations && translations[key]) ? 'package.nls*' : (vscode.env.language.startsWith('zh') && zhTranslations[key]) ? 'embedded zh' : (defaultTranslations[key] ? 'embedded en-default' : 'missing');
+        console.debug(`[Localization] key=${key} locale=${vscode.env.language} source=${src} msg=${message}`);
+      }
+    } catch {}
 
     // If no translation and args provided, include args in fallback message for context
     if (message === key && args.length > 0) {

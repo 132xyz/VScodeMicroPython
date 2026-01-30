@@ -110,16 +110,24 @@
 
 从命令面板使用 `MPY 工作台：切换代码补全` 来手动启用/禁用当前工作区的代码补全。
 
+# MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
+
+[English](README.md)
+
 ### 要求
 
-- **Pylance 扩展**（推荐）：`ms-python.vscode-pylance` 以获得完整的 IntelliSense 支持
-- 代码补全适用于任何 Python 语言服务器，但在 Pylance 下提供增强体验
+```bash
+python -m pip install --user mpremote
+```
+  2. 确保本机安装依赖：
 
-### 自动暂停和 REPL 恢复
-
-- `microPythonWorkBench.serialAutoSuspend`（默认：`true`）：在文件操作前关闭 REPL/运行终端以避免串口冲突，然后在操作后恢复（重新运行运行活动文件，或重新打开 REPL）。
-- `microPythonWorkBench.replRestoreBehavior`（默认：`none`）：REPL 在自动暂停/同步后恢复时执行的操作：
-  - `runChanged`：自动在 REPL 中运行已更改/保存的文件。
+  ```bash
+  # Python 3.8+（建议 >=3.10）
+  # `mpremote` 是本扩展所需的工具。请在扩展将使用的 Python 环境中安装：
+  python -m pip install --user mpremote
+  # 如果需要烧录固件，请安装 `esptool`：
+  python -m pip install --user esptool
+  ```
   - `executeBootMain`：发送 Ctrl-D 以便重置后重新启动自动运行 `main.py`/`boot.py` 的开发板。
   - `openReplEmpty`：重新打开 REPL 而无需发送任何内容。
   - `none`：不重新打开 REPL。
@@ -129,10 +137,13 @@
 - 状态栏显示 `MPY: 自动同步 开/关`、取消所有任务按钮，以及 `MPY: 上次同步 <时间>` 在每次自动同步运行后。
 - 文件视图标题在选择固定串口后显示检测到的开发板名称/ID。
 
-## 要求
+- ### 要求
+- **Python 3.8+** - 扩展使用 Python 运行 `mpremote`（建议 >=3.10）
+- **mpremote** - 必需：请在扩展将要使用的 Python 环境中安装，例如：
 
-- **Python 3.8+**（建议 >=3.10） — 扩展使用 Python 运行内置的 `mpremote` 实现
-- **mpremote** — ✅ **已内置，无需外部安装**
+```bash
+python -m pip install --user mpremote
+```
 - **固件烧录：** `esptool` 需要在扩展将使用的 Python 环境中安装（例如 `python -m pip install --user esptool`）。扩展会检测常见 Python 可执行程序（`python`、`py -3` 等）和 PATH 中的 `esptool`。
 - **代码补全（可选）：** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展以获得增强的 IntelliSense 支持
 - 如需使用特定的 Python 解释器，可在扩展设置中调整 `microPythonWorkBench.pythonPath`。

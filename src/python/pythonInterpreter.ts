@@ -38,6 +38,9 @@ export class PythonInterpreterManager {
                 if (validation.valid) {
                     this.cacheResult(pythonPath);
                     return pythonPath;
+                } else if (validation.missingMpremote) {
+                    // Show mpremote installation notification
+                    this.showMpremoteInstallationNotification(pythonPath);
                 }
             }
         } catch (error) {
@@ -189,9 +192,15 @@ export class PythonInterpreterManager {
     private static async validatePythonPath(pythonPath: string): Promise<{ valid: boolean; missingMpremote: boolean; error?: string }> {
         try {
             // Test if Python executable exists and can run
-            const { stdout } = await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.version)'], { timeout: 5000 });
-            // Internal mpremote is bundled; no external check required
-            return { valid: true, missingMpremote: false };
+            await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.version)'], { timeout: 5000 });
+            // Check whether mpremote module is available in this Python
+            try {
+                const available = await MpRemoteManager.isModuleAvailable(pythonPath);
+                return { valid: true, missingMpremote: !available };
+            } catch (e: any) {
+                // If the module check itself failed, treat Python as valid but report mpremote missing
+                return { valid: true, missingMpremote: true };
+            }
         } catch (error: any) {
             const errorMessage = error.message || String(error);
             // Other Python-related errors
@@ -203,7 +212,36 @@ export class PythonInterpreterManager {
      * Show notification for missing mpremote
      */
     private static showMpremoteInstallationNotification(_pythonPath: string): void {
-        // No-op: mpremote is bundled internally; no external installation required.
+        // Prompt the user to install mpremote into the selected Python environment.
+        // This helper is intentionally synchronous from the caller's perspective;
+        // use it sparingly and rely on cooldown to avoid repeated prompts.
+        const lang = vscode.env.language || '';
+        const zh = lang.startsWith('zh');
+        const msg = zh
+            ? `未在所选 Python 环境中检测到 mpremote。是否安装到该环境？` 
+            : `mpremote is not installed in the selected Python environment. Install into this environment?`;
+        // Show a non-blocking prompt
+        vscode.window.showInformationMessage(msg, zh ? '安装' : 'Install', zh ? '稍后' : 'Later').then(async choice => {
+            if (!choice) return;
+            if (choice === (zh ? '安装' : 'Install')) {
+                try {
+                    const pythonPath = await this.getPythonPath();
+                    if (!pythonPath) {
+                        vscode.window.showErrorMessage(zh ? '未找到 Python 可执行文件，无法安装 mpremote。' : 'No Python executable found to install mpremote.');
+                        return;
+                    }
+                    await MpRemoteManager.install(pythonPath);
+                    const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+                    if (!ok) {
+                        vscode.window.showErrorMessage(zh ? `安装完成但验证失败，请手动运行：${pythonPath} -m pip install --upgrade mpremote` : `Installation finished but verification failed. Please run: ${pythonPath} -m pip install --upgrade mpremote`);
+                    } else {
+                        vscode.window.showInformationMessage(zh ? 'mpremote 已成功安装。' : 'mpremote installed successfully.');
+                    }
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(zh ? `安装失败：${e?.message || String(e)}。请手动运行：python -m pip install --upgrade mpremote` : `Install failed: ${e?.message || String(e)}. Run: python -m pip install --upgrade mpremote`);
+                }
+            }
+        });
     }
 
     /**
@@ -227,11 +265,21 @@ export class PythonInterpreterManager {
      * This can be called on extension activation to proactively notify users
      */
     static async checkMpremoteAvailability(): Promise<boolean> {
-        // Always true as mpremote is bundled; only ensure Python is available.
         try {
             const pythonPath = await this.getPythonPath();
             const validation = await this.validatePythonPath(pythonPath);
-            return validation.valid;
+            if (!validation.valid) return false;
+            // Check whether mpremote module is available in the detected Python
+            const available = await MpRemoteManager.isModuleAvailable(pythonPath);
+            if (!available) {
+                // Throttle notifications
+                const now = Date.now();
+                if ((now - this.lastMpremoteNotification) > this.NOTIFICATION_COOLDOWN) {
+                    this.lastMpremoteNotification = now;
+                    this.showMpremoteInstallationNotification(pythonPath);
+                }
+            }
+            return available;
         } catch {
             return false;
         }

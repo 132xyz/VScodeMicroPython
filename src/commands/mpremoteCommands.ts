@@ -15,8 +15,74 @@ export const mpremoteCommands = {
    * Check if mpremote is available and show installation guide if not
    */
   async checkAndInstallMpremote(silent: boolean = false): Promise<boolean> {
-    // mpremote 已内置，无需安装或检查外部依赖。
-    return true;
+    try {
+      const lang = vscode.env.language || '';
+      const zh = lang.startsWith('zh');
+      const pythonPath = await MpRemoteManager.detectPythonPath();
+      if (!pythonPath) {
+        if (!silent) vscode.window.showErrorMessage(zh ? '未检测到 Python 解释器，无法安装 mpremote。' : 'No Python interpreter detected; cannot install mpremote.');
+        return false;
+      }
+
+      const available = await MpRemoteManager.isModuleAvailable(pythonPath);
+      if (available) return true;
+
+      if (silent) return false;
+
+      const installLabel = zh ? '安装到此 Python' : 'Install to this Python';
+      const showPathLabel = zh ? '显示 Python 路径' : 'Show Python Path';
+      const cancelLabel = zh ? '取消' : 'Cancel';
+
+      const choice = await vscode.window.showInformationMessage(
+        zh ? `mpremote 未安装在检测到的 Python：${pythonPath}` : `mpremote is not installed in detected Python: ${pythonPath}`,
+        installLabel,
+        showPathLabel,
+        cancelLabel
+      );
+
+      if (choice === installLabel) {
+        return await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: zh ? '正在安装 mpremote...' : 'Installing mpremote...' }, async () => {
+          try {
+            await MpRemoteManager.install(pythonPath);
+            const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+            if (ok) {
+              vscode.window.showInformationMessage(zh ? 'mpremote 已成功安装。' : 'mpremote installed successfully.');
+              return true;
+            } else {
+              const msg = zh ? `安装完成但验证失败。请手动在此 Python 环境安装：${pythonPath}` : `Installation finished but verification failed. Please install manually for Python: ${pythonPath}`;
+              const openTerm = zh ? '打开终端并复制命令' : 'Open terminal with command';
+              const res = await vscode.window.showErrorMessage(msg, openTerm, 'OK');
+              if (res === openTerm) {
+                const term = vscode.window.createTerminal({ name: 'mpremote-install' });
+                term.show(true);
+                term.sendText(`${pythonPath} -m pip install --upgrade mpremote`, true);
+              }
+              return false;
+            }
+          } catch (e: any) {
+            const errMsg = String(e?.message || e);
+            const msg = zh ? `自动安装失败：${errMsg}\n请手动运行：${pythonPath} -m pip install --upgrade mpremote` : `Automatic install failed: ${errMsg}\nPlease run manually: ${pythonPath} -m pip install --upgrade mpremote`;
+            const openTerm = zh ? '打开终端并复制命令' : 'Open terminal with command';
+            const res = await vscode.window.showErrorMessage(msg, openTerm, 'OK');
+            if (res === openTerm) {
+              const term = vscode.window.createTerminal({ name: 'mpremote-install' });
+              term.show(true);
+              term.sendText(`${pythonPath} -m pip install --upgrade mpremote`, true);
+            }
+            return false;
+          }
+        });
+      }
+
+      if (choice === showPathLabel) {
+        await vscode.window.showInformationMessage(zh ? `Python 路径：${pythonPath}` : `Python path: ${pythonPath}`);
+        return false;
+      }
+
+      return false;
+    } catch (e) {
+      return false;
+    }
   },
 
   /**
@@ -42,14 +108,32 @@ export const mpremoteCommands = {
    * Show comprehensive mpremote installation guide
    */
   async showMpremoteInstallationGuide(): Promise<void> {
-    await vscode.window.showInformationMessage('mpremote 已内置，无需安装。');
+    const lang = vscode.env.language || '';
+    const zh = lang.startsWith('zh');
+    const msg = zh
+      ? 'mpremote 是本扩展所需的命令行工具。请在所选 Python 环境中运行：`python -m pip install --upgrade mpremote`。或使用扩展的安装命令自动安装。'
+      : 'mpremote is required by this extension. Run `python -m pip install --upgrade mpremote` in the desired Python environment, or use the extension install command to install it automatically.';
+    await vscode.window.showInformationMessage(msg);
   },
 
   /**
    * Automatically install mpremote using detected Python environment
    */
   async installMpremoteAutomatically(silent: boolean = false): Promise<void> {
-    if (!silent) await vscode.window.showInformationMessage('mpremote 已内置，无需安装。');
+    const pythonPath = await MpRemoteManager.detectPythonPath();
+    if (!pythonPath) {
+      if (!silent) vscode.window.showErrorMessage('No Python detected to install mpremote into.');
+      return;
+    }
+    try {
+      await MpRemoteManager.install(pythonPath);
+      const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+      if (!ok && !silent) {
+        vscode.window.showErrorMessage(`mpremote installation failed for Python: ${pythonPath}`);
+      }
+    } catch (e: any) {
+      if (!silent) vscode.window.showErrorMessage(`mpremote installation failed: ${e?.message || String(e)}`);
+    }
   },
 
   /**
@@ -72,14 +156,24 @@ export const mpremoteCommands = {
    * Show troubleshooting guide for PATH issues
    */
   async showPathTroubleshootingGuide(pythonPath: string): Promise<void> {
-    await vscode.window.showInformationMessage('无需配置 PATH：扩展已内置 mpremote。');
+    const lang = vscode.env.language || '';
+    const zh = lang.startsWith('zh');
+    const msg = zh
+      ? `请确保在此 Python 环境中安装 mpremote：\n${pythonPath} -m pip install --upgrade mpremote`
+      : `Ensure mpremote is installed in this Python environment:\n${pythonPath} -m pip install --upgrade mpremote`;
+    await vscode.window.showInformationMessage(msg);
   },
 
   /**
    * Show manual installation instructions
    */
   async showManualInstallationInstructions(): Promise<void> {
-    await vscode.window.showInformationMessage('mpremote 已内置，无需额外安装。');
+    const lang = vscode.env.language || '';
+    const zh = lang.startsWith('zh');
+    const msg = zh
+      ? '手动安装 mpremote：在命令行运行 `python -m pip install --upgrade mpremote`，或在虚拟环境中激活后运行相同命令。'
+      : 'To install mpremote manually run `python -m pip install --upgrade mpremote` in the desired Python environment.';
+    await vscode.window.showInformationMessage(msg);
   },
 
   /**
@@ -88,7 +182,7 @@ export const mpremoteCommands = {
   async showMpremoteInformation(): Promise<void> {
     const info = `**关于 mpremote**
 
-mpremote 是与 MicroPython 开发板通信的命令行工具。本扩展已内置 mpremote，无需额外安装。
+mpremote 是与 MicroPython 开发板通信的命令行工具。请在您希望扩展使用的 Python 环境中安装 mpremote，或使用扩展的安装功能进行自动安装。
 
 功能包括：
 - 浏览开发板文件
@@ -97,7 +191,7 @@ mpremote 是与 MicroPython 开发板通信的命令行工具。本扩展已内�
 - 直接运行脚本
 - 管理开发板文件系统
 
-如遇到问题，请确保已安装 Python 3.x。
+如遇到问题，请确保已安装 Python 3.x 并在该环境中安装 mpremote。
 
 详情访问：https://docs.micropython.org/en/latest/reference/mpremote.html`;
 

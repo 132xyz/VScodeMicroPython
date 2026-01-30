@@ -1,6 +1,5 @@
 # Fuentes y configs que no necesita el usuario
 src/**
-!src/python/**
 tsconfig.json
 .vscode/**
 .git/**

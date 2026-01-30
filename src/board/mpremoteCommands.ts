@@ -205,11 +205,11 @@ export async function restoreSerialSessionsFromSnapshot(
 }
 
 export async function checkMpremoteAvailability(): Promise<void> {
-  // mpremote is bundled internally; always available if Python is present.
+  // Prefer system-installed mpremote. If missing, instruct the user to install it.
   const ok = await MpRemoteManager.isModuleAvailable();
   if (!ok) {
-    vscode.window.showErrorMessage('Python 解释器未找到或内置 mpremote 加载失败。请检查 Python 环境。');
-    throw new Error('Python interpreter not available');
+    vscode.window.showErrorMessage('Python 解释器未找到或 mpremote 未安装。请检查 Python 环境并安装 mpremote。');
+    throw new Error('Python interpreter or mpremote not available');
   }
 }
 
