@@ -1,7 +1,7 @@
 .DS_Store
-*.py
 node_modules/
 dist/
+*.pyc
 .mpy-workbench/
 *.vsix
 *.log
