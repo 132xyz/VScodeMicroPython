@@ -62,19 +62,15 @@
 默认情况下，同步操作使用工作区根目录。您可以使用 `microPythonWorkBench.syncLocalRoot` 设置配置不同的本地根目录：
 
 - **空（默认）**：使用工作区根目录
-- **相对路径**：例如，`"src"` 或 `"micropython"` - 相对于工作区根目录
+- **相对路径**：例如，`"mpy"`、`"src"` 或 `"micropython"` — 相对于工作区根目录
 - **绝对路径**：完整路径到工作区外部的目录
 
-当您的 MicroPython 项目文件位于工作区子目录中时，或者当您想要同步到完全不同的位置时，这很有用。
+许多用户会将单个子目录（例如 `mpy`）设置为本地同步根目录。扩展现在会将设备路径始终映射到配置的本地同步目录下：
 
-**VS Code 设置示例：**
-```json
-{
-  "microPythonWorkBench.syncLocalRoot": "src/micropython"
-}
-```
+- 如果 `microPythonWorkBench.syncLocalRoot` 为 `mpy` 且设备文件为 `/mpy/t.py`，则映射到本地 `./mpy/mpy/t.py`（设备路径组件在本地同步目录下保留）。
+- 如果 `microPythonWorkBench.rootPath` 配置为 `/`，扩展会为该工作区生成一个 workspace-scoped 设备根（或使用 `MPY_DEVICE_ROOT` 环境覆盖），该设备根本身映射为本地同步根（空的相对路径），其子路径映射到该根下的相对路径。
 
-请参阅 `example-workspace-settings.json` 以获取完整的配置示例。
+此行为保证了设备文件总是放在配置的同步目录之下。有关完整示例，请参阅 `example-workspace-settings.json`。
 
 ## 代码补全
 
@@ -135,11 +131,11 @@
 
 ## 要求
 
-- **Python 3.13.2**
-- **Mpremote v1.26.1**
-- **固件烧录：** `esptool` 在同一 Python 环境中可用。通过 `pip install esptool` 安装。该扩展检查 `python`、`py -3`（Windows）和 PATH 中的 `esptool.py`/`esptool`。
+- **Python 3.8+**（建议 >=3.10） — 扩展使用 Python 运行内置的 `mpremote` 实现
+- **mpremote** — ✅ **已内置，无需外部安装**
+- **固件烧录：** `esptool` 需要在扩展将使用的 Python 环境中安装（例如 `python -m pip install --user esptool`）。扩展会检测常见 Python 可执行程序（`python`、`py -3` 等）和 PATH 中的 `esptool`。
 - **代码补全（可选）：** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展以获得增强的 IntelliSense 支持
-- 如果需要选择特定解释器，可以在扩展设置中调整 Python 路径。
+- 如需使用特定的 Python 解释器，可在扩展设置中调整 `microPythonWorkBench.pythonPath`。
 
 ## 快速开始
 
@@ -156,8 +152,9 @@ npm run package
 2. 确保本机安装依赖：
 
 ```bash
-# Python 3.8+（建议 >=3.10），mpremote 与 esptool
-python -m pip install --user mpremote esptool
+# Python 3.8+（建议 >=3.10）
+# `mpremote` 已随扩展内置，无需单独安装。
+python -m pip install --user esptool
 ```
 
 3. 打开包含 MicroPython 项目的工作区，选择串口（`MPY 工作台：选择串口`），在文件视图中进行同步/上传操作。

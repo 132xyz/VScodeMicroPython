@@ -32,8 +32,11 @@ npm run package
 2. Ensure dependencies are available on your machine:
 
 ```bash
-# Python 3.8+ (recommended >=3.10), mpremote and esptool
-python -m pip install --user mpremote esptool
+# Python 3.8+ (recommended >=3.10)
+# `mpremote` is bundled with the extension — no external installation required.
+# If you plan to flash firmware, install `esptool` into the Python environment you
+# want the extension to use:
+python -m pip install --user esptool
 ```
 
 3. Open a workspace containing your MicroPython project, pick a serial port (`MPY Workbench: Select Serial Port`) and use the Files view to sync/upload files.
@@ -104,19 +107,15 @@ Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to e
 By default, sync operations use the workspace root directory. You can configure a different local root directory using the `microPythonWorkBench.syncLocalRoot` setting:
 
 - **Empty (default)**: Uses the workspace root directory
-- **Relative path**: e.g., `"src"` or `"micropython"` - relative to workspace root
+- **Relative path**: e.g., `"mpy"`, `"src"` or `"micropython"` — interpreted relative to workspace root
 - **Absolute path**: Full path to a directory outside the workspace
 
-This is useful when your MicroPython project files are in a subdirectory of your workspace, or when you want to sync to a different location entirely.
+For many users the practical workflow is to set a single project subfolder (for example `mpy`) as the local sync root. When mapping device paths to local files the extension now always maps device paths into the configured local sync root. Concretely:
 
-**Example VS Code settings:**
-```json
-{
-  "microPythonWorkBench.syncLocalRoot": "src/micropython"
-}
-```
+- If your `microPythonWorkBench.syncLocalRoot` is `mpy` and a device file is `/mpy/t.py`, it maps to `./mpy/mpy/t.py` (device path components are preserved under the local sync root).
+- If the device root is a workspace-scoped generated name (used when `microPythonWorkBench.rootPath` is `/`), that device root itself maps to the local sync root (empty relative path), and child paths map to their relative paths beneath it.
 
-See `example-workspace-settings.json` for a complete configuration example.
+This behavior ensures device files are always placed under the configured sync directory. See `example-workspace-settings.json` for a complete configuration example.
 
 ## Code Completion
 
