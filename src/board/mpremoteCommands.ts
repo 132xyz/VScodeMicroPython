@@ -21,17 +21,14 @@ const debugLog = (...args: any[]) => {
 
 function getInternalPythonRoot(): string | null {
   try {
+    // Only use the packaged extension's internal Python helpers (production).
+    // Do NOT fall back to any workspace copy to avoid depending on local sources.
     const ext = vscode.extensions.getExtension('WebForks.mpy')
       || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith('.mpy'))
       || null;
-    let candidate: string | null = null;
+
     if (ext) {
-      candidate = path.join(ext.extensionPath, 'src', 'python');
-    } else {
-      const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (ws) candidate = path.join(ws, 'VScodeMicroPython', 'src', 'python');
-    }
-    if (candidate) {
+      const candidate = path.join(ext.extensionPath, 'src', 'python');
       const mainPath = path.join(candidate, 'mpremote', '__main__.py');
       if (fs.existsSync(mainPath)) return candidate;
     }
@@ -41,11 +38,17 @@ function getInternalPythonRoot(): string | null {
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
 
-async function buildShellCommand(args: string[]): Promise<string> {
+async function buildShellCommand(args: string[], forTerminal: boolean = false): Promise<string> {
   const pythonPath = await MpRemoteManager.detectPythonPath();
   const joined = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\\"')}"` : a).join(' ');
   if (!pythonPath) throw new Error('Python interpreter not found');
-  return `"${pythonPath}" -m mpremote ${joined}`;
+  const base = `"${pythonPath}" -m mpremote ${joined}`;
+  // NOTE: Do NOT add PowerShell-specific invocation prefixes here (like `&`).
+  // The returned string is used both with `exec()` (which runs under cmd.exe on Windows)
+  // and `Terminal.sendText()`. Injecting `&` causes syntax errors when run in cmd.exe
+  // or when copied to a cmd prompt. If a caller needs a PowerShell-specific prefix,
+  // it should add it at the call site when it knows the target shell is PowerShell.
+  return base;
 }
 
 type LastRunCommand = {
@@ -340,6 +343,8 @@ function getRunTerminal(): vscode.Terminal {
   }
   runTerminal = vscode.window.createTerminal({
     name: "ESP32 Run File",
+    shellPath: process.platform === 'win32' ? "cmd.exe" : (process.env.SHELL || '/bin/bash'),
+    // Keep the same shell as the REPL on Windows to avoid mixing cmd/powershell
     cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     env: termEnv
   });
