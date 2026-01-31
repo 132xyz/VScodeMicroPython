@@ -1,0 +1,3 @@
+[submodule "code_completion/micropython-stubs"]
+	path = code_completion/micropython-stubs
+	url = https://github.com/Josverl/micropython-stubs.git
