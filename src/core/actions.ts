@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { isReplOpen } from "../board/mpremoteCommands";
 
 export interface ActionNode {
   id: string;
@@ -52,13 +53,17 @@ export class ActionsTree implements vscode.TreeDataProvider<ActionNode> {
   }
 
   async getActionNodes(): Promise<ActionNode[]> {
-    return [
-      { id: "runActive", label: "Run Active File", command: "microPythonWorkBench.runActiveFile" },
-      { id: "openRepl", label: "Open Repl", command: "microPythonWorkBench.openRepl" },
-      { id: "stop", label: "Stop", command: "microPythonWorkBench.stop" },
-      { id: "softReset", label: "Soft Reset", command: "microPythonWorkBench.softReset" },
-      { id: "sendCtrlC", label: "Interrupt", command: "microPythonWorkBench.serialSendCtrlC" },
-      { id: "flashMicroPython", label: "Flash MicroPython (auto-detect)", command: "microPythonWorkBench.flashMicroPython" }
-    ];
+    const replOpen = isReplOpen();
+    const nodes: ActionNode[] = [];
+    nodes.push({ id: "runActive", label: "Run Active File", command: "microPythonWorkBench.runActiveFile" });
+    if (replOpen) {
+      nodes.push({ id: "stop", label: "Stop", command: "microPythonWorkBench.stop" });
+    } else {
+      nodes.push({ id: "openRepl", label: "Open Repl", command: "microPythonWorkBench.openRepl" });
+    }
+    nodes.push({ id: "softReset", label: "Soft Reset", command: "microPythonWorkBench.softReset" });
+    nodes.push({ id: "sendCtrlC", label: "Interrupt", command: "microPythonWorkBench.serialSendCtrlC" });
+    nodes.push({ id: "flashMicroPython", label: "Flash MicroPython (auto-detect)", command: "microPythonWorkBench.flashMicroPython" });
+    return nodes;
   }
 }

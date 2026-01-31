@@ -36,7 +36,14 @@ export const replCommands = {
 
   openSerial: openReplTerminal,
 
-  stop: stop,
+  stop: async () => {
+    try {
+      await closeReplTerminal(true);
+    } catch (e) {
+      // Fallback to previous stop behavior (soft reset) if closing REPL fails
+      try { await stop(); } catch {}
+    }
+  },
 
   softReset: softReset
 };

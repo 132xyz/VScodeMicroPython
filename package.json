@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.4",
+  "version": "0.3.15",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -502,6 +502,44 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.enableCodeCompletion.description%"
+        },
+        "microPythonWorkBench.stubInstallPath": {
+          "type": "string",
+          "default": ".mpy-workbench/pyi",
+          "description": "工作区内安装 pyi 的目标目录（相对于工作区根），例如 `.mpy-workbench/pyi`"
+        },
+        "microPythonWorkBench.stubExtraPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "额外的本地 stub 搜索路径（可选）。可用于用户自定义的 pyi 目录。"
+        },
+        "microPythonWorkBench.stubAutoSelect": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用时在连接设备并开启代码补全时自动选择并应用最佳的 pyi。"
+        },
+        "microPythonWorkBench.stubFallbackPolicy": {
+          "type": "string",
+          "enum": [
+            "latest",
+            "previous",
+            "manual"
+          ],
+          "default": "latest",
+          "description": "当设备 mpy 版本高于已安装/可用的 stub 时的回退策略。"
+        },
+        "microPythonWorkBench.stubRepoSource": {
+          "type": "string",
+          "enum": [
+            "pip",
+            "bundled",
+            "custom"
+          ],
+          "default": "pip",
+          "description": "用于安装 stubs 的来源：pip（PyPI）、bundled（扩展内置）或 custom（用户指定）。"
         }
       }
     }

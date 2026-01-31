@@ -47,6 +47,8 @@ import { utilityCommands } from "../commands/utilityCommands";
 import { mpremoteCommands } from "../commands/mpremoteCommands";
 import { Localization } from "./localization";
 import { codeCompletionManager } from "../completion/codeCompletion";
+import { boardInfoService } from '../board/boardInfoService';
+import { refreshIndex, clearIndex } from '../completion/stubIndex';
 
 export async function activate(context: vscode.ExtensionContext) {
   // Extension activated
@@ -605,9 +607,10 @@ export async function activate(context: vscode.ExtensionContext) {
       } finally {
         try {
           // restoreSerialSessionsFromSnapshot start
-          // Default to not reopening REPL unless explicitly requested via replBehavior.
-          const behavior = (opts.replBehavior ?? "none") as any;
-          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, replBehavior: behavior });
+          // If a replBehavior was explicitly requested by the caller, forward it.
+          // Otherwise omit replBehavior so the restore function uses its default
+          // behavior (which reopens REPL by default while keeping Run re-exec opt-in).
+          await restoreSerialSessionsFromSnapshot(snapshot, { resumeReplCommand: opts.resumeReplCommand, replBehavior: opts.replBehavior });
           // restoreSerialSessionsFromSnapshot done
         } catch (err) {
           console.error("[DEBUG] restoreSerialSessionsFromSnapshot failed:", err);
@@ -631,6 +634,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       const info = await withAutoSuspend(() => mp.detectBoardInfo(), { preempt: false });
       if (!info) return;
+      try { boardInfoService.setBoardInfo(info); } catch {}
       const parts: string[] = [];
       if (info.machine) parts.push(info.machine);
       else if (info.sysname) parts.push(info.sysname);
@@ -678,6 +682,37 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("microPythonWorkBench.rebuildManifest", async () => {
       await rebuildManifest(tree);
+    }),
+    vscode.commands.registerCommand('microPythonWorkBench.refreshStubIndex', async () => {
+      try {
+        const config = vscode.workspace.getConfiguration('microPythonWorkBench');
+        const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
+        const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        const root = ws ? ws.uri.fsPath : undefined;
+        const resolvedInstall = root ? path.join(root, installPath) : installPath;
+        const searchPaths = [resolvedInstall, ...extraPaths].filter(Boolean) as string[];
+        refreshIndex(searchPaths);
+        vscode.window.showInformationMessage('Stub index refreshed');
+      } catch (e) {
+        vscode.window.showErrorMessage('Failed to refresh stub index: ' + String(e));
+      }
+    }),
+    vscode.commands.registerCommand('microPythonWorkBench.clearStubIndex', async () => {
+      try {
+        clearIndex();
+        vscode.window.showInformationMessage('Stub index cleared');
+      } catch (e) {
+        vscode.window.showErrorMessage('Failed to clear stub index: ' + String(e));
+      }
+    }),
+    vscode.commands.registerCommand('microPythonWorkBench.chooseStub', async () => {
+      try {
+        await codeCompletionManager.chooseStub();
+      } catch (e) {
+        console.error('[Extension] chooseStub command failed', e);
+        vscode.window.showErrorMessage('选择 stub 失败: ' + (e instanceof Error ? e.message : String(e)));
+      }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.debugTreeParsing", debugCommands.debugTreeParsing),
     vscode.commands.registerCommand("microPythonWorkBench.debugFilesystemStatus", debugCommands.debugFilesystemStatus),

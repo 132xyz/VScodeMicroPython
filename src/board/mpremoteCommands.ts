@@ -159,13 +159,18 @@ export type ReplRestoreBehavior = "runChanged" | "executeBootMain" | "openReplEm
 
 export async function restoreSerialSessionsFromSnapshot(
   snapshot: AutoSuspendSnapshot,
-  opts: { resumeReplCommand?: string; replBehavior?: ReplRestoreBehavior } = {}
+  opts: { resumeReplCommand?: string; replBehavior?: ReplRestoreBehavior; restoreRun?: boolean } = {}
 ): Promise<void> {
-  // Prefer restoring the run command to avoid port contention with REPL
+  // By default do NOT automatically re-run the last Run command. Restoring
+  // the Run execution must be explicitly requested via `opts.restoreRun`.
   if (snapshot.runWasOpen && snapshot.lastRunCommand) {
-    logAutoSuspend("Restoring Run terminal with last command");
-    await rerunLastRunCommand(snapshot.lastRunCommand);
-    return;
+    if (opts.restoreRun) {
+      logAutoSuspend("Restoring Run terminal with last command");
+      await rerunLastRunCommand(snapshot.lastRunCommand);
+      return;
+    } else {
+      logAutoSuspend("Skipping automatic re-run of last Run command (restoreRun not set)");
+    }
   }
   if (snapshot.replWasOpen) {
     logAutoSuspend("Restoring REPL terminal");
