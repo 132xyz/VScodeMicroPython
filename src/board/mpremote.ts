@@ -338,7 +338,9 @@ export function runMpremote(
 
       try {
         const env = { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", ...(opts.env || {}) };
-        const res = await MpRemoteManager.run(args, { cwd: opts.cwd, env, retryOnFailure: opts.retryOnFailure, pythonPath: opts.pythonPath, timeoutMs: opts.timeoutMs });
+        // default timeout to avoid indefinite hangs during mpremote startup/import
+        const timeoutMs = typeof opts.timeoutMs === 'number' ? opts.timeoutMs : 20000;
+        const res = await MpRemoteManager.run(args, { cwd: opts.cwd, env, retryOnFailure: opts.retryOnFailure, pythonPath: opts.pythonPath, timeoutMs });
 
         if (port) {
           connectionManager.markHealthy(port);
@@ -1163,7 +1165,8 @@ export async function mkdir(p: string): Promise<void> {
 
   try {
     const pathArg = p && p !== "/" ? p : "/";
-    await runMpremote(["connect", connect, "fs", "mkdir", pathArg], { retryOnFailure: true });
+    // Add timeout to prevent hanging indefinitely
+    await runMpremote(["connect", connect, "fs", "mkdir", pathArg], { retryOnFailure: true, timeoutMs: 15000 });
 
     // Invalidate cache since filesystem changed
     clearFileTreeCache();
@@ -1207,13 +1210,13 @@ export async function cpFromDevice(devicePath: string, localPath: string): Promi
     console.log(`[DEBUG] cpFromDevice: Executing command: ${command}`);
     console.log(`[DEBUG] cpFromDevice: Device path: ${devicePath} -> ${deviceArg} -> ${devicePathWithPrefix} (isDir=${isDir})`);
     try {
-      await runMpremote(baseArgs, { retryOnFailure: true });
+      await runMpremote(baseArgs, { retryOnFailure: true, timeoutMs: 30000 });
     } catch (err: any) {
       const errMsg = String(err?.message || err);
       console.log(`[DEBUG] cpFromDevice: first attempt failed (${errMsg}), retrying without -r`);
       // Retry without -r just in case target is a file and mpremote rejects -r
       const retryArgs = ["connect", connect, "fs", "cp", devicePathWithPrefix, localPath];
-      await runMpremote(retryArgs, { retryOnFailure: false });
+      await runMpremote(retryArgs, { retryOnFailure: false, timeoutMs: 30000 });
     }
 
     // Note: We don't clear cache here since we're only reading, not modifying
@@ -1240,19 +1243,23 @@ export async function cpToDevice(localPath: string, devicePath: string): Promise
     const parentDir = deviceArg.substring(0, deviceArg.lastIndexOf('/'));
     
     if (parentDir && parentDir !== "" && parentDir !== "/") {
-      console.log(`[DEBUG] cpToDevice: Creating parent directory: ${parentDir}`);
-      try {
-        // Create parent directory with -p flag (recursive, like mkdir -p)
-        await runMpremote(["connect", connect, "fs", "mkdir", "-p", parentDir], { retryOnFailure: true });
-        console.log(`[DEBUG] cpToDevice: ✓ Parent directory created: ${parentDir}`);
-      } catch (mkdirError: any) {
-        // Directory might already exist, which is fine
-        const errorStr = String(mkdirError?.message || mkdirError).toLowerCase();
-        if (!errorStr.includes("file exists") && !errorStr.includes("directory exists")) {
-          console.warn(`[DEBUG] cpToDevice: ⚠ Failed to create parent directory ${parentDir}:`, mkdirError);
-          // Continue anyway - the directory might already exist
-        } else {
-          console.log(`[DEBUG] cpToDevice: ✓ Parent directory already exists: ${parentDir}`);
+      console.log(`[DEBUG] cpToDevice: Creating parent directories for: ${parentDir}`);
+      // Create each directory level step by step (mpremote fs mkdir does NOT support -p flag)
+      const pathParts = parentDir.split('/').filter(part => part.length > 0);
+      for (let i = 1; i <= pathParts.length; i++) {
+        const partialPath = '/' + pathParts.slice(0, i).join('/');
+        try {
+          await runMpremote(["connect", connect, "fs", "mkdir", partialPath], { retryOnFailure: false, timeoutMs: 10000 });
+          console.log(`[DEBUG] cpToDevice: ✓ Created directory: ${partialPath}`);
+        } catch (mkdirError: any) {
+          // Directory might already exist, which is fine
+          const errorStr = String(mkdirError?.message || mkdirError).toLowerCase();
+          if (errorStr.includes("file exists") || errorStr.includes("directory exists") || errorStr.includes("eexist")) {
+            console.log(`[DEBUG] cpToDevice: ✓ Directory already exists: ${partialPath}`);
+          } else {
+            console.warn(`[DEBUG] cpToDevice: ⚠ Could not create ${partialPath}:`, mkdirError?.message || mkdirError);
+            // Continue anyway - might still work
+          }
         }
       }
     }
@@ -1395,26 +1402,30 @@ export async function uploadReplacing(localPath: string, devicePath: string): Pr
     const parentDir = deviceArg.substring(0, deviceArg.lastIndexOf('/'));
     
     if (parentDir && parentDir !== "" && parentDir !== "/") {
-      console.log(`[DEBUG] uploadReplacing: Creating parent directory: ${parentDir}`);
-      try {
-        // Create parent directory with -p flag (recursive, like mkdir -p)
-        await runMpremote(["connect", connect, "fs", "mkdir", "-p", parentDir], { retryOnFailure: true });
-        console.log(`[DEBUG] uploadReplacing: ✓ Parent directory created: ${parentDir}`);
-      } catch (mkdirError: any) {
-        // Directory might already exist, which is fine
-        const errorStr = String(mkdirError?.message || mkdirError).toLowerCase();
-        if (!errorStr.includes("file exists") && !errorStr.includes("directory exists")) {
-          console.warn(`[DEBUG] uploadReplacing: ⚠ Failed to create parent directory ${parentDir}:`, mkdirError);
-          // Continue anyway - the directory might already exist
-        } else {
-          console.log(`[DEBUG] uploadReplacing: ✓ Parent directory already exists: ${parentDir}`);
+      console.log(`[DEBUG] uploadReplacing: Creating parent directories for: ${parentDir}`);
+      // Create each directory level step by step (mpremote fs mkdir does NOT support -p flag)
+      const pathParts = parentDir.split('/').filter(part => part.length > 0);
+      for (let i = 1; i <= pathParts.length; i++) {
+        const partialPath = '/' + pathParts.slice(0, i).join('/');
+        try {
+          await runMpremote(["connect", connect, "fs", "mkdir", partialPath], { retryOnFailure: false, timeoutMs: 10000 });
+          console.log(`[DEBUG] uploadReplacing: ✓ Created directory: ${partialPath}`);
+        } catch (mkdirError: any) {
+          // Directory might already exist, which is fine - check the error message
+          const errorStr = String(mkdirError?.message || mkdirError).toLowerCase();
+          if (errorStr.includes("file exists") || errorStr.includes("directory exists") || errorStr.includes("eexist")) {
+            console.log(`[DEBUG] uploadReplacing: ✓ Directory already exists: ${partialPath}`);
+          } else {
+            console.warn(`[DEBUG] uploadReplacing: ⚠ Could not create ${partialPath}:`, mkdirError?.message || mkdirError);
+            // Continue anyway - might still work
+          }
         }
       }
     }
 
     // For replacing upload, use mpremote fs cp with -f flag to force overwrite
     const devicePathWithPrefix = deviceArg === "/" ? ":" : `:${deviceArg}`;
-    await runMpremote(["connect", connect, "fs", "cp", "-f", localPath, devicePathWithPrefix], { retryOnFailure: true });
+    await runMpremote(["connect", connect, "fs", "cp", "-f", localPath, devicePathWithPrefix], { retryOnFailure: true, timeoutMs: 30000 });
 
     // Invalidate cache since filesystem changed
     clearFileTreeCache();

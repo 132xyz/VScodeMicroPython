@@ -6,6 +6,23 @@ import * as vscode from 'vscode';
 const execAsync = util.promisify(exec);
 const execFileAsync = util.promisify(execFile);
 
+// Helper to split a configured command string into executable and args
+// Supports quoted paths like "C:\\Program Files\\Python\\python.exe" and
+// preserves arguments if provided (e.g. 'py -3').
+function splitCommand(cmd: string): { exe: string; args: string[] } {
+  const parts: string[] = [];
+  const re = /[^\s\"]+|\"([^\"]*)\"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    if (m[1] !== undefined) parts.push(m[1]);
+    else parts.push(m[0]);
+  }
+  if (parts.length === 0) return { exe: cmd, args: [] };
+  const exe = parts[0];
+  const args = parts.slice(1);
+  return { exe, args };
+}
+
 export type InvocationSource = 'python-module' | 'executable' | 'unknown';
 
 export interface RunOptions {
@@ -66,10 +83,10 @@ class MpRemoteManagerClass {
     const candidates = process.platform === 'win32' ? ['python', 'python3', 'py', 'py -3'] : ['python3', 'python'];
     for (const c of candidates) {
       try {
-        // execFile can accept an executable plus args; handle simple candidate strings
-        const parts = c.split(' ').filter(p => p.length > 0);
-        const exe = parts[0];
-        const args = parts.slice(1).concat(['--version']);
+        // execFile can accept an executable plus args; handle candidate strings robustly
+        const parsed = splitCommand(c);
+        const exe = parsed.exe;
+        const args = parsed.args.concat(['--version']);
         await execFileAsync(exe, args);
         return c;
       } catch { }
@@ -81,9 +98,9 @@ class MpRemoteManagerClass {
     const py = pythonPath ?? await this.detectPythonPath();
     if (!py) return false;
     try {
-      const parts = py.split(' ').filter(p => p.length > 0);
-      const exe = parts[0];
-      const args = parts.slice(1).concat(['-m', 'mpremote', '--version']);
+      const parsed = splitCommand(py);
+      const exe = parsed.exe;
+      const args = parsed.args.concat(['-m', 'mpremote', '--version']);
       await execFileAsync(exe, args, { timeout: 5000 });
       return true;
     } catch {
@@ -120,9 +137,9 @@ class MpRemoteManagerClass {
     const pythonPath = await this.detectPythonPath();
     if (!pythonPath) return { version: null, compatible: false, source: 'unknown' };
     try {
-      const parts = pythonPath.split(' ').filter(p => p.length > 0);
-      const exe = parts[0];
-      const args = parts.slice(1).concat(['-m', 'mpremote', '--version']);
+      const parsed = splitCommand(pythonPath);
+      const exe = parsed.exe;
+      const args = parsed.args.concat(['-m', 'mpremote', '--version']);
       const { stdout } = await execFileAsync(exe, args, { timeout: 5000 });
       const match = stdout.match(/(\d+\.\d+\.\d+)/);
       const version = match ? match[1] : null;
@@ -150,9 +167,9 @@ class MpRemoteManagerClass {
     }
     const escaped = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\"')}"` : a).join(' ');
     // Build execFile arguments to handle pythonPath that may contain extra args (e.g. 'py -3')
-    const parts = (pythonPath || 'python').split(' ').filter(p => p.length > 0);
-    const exe = parts[0];
-    const preArgs = parts.slice(1);
+    const parsedCmd = splitCommand(pythonPath || 'python');
+    const exe = parsedCmd.exe;
+    const preArgs = parsedCmd.args;
     const execArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
     const execOpt: any = { cwd: opts.cwd, env };
@@ -204,9 +221,9 @@ class MpRemoteManagerClass {
     await prev;
 
     const pythonPath = opts.pythonPath || await this.detectPythonPath();
-    const parts = (pythonPath || 'python').split(' ').filter(p => p.length > 0);
-    const exe = parts[0];
-    const preArgs = parts.slice(1);
+    const parsed = splitCommand(pythonPath || 'python');
+    const exe = parsed.exe;
+    const preArgs = parsed.args;
     const spawnArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
     const child = execFile(exe, spawnArgs, { cwd: opts.cwd, env });
@@ -234,9 +251,9 @@ class MpRemoteManagerClass {
     // Installation helper: attempts to install mpremote into given pythonPath.
     const pythonPath = _pythonPath ?? await this.detectPythonPath();
     if (!pythonPath) throw new Error('No python interpreter found');
-    const parts = pythonPath.split(' ').filter(p => p.length > 0);
-    const exe = parts[0];
-    const preArgs = parts.slice(1);
+    const parsed = splitCommand(pythonPath);
+    const exe = parsed.exe;
+    const preArgs = parsed.args;
     // Ensure pip is available
     try {
       await execFileAsync(exe, preArgs.concat(['-m', 'pip', '--version']), { timeout: 10000 });

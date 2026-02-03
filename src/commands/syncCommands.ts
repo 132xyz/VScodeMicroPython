@@ -94,8 +94,8 @@ export const syncCommands = {
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Uploading all files to board...",
-        cancellable: false
-      }, async (progress) => {
+        cancellable: true  // Allow user to cancel the operation
+      }, async (progress, token) => {
         const files = Object.keys(man.files);
         const total = files.length;
 
@@ -105,6 +105,12 @@ export const syncCommands = {
         }
 
         progress.report({ increment: 0, message: `Found ${total} files to upload` });
+
+        // Check for cancellation
+        if (token.isCancellationRequested) {
+          vscode.window.showWarningMessage("Upload cancelled by user");
+          return;
+        }
 
         await withAutoSuspend(async () => {
           // First, create all necessary directories on the device in hierarchical order
@@ -129,25 +135,58 @@ export const syncCommands = {
           // Sort directories by depth to create parent directories first
           const sortedDirectories = Array.from(allDirectories).sort((a, b) => a.split('/').length - b.split('/').length);
 
-          for (const dir of sortedDirectories) {
+          const dirTotal = sortedDirectories.length;
+          for (let i = 0; i < sortedDirectories.length; i++) {
+            // Check for cancellation
+            if (token.isCancellationRequested) {
+              vscode.window.showWarningMessage("Upload cancelled by user during directory creation");
+              return;
+            }
+            const dir = sortedDirectories[i];
+            progress.report({ increment: 5 / Math.max(dirTotal, 1), message: `Creating directory: ${dir}` });
             try {
               await mp.mkdir(dir);
-            } catch (e) {
-              // Directory might already exist, ignore error
+            } catch (e: any) {
+              // Directory might already exist, check error message
+              const errorStr = String(e?.message || e).toLowerCase();
+              if (!errorStr.includes("file exists") && !errorStr.includes("directory exists") && !errorStr.includes("eexist")) {
+                console.error(`[syncBaseline] Failed to create directory ${dir}:`, e?.message || e);
+              }
             }
           }
 
-          progress.report({ increment: 10, message: "Uploading files..." });
+          progress.report({ increment: 5, message: "Uploading files..." });
+
+          // Calculate increment per file (remaining 85% divided by total files)
+          const incrementPerFile = 85 / Math.max(total, 1);
 
           // Upload files
           for (let i = 0; i < files.length; i++) {
+            // Check for cancellation before each file
+            if (token.isCancellationRequested) {
+              vscode.window.showWarningMessage(`Upload cancelled by user. ${i}/${total} files uploaded.`);
+              return;
+            }
+
             const relativePath = files[i];
             const localPath = path.join(localRootDir, relativePath);
             const devicePath = path.posix.join(rootPath, relativePath);
 
-            progress.report({ increment: 10 + (i / total) * 85, message: `Uploading ${relativePath}` });
+            progress.report({ increment: incrementPerFile, message: `Uploading (${i + 1}/${total}): ${relativePath}` });
 
-            await mp.uploadReplacing(localPath, devicePath);
+            try {
+              await mp.uploadReplacing(localPath, devicePath);
+            } catch (uploadError: any) {
+              console.error(`[syncBaseline] Failed to upload ${relativePath}:`, uploadError?.message || uploadError);
+              // Ask user if they want to continue
+              const choice = await vscode.window.showErrorMessage(
+                `Failed to upload ${relativePath}: ${uploadError?.message || uploadError}`,
+                "Continue", "Abort"
+              );
+              if (choice === "Abort") {
+                throw new Error(`Upload aborted after failing to upload ${relativePath}`);
+              }
+            }
           }
         });
       });
@@ -201,8 +240,8 @@ export const syncCommands = {
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Downloading all files from board...",
-        cancellable: false
-      }, async (progress) => {
+        cancellable: true  // Allow user to cancel the operation
+      }, async (progress, token) => {
         const files = deviceStats.filter(e => !e.isDir);
         const total = files.length;
 
@@ -213,8 +252,23 @@ export const syncCommands = {
 
         progress.report({ increment: 0, message: `Found ${total} files to download` });
 
+        // Check for cancellation
+        if (token.isCancellationRequested) {
+          vscode.window.showWarningMessage("Download cancelled by user");
+          return;
+        }
+
+        // Calculate increment per file
+        const incrementPerFile = 100 / Math.max(total, 1);
+
         await withAutoSuspend(async () => {
           for (let i = 0; i < files.length; i++) {
+            // Check for cancellation before each file
+            if (token.isCancellationRequested) {
+              vscode.window.showWarningMessage(`Download cancelled by user. ${i}/${total} files downloaded.`);
+              return;
+            }
+
             const file = files[i];
             const rel = toLocalRelative(file.path, rootPath);
             if (rel === null) {
@@ -223,10 +277,22 @@ export const syncCommands = {
             }
             const abs = path.join(localRootDir, ...rel.split('/'));
 
-            progress.report({ increment: (i / total) * 100, message: `Downloading ${rel}` });
+            progress.report({ increment: incrementPerFile, message: `Downloading (${i + 1}/${total}): ${rel}` });
 
-            await fs.mkdir(path.dirname(abs), { recursive: true });
-            await mp.cpFromDevice(file.path, abs);
+            try {
+              await fs.mkdir(path.dirname(abs), { recursive: true });
+              await mp.cpFromDevice(file.path, abs);
+            } catch (downloadError: any) {
+              console.error(`[syncBaselineFromBoard] Failed to download ${rel}:`, downloadError?.message || downloadError);
+              // Ask user if they want to continue
+              const choice = await vscode.window.showErrorMessage(
+                `Failed to download ${rel}: ${downloadError?.message || downloadError}`,
+                "Continue", "Abort"
+              );
+              if (choice === "Abort") {
+                throw new Error(`Download aborted after failing to download ${rel}`);
+              }
+            }
           }
         });
       });
