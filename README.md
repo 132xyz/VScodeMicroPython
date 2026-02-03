@@ -182,12 +182,17 @@ Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually
 - **Code Completion (optional):** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) extension for enhanced IntelliSense support
 - The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
 
-## Firmware flashing
+## Firmware flashing (removed)
 
-- Choose a specific serial port (not `auto`), then run `MicroPython WorkBench: Flash MicroPython Firmware` from the Command Palette or Board Actions view.
-- The extension detects the board, picks the matching entry from `assets/firmwareCatalog.json`, downloads the image, and runs `esptool` at 460800 baud.
-- Put the board in bootloader mode first; the REPL is automatically closed during flashing to free the port.
-- Add more boards by appending entries to `assets/firmwareCatalog.json` (chip, flash mode/freq, offset, download URL, and aliases).
+- Automatic esptool-based firmware flashing has been removed from this extension.
+- Please flash boards manually using `esptool` or vendor tools. Example:
+
+```bash
+pip install esptool
+python -m esptool --chip esp32 --port COM3 write_flash -z --flash_mode qio --flash_freq 40m --flash_size detect 0x1000 firmware.bin
+```
+
+Replace `COM3` / options as appropriate for your board.
 
 ## Next steps
 

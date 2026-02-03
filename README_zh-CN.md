@@ -197,12 +197,17 @@ python -m pip install --user esptool
 - 固件目录与板子测试目前以 ESP32 系列为主（ESP32-S3、ESP32-C3）。若要支持其他板子，请先补充 `assets/firmwareCatalog.json` 条目并测试。
 - 仓库已配置 CI，会在多平台和 Node.js 版本上运行构建/测试，但单元测试覆盖尚不足——建议在本地运行 `npm test` 并为核心模块（`sync`、`board`、`completion`）补充测试用例。
 
-## 固件烧录
+## 固件烧录（已移除）
 
-- 选择特定的串口（不是 `auto`），然后从命令面板或开发板操作视图运行 `MicroPython 工作台：烧录 MicroPython 固件`。
-- 该扩展检测开发板，从 `assets/firmwareCatalog.json` 中选择匹配条目，下载映像，并使用 460800 波特率运行 `esptool`。
-- 首先将开发板置于引导加载程序模式；烧录期间 REPL 会自动关闭以释放串口。
-- 通过将条目附加到 `assets/firmwareCatalog.json` 来添加更多开发板（芯片、闪存模式/频率、偏移、下载 URL 和别名）。
+- 自动使用 esptool 的固件烧录功能已从此扩展中移除。
+- 请使用 `esptool` 或厂商工具手动烧录开发板。示例：
+
+```bash
+pip install esptool
+python -m esptool --chip esp32 --port COM3 write_flash -z --flash_mode qio --flash_freq 40m --flash_size detect 0x1000 firmware.bin
+```
+
+根据您的开发板替换 `COM3` / 参数。
 
 ## 后续步骤
 

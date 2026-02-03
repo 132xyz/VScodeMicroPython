@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.19",
+  "version": "0.3.29",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -201,10 +201,6 @@
         "command": "microPythonWorkBench.openFileFromLocal",
         "title": "%commands.openFileFromLocal.title%",
         "icon": "$(file-directory)"
-      },
-      {
-        "command": "microPythonWorkBench.flashMicroPython",
-        "title": "%commands.flashMicroPython.title%"
       },
       {
         "command": "microPythonWorkBench.syncFileLocalToBoard",
@@ -539,7 +535,17 @@
             "custom"
           ],
           "default": "pip",
-          "description": "用于安装 stubs 的来源：pip（PyPI）、bundled（扩展内置）或 custom（用户指定）。"
+          "description": "%configuration.stubRepoSource.description%"
+        },
+        "microPythonWorkBench.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging from the Micro Python Work Bench extension (verbose internal logs)."
+        },
+        "microPythonWorkBench.verboseFileTree": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, enable ultra-verbose file-tree parsing logs (for debugging tree parsing and cache)."
         }
       }
     }

@@ -3,12 +3,14 @@ import { exec } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as mp from "./mpremote";
+import { runMpremote } from "./mpremote";
 import { MpRemoteManager } from './MpRemoteManager';
 import { showInfo, showError, showWarning } from "../core/localization";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
 let userClosedRepl = false;
+let runTerminalInitialized = false;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Debug logging helper. Controlled by the `microPythonWorkBench.debug` setting (default: false).
@@ -302,7 +304,33 @@ export async function runActiveFile(): Promise<void> {
     } catch {}
   }
 
-  // Use mpremote run command (prefer python -m mpremote)
+  // On Windows prefer running mpremote directly and capture output to avoid
+  // cmd.exe legacy/UTF-8 issues that can cause mpremote to hang on Unicode.
+  if ((process as any).platform === 'win32') {
+    const out = vscode.window.createOutputChannel('ESP32 Run Output');
+    out.show(true);
+    try {
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      out.appendLine(`Running: mpremote connect ${device} run ${filePath}\n`);
+      const res = await runMpremote(["connect", device, "run", filePath], { cwd, retryOnFailure: true });
+      if (res.stdout) out.append(res.stdout);
+      if (res.stderr) out.appendLine('\n' + res.stderr);
+    } catch (err: any) {
+      out.appendLine(String(err?.message || err));
+    }
+    return;
+  }
+
+  // Use mpremote run command (prefer python -m mpremote) via terminal for non-Windows
+  // Ensure Windows run terminal is using UTF-8 code page on first use (kept for parity)
+  if ((process as any).platform === 'win32' && !runTerminalInitialized) {
+    try {
+      terminal.sendText('chcp 65001 >nul', true);
+      await sleep(150);
+    } catch {}
+    runTerminalInitialized = true;
+  }
+
   const cmd = await buildShellCommand(["connect", device, "run", filePath]);
   rememberLastRunCommand(device, filePath, cmd);
   terminal.sendText(cmd, true);
@@ -327,6 +355,7 @@ export async function closeRunTerminal() {
     runTerminal.dispose();
   } catch {}
   runTerminal = undefined;
+  runTerminalInitialized = false;
   await new Promise(r => setTimeout(r, 250));
 }
 
@@ -353,6 +382,8 @@ function getRunTerminal(): vscode.Terminal {
     cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     env: termEnv
   });
+  // mark initialized false so caller can perform one-time terminal setup (eg. chcp)
+  runTerminalInitialized = false;
   return runTerminal;
 }
 

@@ -80,139 +80,11 @@ export async function activate(context: vscode.ExtensionContext) {
     return new Set(defaultIgnorePatterns());
   }
 
-  type FirmwareEntry = {
-    id: string;
-    aliases: string[];
-    chip: string;
-    flashMode: string;
-    flashFreq: string;
-    offset: string;
-    url: string;
-  };
+  // Firmware catalog and esptool helper utilities removed.
 
-  async function loadFirmwareCatalog(extPath: string): Promise<FirmwareEntry[]> {
-    try {
-      const catalogPath = path.join(extPath, "assets", "firmwareCatalog.json");
-      const txt = await fs.readFile(catalogPath, "utf8");
-      const parsed = JSON.parse(txt);
-      return Array.isArray(parsed?.entries) ? parsed.entries as FirmwareEntry[] : [];
-    } catch (e) {
-      console.error("[DEBUG] loadFirmwareCatalog: failed to read catalog", e);
-      return [];
-    }
-  }
+  // Esptool helpers removed (esptool auto-flash permanently deleted)
 
-  function normalizeBoardKey(machine: string | undefined): string | null {
-    if (!machine) return null;
-    const upper = machine.toUpperCase();
-    const m = upper.match(/ESP32[-_\s]*([A-Z0-9]+)/);
-    if (m && m[1]) return `ESP32${m[1].replace(/[^A-Z0-9]/g, "")}`;
-    if (upper.startsWith("ESP32")) return upper.replace(/[^A-Z0-9]/g, "");
-    return null;
-  }
-
-  function findFirmwareForMachine(machine: string | undefined, catalog: FirmwareEntry[]): FirmwareEntry | undefined {
-    const key = normalizeBoardKey(machine);
-    if (!key) return undefined;
-    const simpleKey = key.replace(/[^A-Z0-9]/g, "");
-    return catalog.find(entry => {
-      const aliases = entry.aliases || [];
-      return aliases.some(a => a.replace(/[^A-Z0-9]/g, "").toUpperCase() === simpleKey);
-    });
-  }
-
-  async function getPythonCmd(): Promise<string> {
-    try {
-      const ws = vscode.workspace.workspaceFolders?.[0];
-      return await PythonInterpreterManager.getPythonPath(ws);
-    } catch {
-      return "python";
-    }
-  }
-
-  async function ensureEsptool(): Promise<string> {
-    const attempts: { cmd: string; error?: string }[] = [];
-
-    const env = {
-      ...process.env,
-      PYTHONUTF8: "1",
-      PYTHONIOENCODING: "utf-8",
-      TERM: "dumb"
-    };
-
-    async function tryCmd(cmd: string, args: string[]): Promise<string> {
-      return new Promise((resolve, reject) => {
-        execFile(cmd, args, { env }, (err, _stdout, stderr) => {
-          if (err) {
-            reject(new Error(stderr || err.message || "unknown error"));
-          } else {
-            resolve(cmd);
-          }
-        });
-      });
-    }
-
-    const record = (cmd: string, err?: any) => {
-      attempts.push({ cmd, error: err?.message || String(err || "") || undefined });
-      if (err) console.warn("[DEBUG] ensureEsptool failed:", cmd, "-", err?.message || err);
-    };
-
-    const pyCheckArgs = ["-c", "import esptool; print(esptool.__version__)"];
-    // Primary: VS Code / user configured interpreter
-    const py = await getPythonCmd();
-    try { return await tryCmd(py, pyCheckArgs); }
-    catch (err) { record(`${py} ${pyCheckArgs.join(" ")}`, err); }
-
-    // Windows convenience launcher
-    if (process.platform === "win32") {
-      try { return await tryCmd("py", ["-3", ...pyCheckArgs]); }
-      catch (err) { record(["py", "-3", ...pyCheckArgs].join(" "), err); }
-    }
-
-    // Generic fallbacks
-    for (const p of ["python", "python3"]) {
-      try { return await tryCmd(p, pyCheckArgs); }
-      catch (err) { record(`${p} ${pyCheckArgs.join(" ")}`, err); }
-    }
-
-    // Raw esptool executables if installed globally
-    for (const tool of ["esptool.py", "esptool"]) {
-      try { return await tryCmd(tool, ["--version"]); }
-      catch (err) { record(`${tool} --version`, err); }
-    }
-
-    const attemptsList = attempts.map(a => `• ${a.cmd}${a.error ? ` → ${a.error}` : ""}`).join("\n");
-    throw new Error(`esptool is not available using any Python command. Tried:\n${attemptsList}\nInstall with: pip install esptool\nIf Python differs from your shell, set microPythonWorkBench.pythonPath to the interpreter with esptool.`);
-  }
-
-  async function downloadFirmware(url: string): Promise<string> {
-    const dest = path.join(os.tmpdir(), `mpy-fw-${Date.now()}.bin`);
-    return new Promise((resolve, reject) => {
-      const file = fsSync.createWriteStream(dest);
-      https.get(url, res => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          // Follow simple redirect once
-          https.get(res.headers.location, res2 => {
-            if (res2.statusCode !== 200) {
-              reject(new Error(`Download failed: HTTP ${res2.statusCode}`));
-              return;
-            }
-            res2.pipe(file);
-            file.on("finish", () => file.close(() => resolve(dest)));
-            res2.on("error", reject);
-          }).on("error", reject);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-          return;
-        }
-        res.pipe(file);
-        file.on("finish", () => file.close(() => resolve(dest)));
-        res.on("error", reject);
-      }).on("error", reject);
-    });
-  }
+  // downloadFirmware removed
 
   // Helper to validate if the local folder is initialized
   async function isLocalSyncInitialized(): Promise<boolean> {
@@ -727,7 +599,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncFileLocalToBoard", fileCommands.syncFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
     vscode.commands.registerCommand("microPythonWorkBench.setPort", boardCommands.setPort),
-    vscode.commands.registerCommand("microPythonWorkBench.flashMicroPython", boardCommands.flashMicroPython),
+    // `flashMicroPython` command removed: esptool-based auto-flash was deleted
     vscode.commands.registerCommand("microPythonWorkBench.syncBaseline", syncCommands.syncBaseline),
     vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromBoard", syncCommands.syncBaselineFromBoard),
 
