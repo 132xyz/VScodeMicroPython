@@ -56,7 +56,8 @@ export class CodeCompletionManager {
     // 监听配置变化
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('microPythonWorkBench.enableCodeCompletion')) {
+        if (e.affectsConfiguration('microPythonWorkBench.enableCodeCompletion') ||
+            e.affectsConfiguration('microPythonWorkBench.codeCompletionExtraPaths')) {
           this.handleConfigurationChange();
         }
       })
@@ -113,13 +114,13 @@ export class CodeCompletionManager {
       }
 
       // 查找已安装的 stubs（只在启用时查找一次）
+      // 注意：codeCompletionExtraPaths 不用于搜索可选 stub，而是直接加入 Pylance 搜索路径
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
       const ws = vscode.workspace.workspaceFolders?.[0];
       const root = ws ? ws.uri.fsPath : undefined;
       const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall, ...extraPaths].filter(Boolean);
+      const searchPaths = [resolvedInstall].filter(Boolean);
 
       const entries = indexStubPaths(searchPaths);
       let chosenPath: string | null = null;
@@ -176,7 +177,7 @@ export class CodeCompletionManager {
             try {
               const installedDir = await installStubPackage(primary, installPathResolved);
               // re-index including the installed subdir
-              const reEntries = indexStubPaths([installedDir, installPathResolved, ...extraPaths]);
+              const reEntries = indexStubPaths([installedDir, installPathResolved]);
               const best = findBestMatch(reEntries, { release: cleanedRelease, machine: boardInfo.sysname || boardInfo.machine });
               if (best) finalStubPath = best.path;
               else finalStubPath = installedDir;
@@ -468,38 +469,109 @@ export class CodeCompletionManager {
 
     // --- 2. 更新 Workspace 配置 ---
     
-    // 清理 analysis.extraPaths (只移除我们的路径，不再添加)
-    const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []);
-    const newExtraPaths = extraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
-    if (newExtraPaths.length !== extraPaths.length) {
+    // 获取用户配置的 codeCompletionExtraPaths
+    const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
+    const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+    
+    // 清理 analysis.extraPaths：移除扩展旧路径，保留用户其他路径
+    const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
+    let newExtraPaths = extraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
+    
+    // 如果启用（stubPath 非空），将用户配置的 codeCompletionExtraPaths 加入
+    if (stubPath && userExtraPaths.length > 0) {
+      for (const p of userExtraPaths) {
+        if (p && !newExtraPaths.includes(p)) {
+          newExtraPaths.push(p);
+        }
+      }
+    }
+    
+    // 如果有变化则更新
+    const extraChanged = extraPaths.length !== newExtraPaths.length || 
+      extraPaths.some((p, i) => p !== newExtraPaths[i]);
+    if (extraChanged) {
       await pythonConfig.update('analysis.extraPaths', newExtraPaths, vscode.ConfigurationTarget.Workspace);
     }
 
     // 清理 autoComplete.extraPaths
     const autoCompleteExtraPaths = pythonConfig.get<string[]>('autoComplete.extraPaths', []);
     const newAutoCompleteExtraPaths = autoCompleteExtraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
-        if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
-          await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
-        }
+    if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
+      await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
+    }
 
     // 更新 analysis.stubPath
     const currentStubPath = pythonConfig.get<string>('analysis.stubPath', '');
     
+    let needRestart = false;
     if (stubPath) {
       // 启用：设置 stubPath
       if (currentStubPath !== stubPath) {
         await pythonConfig.update('analysis.stubPath', stubPath, vscode.ConfigurationTarget.Workspace);
-        // 配置修改后重启 Pylance
-        await this.restartPylanceLanguageServer();
+        needRestart = true;
       }
     } else {
        // 禁用：如果当前 stubPath 是我们的，则清除
        if (isExtensionPath(currentStubPath) || oldPaths.includes(currentStubPath)) {
          await pythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Workspace);
-         // 配置修改后重启 Pylance
-         await this.restartPylanceLanguageServer();
+         needRestart = true;
        }
     }
+    
+    // 配置修改后重启 Pylance（仅需一次）
+    if (needRestart || extraChanged) {
+      await this.restartPylanceLanguageServer();
+    }
+  }
+
+  /**
+   * 获取已启用模块的列表（用于状态栏 tooltip）
+   */
+  private getEnabledModulesList(): string[] {
+    const modules: string[] = [];
+    try {
+      // 获取主 stub 路径
+      const pythonConfig = vscode.workspace.getConfiguration('python');
+      const stubPath = pythonConfig.get<string>('analysis.stubPath', '');
+      
+      // 获取额外路径
+      const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
+      const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+      
+      // 收集所有路径
+      const allPaths = [stubPath, ...userExtraPaths].filter(Boolean);
+      
+      for (const p of allPaths) {
+        try {
+          if (!fs.existsSync(p)) continue;
+          const stats = fs.statSync(p);
+          if (stats.isDirectory()) {
+            // 列出目录下的模块
+            const items = fs.readdirSync(p);
+            for (const item of items) {
+              // 忽略隐藏文件和特殊目录
+              if (item.startsWith('.') || item.startsWith('_')) continue;
+              const itemPath = path.join(p, item);
+              const itemStats = fs.statSync(itemPath);
+              if (itemStats.isDirectory()) {
+                // 目录形式的模块
+                modules.push(item);
+              } else if (item.endsWith('.pyi') || item.endsWith('.py')) {
+                // 单文件模块
+                modules.push(item.replace(/\.pyi?$/, ''));
+              }
+            }
+          }
+        } catch {
+          // 忽略无法访问的路径
+        }
+      }
+    } catch {
+      // 忽略错误
+    }
+    
+    // 去重并排序
+    return [...new Set(modules)].sort();
   }
 
   /**
@@ -522,7 +594,18 @@ export class CodeCompletionManager {
 
     if (this.isEnabled) {
       text = '$(lightbulb)';
-      tooltip = Localization.t('messages.codeCompletionEnabled');
+      const enabledModules = this.getEnabledModulesList();
+      if (enabledModules.length > 0) {
+        // 显示前10个模块，超过则显示省略
+        const displayModules = enabledModules.slice(0, 10);
+        const remaining = enabledModules.length - 10;
+        tooltip = Localization.t('messages.codeCompletionEnabled') + '\n\n已启用模块:\n' + displayModules.join(', ');
+        if (remaining > 0) {
+          tooltip += `\n...及其他 ${remaining} 个模块`;
+        }
+      } else {
+        tooltip = Localization.t('messages.codeCompletionEnabled');
+      }
       color = '#00ff00'; // 启用状态显示绿色
     } else {
       text = '$(lightbulb-slash)';
@@ -551,11 +634,10 @@ export class CodeCompletionManager {
 
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
       const ws = vscode.workspace.workspaceFolders?.[0];
       const root = ws ? ws.uri.fsPath : undefined;
       const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall, ...extraPaths].filter(Boolean) as string[];
+      const searchPaths = [resolvedInstall].filter(Boolean) as string[];
 
       const entries = indexStubPaths(searchPaths);
       const found = entries.find(e => currentStubPath === e.path || currentStubPath.startsWith(e.path));
@@ -576,11 +658,10 @@ export class CodeCompletionManager {
 
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
       const ws = vscode.workspace.workspaceFolders?.[0];
       const root = ws ? ws.uri.fsPath : undefined;
       const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall, ...extraPaths].filter(Boolean) as string[];
+      const searchPaths = [resolvedInstall].filter(Boolean) as string[];
 
       const entries = indexStubPaths(searchPaths);
       const found = entries.find(e => currentStubPath === e.path || currentStubPath.startsWith(e.path));
@@ -621,11 +702,10 @@ export class CodeCompletionManager {
     try {
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
       const ws = vscode.workspace.workspaceFolders?.[0];
       const root = ws ? ws.uri.fsPath : undefined;
       const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall, ...extraPaths].filter(Boolean) as string[];
+      const searchPaths = [resolvedInstall].filter(Boolean) as string[];
 
       let entries = indexStubPaths(searchPaths);
       if (!entries || entries.length === 0) {
@@ -661,8 +741,8 @@ export class CodeCompletionManager {
             try {
               const installedDir = await installStubPackage(primary, resolvedInstall);
               // reindex including installed dir
-              refreshIndex([installedDir, resolvedInstall, ...extraPaths]);
-              entries = indexStubPaths([installedDir, resolvedInstall, ...extraPaths]);
+              refreshIndex([installedDir, resolvedInstall]);
+              entries = indexStubPaths([installedDir, resolvedInstall]);
             } catch (e) {
               vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
               return;

@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.15",
+  "version": "0.3.19",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -508,13 +508,13 @@
           "default": ".mpy-workbench/pyi",
           "description": "工作区内安装 pyi 的目标目录（相对于工作区根），例如 `.mpy-workbench/pyi`"
         },
-        "microPythonWorkBench.stubExtraPaths": {
+        "microPythonWorkBench.codeCompletionExtraPaths": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "额外的本地 stub 搜索路径（可选）。可用于用户自定义的 pyi 目录。"
+          "description": "启用代码补全时直接加入 Pylance 搜索路径的额外目录。这些路径中的 .pyi 文件将被 Pylance 用于代码提示。"
         },
         "microPythonWorkBench.stubAutoSelect": {
           "type": "boolean",
