@@ -746,8 +746,12 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
-      if (terminal.name === "ESP32 REPL") {
-        // replTerminal is now managed in mpremoteCommands.ts
+      // Delegate terminal close handling to mpremoteCommands which tracks Run/REPL terminals
+      try {
+        const { handleTerminalClose } = require("../board/mpremoteCommands");
+        handleTerminalClose(terminal);
+      } catch (e) {
+        console.error("[DEBUG] handleTerminalClose failed:", e);
       }
     })
   );

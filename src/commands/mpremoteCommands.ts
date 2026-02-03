@@ -53,9 +53,16 @@ export const mpremoteCommands = {
               const openTerm = zh ? '打开终端并复制命令' : 'Open terminal with command';
               const res = await vscode.window.showErrorMessage(msg, openTerm, 'OK');
               if (res === openTerm) {
-                const term = vscode.window.createTerminal({ name: 'mpremote-install' });
+                const term = vscode.window.createTerminal({
+                  name: 'mpremote-install',
+                  shellPath: process.platform === 'win32' ? 'powershell.exe' : undefined
+                });
                 term.show(true);
-                term.sendText(`${pythonPath} -m pip install --upgrade mpremote`, true);
+                // On Windows PowerShell, use & operator for quoted paths
+                const pipCmd = process.platform === 'win32' 
+                  ? `& "${pythonPath}" -m pip install --upgrade mpremote`
+                  : `${pythonPath} -m pip install --upgrade mpremote`;
+                term.sendText(pipCmd, true);
               }
               return false;
             }
@@ -65,9 +72,15 @@ export const mpremoteCommands = {
             const openTerm = zh ? '打开终端并复制命令' : 'Open terminal with command';
             const res = await vscode.window.showErrorMessage(msg, openTerm, 'OK');
             if (res === openTerm) {
-              const term = vscode.window.createTerminal({ name: 'mpremote-install' });
+              const term = vscode.window.createTerminal({
+                name: 'mpremote-install',
+                shellPath: process.platform === 'win32' ? 'powershell.exe' : undefined
+              });
               term.show(true);
-              term.sendText(`${pythonPath} -m pip install --upgrade mpremote`, true);
+              const pipCmd = process.platform === 'win32' 
+                ? `& "${pythonPath}" -m pip install --upgrade mpremote`
+                : `${pythonPath} -m pip install --upgrade mpremote`;
+              term.sendText(pipCmd, true);
             }
             return false;
           }

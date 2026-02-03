@@ -11,6 +11,8 @@ let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
 let userClosedRepl = false;
 let runTerminalInitialized = false;
+// Track if REPL was open before Run started, so we can restore it when Run finishes
+let replWasOpenBeforeRun = false;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Debug logging helper. Controlled by the `microPythonWorkBench.debug` setting (default: false).
@@ -40,16 +42,18 @@ function getInternalPythonRoot(): string | null {
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
 
-async function buildShellCommand(args: string[], forTerminal: boolean = false): Promise<string> {
+async function buildShellCommand(args: string[]): Promise<string> {
   const pythonPath = await MpRemoteManager.detectPythonPath();
   const joined = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\\"')}"` : a).join(' ');
   if (!pythonPath) throw new Error('Python interpreter not found');
+  // On Windows, we use PowerShell which requires the & call operator when
+  // the command starts with a quoted path. This is necessary because paths
+  // containing spaces must be quoted, and PowerShell interprets quoted strings
+  // as string literals rather than commands without the & operator.
   const base = `"${pythonPath}" -m mpremote ${joined}`;
-  // NOTE: Do NOT add PowerShell-specific invocation prefixes here (like `&`).
-  // The returned string is used both with `exec()` (which runs under cmd.exe on Windows)
-  // and `Terminal.sendText()`. Injecting `&` causes syntax errors when run in cmd.exe
-  // or when copied to a cmd prompt. If a caller needs a PowerShell-specific prefix,
-  // it should add it at the call site when it knows the target shell is PowerShell.
+  if (process.platform === 'win32') {
+    return `& ${base}`;
+  }
   return base;
 }
 
@@ -287,8 +291,9 @@ export async function runActiveFile(): Promise<void> {
   const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
   const filePath = ed.document.uri.fsPath;
 
-  // If the REPL terminal is open, close it before executing
-  if (isReplOpen()) {
+  // If the REPL terminal is open, close it before executing and remember to restore later
+  replWasOpenBeforeRun = isReplOpen();
+  if (replWasOpenBeforeRun) {
     await closeReplTerminal();
     // Wait for the system to release the port
     await new Promise(r => setTimeout(r, 400));
@@ -304,29 +309,13 @@ export async function runActiveFile(): Promise<void> {
     } catch {}
   }
 
-  // On Windows prefer running mpremote directly and capture output to avoid
-  // cmd.exe legacy/UTF-8 issues that can cause mpremote to hang on Unicode.
-  if ((process as any).platform === 'win32') {
-    const out = vscode.window.createOutputChannel('ESP32 Run Output');
-    out.show(true);
-    try {
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      out.appendLine(`Running: mpremote connect ${device} run ${filePath}\n`);
-      const res = await runMpremote(["connect", device, "run", filePath], { cwd, retryOnFailure: true });
-      if (res.stdout) out.append(res.stdout);
-      if (res.stderr) out.appendLine('\n' + res.stderr);
-    } catch (err: any) {
-      out.appendLine(String(err?.message || err));
-    }
-    return;
-  }
-
-  // Use mpremote run command (prefer python -m mpremote) via terminal for non-Windows
-  // Ensure Windows run terminal is using UTF-8 code page on first use (kept for parity)
+  // Windows: ensure UTF-8 output encoding on first use of the terminal.
+  // PowerShell requires setting [Console]::OutputEncoding, cmd.exe uses chcp.
   if ((process as any).platform === 'win32' && !runTerminalInitialized) {
     try {
-      terminal.sendText('chcp 65001 >nul', true);
-      await sleep(150);
+      // For PowerShell, set console encoding to UTF-8
+      terminal.sendText('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8', true);
+      await sleep(100);
     } catch {}
     runTerminalInitialized = true;
   }
@@ -357,6 +346,16 @@ export async function closeRunTerminal() {
   runTerminal = undefined;
   runTerminalInitialized = false;
   await new Promise(r => setTimeout(r, 250));
+  
+  // If REPL was open before Run started, restore it now
+  if (replWasOpenBeforeRun) {
+    replWasOpenBeforeRun = false;
+    try {
+      await restartReplInExistingTerminal({ show: true });
+    } catch (e) {
+      debugLog("Failed to restore REPL after Run closed:", e);
+    }
+  }
 }
 
 function getRunTerminal(): vscode.Terminal {
@@ -375,10 +374,11 @@ function getRunTerminal(): vscode.Terminal {
     const delim = path.delimiter;
     termEnv.PYTHONPATH = process.env.PYTHONPATH ? `${internalRoot}${delim}${process.env.PYTHONPATH}` : internalRoot;
   }
+  // On Windows, use PowerShell instead of cmd.exe for better UTF-8 support.
+  // PowerShell handles Unicode output more reliably than cmd.exe.
   runTerminal = vscode.window.createTerminal({
     name: "ESP32 Run File",
-    shellPath: process.platform === 'win32' ? "cmd.exe" : (process.env.SHELL || '/bin/bash'),
-    // Keep the same shell as the REPL on Windows to avoid mixing cmd/powershell
+    shellPath: process.platform === 'win32' ? "powershell.exe" : (process.env.SHELL || '/bin/bash'),
     cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     env: termEnv
   });
@@ -426,16 +426,17 @@ export async function getReplTerminal(
     const delim = require('node:path').delimiter;
     termEnv.PYTHONPATH = process.env.PYTHONPATH ? `${internalRoot}${delim}${process.env.PYTHONPATH}` : internalRoot;
   }
+  // On Windows, use PowerShell instead of cmd.exe for better UTF-8 support.
   replTerminal = vscode.window.createTerminal({
     name: "ESP32 REPL",
-    shellPath: process.platform === 'win32' ? "cmd.exe" : (process.env.SHELL || '/bin/bash'),
+    shellPath: process.platform === 'win32' ? "powershell.exe" : (process.env.SHELL || '/bin/bash'),
     env: termEnv
   });
-  // On Windows, set code page to UTF-8 before running the connect command so
-  // console input/output handles Unicode correctly. Then send the connect command.
+  // On Windows PowerShell, set console encoding to UTF-8 before running the connect command
+  // so that Unicode output is handled correctly.
   try {
     if (process.platform === 'win32') {
-      replTerminal.sendText('chcp 65001 >nul', true);
+      replTerminal.sendText('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8', true);
     }
     replTerminal.sendText(cmd, true);
   } catch (e) { /* ignore */ }
@@ -444,20 +445,13 @@ export async function getReplTerminal(
   userClosedRepl = false;
   setReplContext(true);
 
-  // Send interrupt (Ctrl-C) to ensure device is responsive
-  if (shouldInterrupt) {
-    setTimeout(() => {
-      if (replTerminal) {
-        replTerminal.sendText("\x03", false); // Ctrl-C
-        // Small delay then send Ctrl-B for friendly REPL
-        setTimeout(() => {
-          if (replTerminal) {
-            replTerminal.sendText("\x02", false); // Ctrl-B
-          }
-        }, 100);
-      }
-    }, 500); // Wait 500ms for terminal to initialize
-  }
+  // Note: We do NOT automatically send Ctrl-C/Ctrl-B here.
+  // The mpremote connect command enters the REPL directly.
+  // If the device has code running, the user can manually press Ctrl-C.
+  // Sending control characters automatically was problematic because:
+  // 1. They could arrive before mpremote started, going to PowerShell instead
+  // 2. The Python extension's auto-activation of venv could interfere
+  // 3. Fixed delays are unreliable and slow down the connection process
 
   return replTerminal;
 }
@@ -491,9 +485,10 @@ export async function openReplTerminal() {
     try {
       if (strict) {
         await strictConnectHandshake(interrupt);
-      } else if (interrupt) {
-        try { await mp.reset(); } catch {}
       }
+      // Removed mp.reset() call that was previously here - it caused device soft reset
+      // and cleared all user-defined variables. The Ctrl-C/Ctrl-B sent by getReplTerminal
+      // is sufficient to interrupt any running code without resetting state.
       const term = await getReplTerminal(undefined, { interrupt });
       term.show(true);
       // tiny delay to ensure terminal connects before next action
@@ -519,25 +514,17 @@ export async function openReplTerminal() {
   if (lastError) throw lastError;
 }
 
-async function strictConnectHandshake(interrupt: boolean) {
-  // Skip handshake entirely if interrupt is disabled, as mpremote's connect
-  // command may send interrupt signals to ensure the device is in a known state.
-  // Users who disable interruptOnConnect want no interrupts at all.
-  if (!interrupt) return;
-
-  // Try reset + quick op, retry once if needed
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      await mp.reset();
-      // quick check: ls root; if it returns without throwing, we assume we're good
-      await mp.ls("/");
-      return;
-    } catch (e) {
-      if (attempt === 2) break;
-      // small backoff then retry
-      await new Promise(r => setTimeout(r, 200));
-    }
-  }
+async function strictConnectHandshake(_interrupt: boolean) {
+  // Previously this function called mp.reset() which performs a soft reset and
+  // clears all user-defined variables on the device. This was undesirable because
+  // users expect REPL sessions to preserve their work.
+  // 
+  // The strictConnectHandshake is now a no-op. The terminal-based mpremote connect
+  // command handles the connection directly, and the optional Ctrl-C/Ctrl-B sent
+  // via getReplTerminal is sufficient to ensure the device is in a responsive state.
+  //
+  // If connection issues occur, the retry logic in openReplTerminal() handles them.
+  return;
 }
 
 export function toLocalRelative(devicePath: string, rootPath: string): string | null {
@@ -742,4 +729,35 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
   }
 
     debugLog(`robustInterruptAndReset: Completed for port ${devicePort}`);
+}
+/**
+ * Handle terminal close events. When the Run terminal is closed (by user or programmatically),
+ * restore REPL if it was open before Run started.
+ */
+export function handleTerminalClose(closedTerminal: vscode.Terminal): void {
+  // Check if the closed terminal is our Run terminal
+  if (runTerminal && closedTerminal === runTerminal) {
+    runTerminal = undefined;
+    runTerminalInitialized = false;
+    
+    // If REPL was open before Run started, restore it
+    if (replWasOpenBeforeRun) {
+      replWasOpenBeforeRun = false;
+      // Use setTimeout to avoid blocking the close handler
+      setTimeout(async () => {
+        try {
+          await restartReplInExistingTerminal({ show: true });
+        } catch (e) {
+          debugLog("Failed to restore REPL after Run terminal closed:", e);
+        }
+      }, 300);
+    }
+  }
+  
+  // Check if the closed terminal is our REPL terminal
+  if (replTerminal && closedTerminal === replTerminal) {
+    replTerminal = undefined;
+    userClosedRepl = true; // Mark as user-closed since they closed the terminal
+    setReplContext(false);
+  }
 }

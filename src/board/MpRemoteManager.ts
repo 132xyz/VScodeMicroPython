@@ -9,7 +9,15 @@ const execFileAsync = util.promisify(execFile);
 // Helper to split a configured command string into executable and args
 // Supports quoted paths like "C:\\Program Files\\Python\\python.exe" and
 // preserves arguments if provided (e.g. 'py -3').
+// If the input looks like a plain file path with spaces (no quotes, no args),
+// it will be treated as the executable directly.
 function splitCommand(cmd: string): { exe: string; args: string[] } {
+  // If cmd doesn't contain quotes and looks like a file path (contains backslash or forward slash)
+  // and has spaces, treat the whole thing as the executable
+  if (!cmd.includes('"') && (cmd.includes('\\') || cmd.includes('/')) && cmd.includes(' ')) {
+    return { exe: cmd, args: [] };
+  }
+  
   const parts: string[] = [];
   const re = /[^\s\"]+|\"([^\"]*)\"/g;
   let m: RegExpExecArray | null;
@@ -56,8 +64,16 @@ class MpRemoteManagerClass {
   private _lock: Promise<void> = Promise.resolve();
   // Currently-owned connection (e.g. COM10) while a connect-based command is running
   private activeConnectionPort: string | null = null;
+  // Cache for detected Python path to avoid repeated slow lookups
+  private _cachedPythonPath: string | null | undefined = undefined;
+
   // minimal adapter that delegates to existing implementations where possible
   async detectPythonPath(): Promise<string | null> {
+    // Return cached value if available
+    if (this._cachedPythonPath !== undefined) {
+      return this._cachedPythonPath;
+    }
+
     // Try VS Code python extension / common candidates
     try {
       const pythonExtension = vscode.extensions.getExtension('ms-python.python');
@@ -67,7 +83,8 @@ class MpRemoteManagerClass {
           const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
           const executionDetails = pythonApi.settings.getExecutionDetails(workspaceFolder?.uri);
           if (executionDetails && executionDetails.execCommand && executionDetails.execCommand.length > 0) {
-            return executionDetails.execCommand[0];
+            this._cachedPythonPath = executionDetails.execCommand[0] as string;
+            return this._cachedPythonPath;
           }
         }
       }
@@ -78,7 +95,10 @@ class MpRemoteManagerClass {
     // Check configuration
     const config = vscode.workspace.getConfiguration('python');
     const configuredPath = config.get<string>('defaultInterpreterPath') || config.get<string>('pythonPath');
-    if (configuredPath) return configuredPath;
+    if (configuredPath) {
+      this._cachedPythonPath = configuredPath;
+      return this._cachedPythonPath;
+    }
 
     const candidates = process.platform === 'win32' ? ['python', 'python3', 'py', 'py -3'] : ['python3', 'python'];
     for (const c of candidates) {
@@ -88,10 +108,17 @@ class MpRemoteManagerClass {
         const exe = parsed.exe;
         const args = parsed.args.concat(['--version']);
         await execFileAsync(exe, args);
-        return c;
+        this._cachedPythonPath = c;
+        return this._cachedPythonPath;
       } catch { }
     }
+    this._cachedPythonPath = null;
     return null;
+  }
+
+  /** Clear the cached Python path (call when user changes Python interpreter) */
+  clearPythonPathCache(): void {
+    this._cachedPythonPath = undefined;
   }
 
   async isModuleAvailable(pythonPath?: string | null): Promise<boolean> {
@@ -149,6 +176,24 @@ class MpRemoteManagerClass {
     } catch {
       return { version: null, compatible: false, source: 'unknown' };
     }
+  }
+
+  /**
+   * Run a quick mpremote command that does NOT require device connection.
+   * This bypasses the serial lock since these commands don't touch the serial port.
+   * Use only for commands like "devs", "--version", etc.
+   */
+  async runQuick(args: string[], opts: { timeoutMs?: number; pythonPath?: string } = {}): Promise<{ stdout: string; stderr: string }> {
+    const pythonPath = opts.pythonPath || await this.detectPythonPath();
+    if (!pythonPath) throw new Error('Python interpreter not found');
+    const parsed = splitCommand(pythonPath);
+    const exe = parsed.exe;
+    const preArgs = parsed.args;
+    const execArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
+    const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+    const timeout = opts.timeoutMs ?? 5000;
+    const { stdout, stderr } = await execFileAsync(exe, execArgs, { env, timeout });
+    return { stdout: String(stdout), stderr: String(stderr) };
   }
 
   async run(args: string[], opts: RunOptions = {}): Promise<{ stdout: string; stderr: string }> {

@@ -1126,7 +1126,9 @@ export async function detectBoardInfo(): Promise<BoardDetectInfo | null> {
 
 export async function listSerialPorts(): Promise<{port: string, name: string}[]> {
   try {
-    const { stdout } = await runMpremote(["connect", "list"]);
+    // Use "devs" command with runQuick to bypass the serial lock - this command
+    // doesn't require device connection and should return instantly
+    const { stdout } = await MpRemoteManager.runQuick(["devs"], { timeoutMs: 5000 });
     const lines = String(stdout||"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
 
     // Parse the output format: port serial vid:pid manufacturer device_name
