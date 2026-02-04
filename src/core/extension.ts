@@ -635,9 +635,11 @@ export async function activate(context: vscode.ExtensionContext) {
         // When the configured connect port changes, proactively refresh the
         // device file tree so the Files view auto-populates for the newly
         // selected device without requiring the user to click Refresh.
-        // This intentionally bypasses the `connectOnActivate` activation-time
-        // gating because the user explicitly changed the connect setting.
-        try { mp.refreshFileTreeCache().catch(()=>{}); } catch {}
+        // Only do this if a specific port is selected (not "auto").
+        const newConnect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+        if (newConnect && newConnect !== "auto") {
+          try { mp.refreshFileTreeCache().catch(()=>{}); } catch {}
+        }
         tree.refreshTree();
       }
     }),

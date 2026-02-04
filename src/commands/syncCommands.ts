@@ -2,7 +2,14 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as mp from "../board/mpremote";
-import { toLocalRelative } from "../board/mpremoteCommands";
+import { MpRemoteManager } from "../board/MpRemoteManager";
+import { 
+  toLocalRelative,
+  suspendSerialSessionsForAutoSync,
+  restoreSerialSessionsFromSnapshot,
+  closeReplTerminal,
+  isReplOpen
+} from "../board/mpremoteCommands";
 import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } from "../sync/sync";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { createIgnoreMatcher } from "../sync/sync";
@@ -15,9 +22,28 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder {
   return ws;
 }
 
-// Helper function for auto-suspend wrapper
-function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
-  return fn();
+// Helper function for auto-suspend wrapper - properly suspends REPL before operations
+async function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
+  // Check if auto-suspend is enabled
+  const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
+  if (!enabled) {
+    return fn();
+  }
+
+  // Suspend any active serial sessions (REPL, Run terminal) to free the port
+  const snapshot = await suspendSerialSessionsForAutoSync();
+  try {
+    // Small delay to ensure port is released
+    await new Promise(r => setTimeout(r, 150));
+    return await fn();
+  } finally {
+    // Restore serial sessions after operation completes
+    try {
+      await restoreSerialSessionsFromSnapshot(snapshot, { replBehavior: "none" });
+    } catch (err) {
+      console.error("[syncCommands] Failed to restore serial sessions:", err);
+    }
+  }
 }
 
 // Helper to ensure workbench directory exists
@@ -112,70 +138,102 @@ export const syncCommands = {
           return;
         }
 
-        await withAutoSuspend(async () => {
-          // First, create all necessary directories on the device in hierarchical order
-          progress.report({ increment: 5, message: "Creating directories on device..." });
+        // Set up cancellation handler to kill any active mpremote process
+        const cancellationHandler = token.onCancellationRequested(() => {
+          console.log("[syncBaseline] Cancellation requested, killing active mpremote process");
+          MpRemoteManager.cancelActive();
+        });
 
-          // Collect all unique directory paths that need to be created
-          const allDirectories = new Set<string>();
-          for (const relativePath of files) {
-            const devicePath = path.posix.join(rootPath, relativePath);
-            const deviceDir = path.posix.dirname(devicePath);
+        try {
+          await withAutoSuspend(async () => {
+            // First, create all necessary directories on the device in hierarchical order
+            progress.report({ increment: 5, message: "Creating directories on device..." });
 
-            if (deviceDir !== '.' && deviceDir !== rootPath) {
-              // Add all parent directories to the set
-              let currentDir = deviceDir;
-              while (currentDir !== rootPath && currentDir !== '/') {
-                allDirectories.add(currentDir);
-                currentDir = path.posix.dirname(currentDir);
+            // Normalize rootPath to ensure it starts with /
+            const normalizedRootPath = rootPath.startsWith('/') ? rootPath : '/' + rootPath;
+            console.log(`[syncBaseline] Starting with ${files.length} files, rootPath=${rootPath}, normalizedRootPath=${normalizedRootPath}`);
+
+            // Collect all unique directory paths that need to be created
+            const allDirectories = new Set<string>();
+            for (const relativePath of files) {
+              const devicePath = path.posix.join(normalizedRootPath, relativePath);
+              const deviceDir = path.posix.dirname(devicePath);
+
+              if (deviceDir !== '.' && deviceDir !== normalizedRootPath) {
+                // Add all parent directories to the set
+                let currentDir = deviceDir;
+                let safetyCounter = 0;
+                const maxDepth = 50; // Prevent infinite loops
+                while (currentDir !== normalizedRootPath && currentDir !== '/' && currentDir !== '' && safetyCounter < maxDepth) {
+                  allDirectories.add(currentDir);
+                  const parentDir = path.posix.dirname(currentDir);
+                  // Safety check: if dirname returns the same value, we're at root
+                  if (parentDir === currentDir) break;
+                  currentDir = parentDir;
+                  safetyCounter++;
+                }
+                if (safetyCounter >= maxDepth) {
+                  console.warn(`[syncBaseline] Safety limit reached for path: ${relativePath}`);
+                }
               }
             }
-          }
 
-          // Sort directories by depth to create parent directories first
-          const sortedDirectories = Array.from(allDirectories).sort((a, b) => a.split('/').length - b.split('/').length);
-
-          const dirTotal = sortedDirectories.length;
-          for (let i = 0; i < sortedDirectories.length; i++) {
-            // Check for cancellation
-            if (token.isCancellationRequested) {
-              vscode.window.showWarningMessage("Upload cancelled by user during directory creation");
-              return;
-            }
-            const dir = sortedDirectories[i];
-            progress.report({ increment: 5 / Math.max(dirTotal, 1), message: `Creating directory: ${dir}` });
-            try {
-              await mp.mkdir(dir);
-            } catch (e: any) {
-              // Directory might already exist, check error message
-              const errorStr = String(e?.message || e).toLowerCase();
-              if (!errorStr.includes("file exists") && !errorStr.includes("directory exists") && !errorStr.includes("eexist")) {
-                console.error(`[syncBaseline] Failed to create directory ${dir}:`, e?.message || e);
+            // Also add the rootPath itself if it's not "/" and doesn't exist
+            if (normalizedRootPath !== "/" && normalizedRootPath !== "") {
+              // Add all parent paths of rootPath
+              const rootParts = normalizedRootPath.split('/').filter(p => p);
+              for (let i = 1; i <= rootParts.length; i++) {
+                allDirectories.add('/' + rootParts.slice(0, i).join('/'));
               }
             }
-          }
 
-          progress.report({ increment: 5, message: "Uploading files..." });
+            // Sort directories by depth to create parent directories first
+            const sortedDirectories = Array.from(allDirectories).sort((a, b) => a.split('/').length - b.split('/').length);
 
-          // Calculate increment per file (remaining 85% divided by total files)
-          const incrementPerFile = 85 / Math.max(total, 1);
+            console.log(`[syncBaseline] Creating ${sortedDirectories.length} directories`);
 
-          // Upload files
-          for (let i = 0; i < files.length; i++) {
-            // Check for cancellation before each file
-            if (token.isCancellationRequested) {
-              vscode.window.showWarningMessage(`Upload cancelled by user. ${i}/${total} files uploaded.`);
-              return;
+            const dirTotal = sortedDirectories.length;
+            for (let i = 0; i < sortedDirectories.length; i++) {
+              // Check for cancellation
+              if (token.isCancellationRequested) {
+                vscode.window.showWarningMessage("Upload cancelled by user during directory creation");
+                return;
+              }
+              const dir = sortedDirectories[i];
+              progress.report({ increment: 5 / Math.max(dirTotal, 1), message: `Creating directory: ${dir}` });
+              try {
+                await mp.mkdir(dir);
+              } catch (e: any) {
+                // Directory might already exist, check error message
+                const errorStr = String(e?.message || e).toLowerCase();
+                if (!errorStr.includes("file exists") && !errorStr.includes("directory exists") && !errorStr.includes("eexist")) {
+                  console.error(`[syncBaseline] Failed to create directory ${dir}:`, e?.message || e);
+                }
+              }
             }
 
-            const relativePath = files[i];
-            const localPath = path.join(localRootDir, relativePath);
-            const devicePath = path.posix.join(rootPath, relativePath);
+            progress.report({ increment: 5, message: "Uploading files..." });
+
+            // Calculate increment per file (remaining 85% divided by total files)
+            const incrementPerFile = 85 / Math.max(total, 1);
+
+            // Upload files
+            for (let i = 0; i < files.length; i++) {
+              // Check for cancellation before each file
+              if (token.isCancellationRequested) {
+                vscode.window.showWarningMessage(`Upload cancelled by user. ${i}/${total} files uploaded.`);
+                return;
+              }
+
+              const relativePath = files[i];
+              const localPath = path.join(localRootDir, relativePath);
+              const devicePath = path.posix.join(normalizedRootPath, relativePath);
 
             progress.report({ increment: incrementPerFile, message: `Uploading (${i + 1}/${total}): ${relativePath}` });
 
             try {
-              await mp.uploadReplacing(localPath, devicePath);
+              // Skip mkdir since we already created all directories at the start
+              await mp.uploadReplacing(localPath, devicePath, { skipMkdir: true });
             } catch (uploadError: any) {
               console.error(`[syncBaseline] Failed to upload ${relativePath}:`, uploadError?.message || uploadError);
               // Ask user if they want to continue
@@ -188,7 +246,11 @@ export const syncCommands = {
               }
             }
           }
-        });
+          });
+        } finally {
+          // Clean up cancellation handler
+          cancellationHandler.dispose();
+        }
       });
 
       // Save manifest after successful upload

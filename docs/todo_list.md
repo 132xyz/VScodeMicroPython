@@ -5,7 +5,26 @@
 
 详细分析此vscode扩展C:\qzrobot\mpy\VScodeMicroPython代码,分析以下问题,先不改代码,先详细全面阅读代码,分析程序运行逻辑,如果确定方法,最后给出一个完整的面向你自己修改代码的详细工作列表,具体要修改哪些代码有哪些注意事项
 
-我点击同步文件中的上传所有文件(本地同步到开发板)有了一个弹窗,但进度条完全不动,控制台也没有日志,还一直卡住无法关闭或停止,只能重启整个vscode窗口.详细分析这个上传可能,看看可能是什么问题,顺便分析其它条件同步或对比有没有这个问题.先不写代码,先仔细分析,如果确定了问题就给出详细的讲解方案,如果不确定就先收集更多信息.
-开发板同步到本地应该是能注册工作了,我同步时本地有个lib目录里面有新文件,板子里没有有lib目录,不确定是否和这个有关.不过我使用代码在开发板上创建了这个目录后还是一样的效果
-并且这个同步命令视乎不是异步的,卡住时其它扩展也无法运行.
-其它命令没有这个问题,不如运行已经打开的文件,把板子上是文件同步到本地,刷新文件列表等
+
+
+
+log.ts:460   ERR [Extension Host] [CodeCompletion] Failed to restart Pylance: Error: command 'python.analysis.restartLanguageServer' not found
+    at lZe.n (vscode-file://vscode-app/c:/Users/Administrator/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/workbench.desktop.main.js:1348:3890)
+    at lZe.executeCommand (vscode-file://vscode-app/c:/Users/Administrator/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/workbench.desktop.main.js:1348:3822)
+error @ log.ts:460
+error @ log.ts:565
+error @ logService.ts:51
+Uxs @ remoteConsoleUtil.ts:58
+$logExtensionHostMessage @ mainThreadConsole.ts:38
+S @ rpcProtocol.ts:458
+Q @ rpcProtocol.ts:443
+M @ rpcProtocol.ts:373
+L @ rpcProtocol.ts:299
+（匿名） @ rpcProtocol.ts:161
+C @ event.ts:1212
+fire @ event.ts:1243
+fire @ ipc.net.ts:652
+l.onmessage @ localProcessExtensionHost.ts:385
+console.ts:139 [Extension Host] [CodeCompletion] Failed to restart Pylance: Error: command 'python.analysis.restartLanguageServer' not found
+    at lZe.n (vscode-file://vscode-app/c:/Users/Administrator/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/workbench.desktop.main.js:1348:3890)
+    at lZe.executeCommand (vscode-file://vscode-app/c:/Users/Administrator/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/workbench/workbench.desktop.main.js:1348:3822)

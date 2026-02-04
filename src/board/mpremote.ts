@@ -171,12 +171,13 @@ class ConnectionManager {
   }
 
   // Mark connection as healthy (after successful operations)
+  // Note: Does NOT reset operationInProgress - that should be done explicitly
   markHealthy(port: string): void {
     const connection = this.activeConnections.get(port);
     if (connection) {
       connection.isHealthy = true;
       connection.lastUsed = Date.now();
-      connection.operationInProgress = false; // Operation completed
+      // Don't reset operationInProgress here - let markOperationCompleted handle it
     }
   }
 
@@ -324,15 +325,12 @@ export function runMpremote(
     const executeCommand = async () => {
       attempt++;
 
-      // If an operation is already in progress for this port, queue and retry shortly
-      if (port && connectionManager.isOperationInProgress(port)) {
-        console.log(`[DEBUG] runMpremote: Operation already in progress on port ${port}, queuing...`);
-        setTimeout(() => void executeCommand(), 100);
-        return;
-      }
+      // Note: MpRemoteManager.run already handles serialization via its internal lock,
+      // so we don't need to queue here based on connectionManager.isOperationInProgress.
+      // The connectionManager is used only for health tracking.
 
       if (port) {
-        connectionManager.markOperationStarted(port);
+        connectionManager.getConnection(port); // Ensure connection entry exists
         connectionManager.markHealthy(port);
       }
 
@@ -344,7 +342,6 @@ export function runMpremote(
 
         if (port) {
           connectionManager.markHealthy(port);
-          connectionManager.markOperationCompleted(port);
         }
 
         return resolve(res);
@@ -357,8 +354,6 @@ export function runMpremote(
                      errorStr.includes("connection failed"))) {
           connectionManager.markUnhealthy(port);
         }
-
-        if (port) connectionManager.markOperationCompleted(port);
 
         if (attempt <= maxRetries && (
           errorStr.includes("device not configured") ||
@@ -1391,7 +1386,7 @@ export async function cpToDevice(localPath: string, devicePath: string): Promise
   }
 }
 
-export async function uploadReplacing(localPath: string, devicePath: string): Promise<void> {
+export async function uploadReplacing(localPath: string, devicePath: string, opts: { skipMkdir?: boolean } = {}): Promise<void> {
   const connect = normalizeConnect(vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto") || "auto");
   if (!connect || connect === "auto") throw new Error("Select a specific serial port first");
 
@@ -1399,27 +1394,23 @@ export async function uploadReplacing(localPath: string, devicePath: string): Pr
   const connection = connectionManager.getConnection(connect);
 
   try {
-    // Ensure parent directories exist on device before uploading
+    // Ensure parent directories exist on device before uploading (unless skipMkdir is set)
     const deviceArg = devicePath && devicePath !== "/" ? devicePath : "/";
     const parentDir = deviceArg.substring(0, deviceArg.lastIndexOf('/'));
     
-    if (parentDir && parentDir !== "" && parentDir !== "/") {
-      console.log(`[DEBUG] uploadReplacing: Creating parent directories for: ${parentDir}`);
+    if (!opts.skipMkdir && parentDir && parentDir !== "" && parentDir !== "/") {
       // Create each directory level step by step (mpremote fs mkdir does NOT support -p flag)
       const pathParts = parentDir.split('/').filter(part => part.length > 0);
       for (let i = 1; i <= pathParts.length; i++) {
         const partialPath = '/' + pathParts.slice(0, i).join('/');
         try {
           await runMpremote(["connect", connect, "fs", "mkdir", partialPath], { retryOnFailure: false, timeoutMs: 10000 });
-          console.log(`[DEBUG] uploadReplacing: ✓ Created directory: ${partialPath}`);
         } catch (mkdirError: any) {
-          // Directory might already exist, which is fine - check the error message
+          // Directory might already exist, which is fine - silently ignore
           const errorStr = String(mkdirError?.message || mkdirError).toLowerCase();
-          if (errorStr.includes("file exists") || errorStr.includes("directory exists") || errorStr.includes("eexist")) {
-            console.log(`[DEBUG] uploadReplacing: ✓ Directory already exists: ${partialPath}`);
-          } else {
-            console.warn(`[DEBUG] uploadReplacing: ⚠ Could not create ${partialPath}:`, mkdirError?.message || mkdirError);
-            // Continue anyway - might still work
+          if (!errorStr.includes("file exists") && !errorStr.includes("directory exists") && !errorStr.includes("eexist")) {
+            // Only warn for unexpected errors
+            console.warn(`[uploadReplacing] Could not create ${partialPath}:`, mkdirError?.message || mkdirError);
           }
         }
       }
@@ -1432,8 +1423,6 @@ export async function uploadReplacing(localPath: string, devicePath: string): Pr
     // Invalidate cache since filesystem changed
     clearFileTreeCache();
   } catch (error: any) {
-    console.error(`[DEBUG] uploadReplacing: Upload failed:`, error);
-
     // Mark connection as unhealthy
     connectionManager.markUnhealthy(connect);
 
@@ -1442,7 +1431,7 @@ export async function uploadReplacing(localPath: string, devicePath: string): Pr
 
     // Check if it's a "No such file or directory" error (missing parent directory)
     if (errorStr.includes("no such file or directory") || errorStr.includes("file not found")) {
-      console.log(`[DEBUG] uploadReplacing: Directory missing error detected. Attempting to create parent directories...`);
+      console.log(`[uploadReplacing] Directory missing, creating parent directories...`);
       
       const deviceArg = devicePath && devicePath !== "/" ? devicePath : "/";
       const pathParts = deviceArg.split('/').filter(part => part.length > 0);
@@ -1451,31 +1440,23 @@ export async function uploadReplacing(localPath: string, devicePath: string): Pr
       for (let i = 1; i < pathParts.length; i++) {
         const partialPath = '/' + pathParts.slice(0, i).join('/');
         try {
-          console.log(`[DEBUG] uploadReplacing: Creating directory level: ${partialPath}`);
           await runMpremote(["connect", connect, "fs", "mkdir", partialPath], { retryOnFailure: false });
         } catch (mkdirErr: any) {
-          const mkdirErrStr = String(mkdirErr?.message || mkdirErr).toLowerCase();
-          if (!mkdirErrStr.includes("file exists") && !mkdirErrStr.includes("directory exists")) {
-            console.warn(`[DEBUG] uploadReplacing: Could not create ${partialPath}:`, mkdirErr);
-          }
+          // Silently ignore "already exists" errors
         }
       }
       
       // Retry the original upload operation
       try {
-        console.log(`[DEBUG] uploadReplacing: Retrying upload after creating directories...`);
         const devicePathWithPrefix = deviceArg === "/" ? ":" : `:${deviceArg}`;
         await runMpremote(["connect", connect, "fs", "cp", "-f", localPath, devicePathWithPrefix], { retryOnFailure: false });
-        console.log(`[DEBUG] uploadReplacing: ✓ Upload succeeded after creating directories!`);
         clearFileTreeCache();
         return; // Success!
       } catch (retryError: any) {
-        console.error(`[DEBUG] uploadReplacing: Retry also failed:`, retryError);
-        // Continue to throw original error
+        console.error(`[uploadReplacing] Retry failed:`, retryError?.message || retryError);
       }
     }
 
-    connectionManager.markUnhealthy(connect);
     throw error;
   }
 }

@@ -74,13 +74,26 @@ class MpRemoteManagerClass {
       return this._cachedPythonPath;
     }
 
-    // Try VS Code python extension / common candidates
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
+    // Method 0: Check microPythonWorkBench.pythonPath configuration (highest priority)
+    try {
+      const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench', workspaceFolder?.uri);
+      const mpyPythonPath = mpyConfig.get<string>('pythonPath');
+      if (mpyPythonPath && mpyPythonPath.trim()) {
+        this._cachedPythonPath = mpyPythonPath.trim();
+        return this._cachedPythonPath;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Method 1: Try VS Code python extension API
     try {
       const pythonExtension = vscode.extensions.getExtension('ms-python.python');
       if (pythonExtension && pythonExtension.isActive) {
         const pythonApi = (pythonExtension as any).exports;
         if (pythonApi && pythonApi.settings && pythonApi.settings.getExecutionDetails) {
-          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
           const executionDetails = pythonApi.settings.getExecutionDetails(workspaceFolder?.uri);
           if (executionDetails && executionDetails.execCommand && executionDetails.execCommand.length > 0) {
             this._cachedPythonPath = executionDetails.execCommand[0] as string;
@@ -92,8 +105,8 @@ class MpRemoteManagerClass {
       // ignore
     }
 
-    // Check configuration
-    const config = vscode.workspace.getConfiguration('python');
+    // Method 2: Check python extension configuration
+    const config = vscode.workspace.getConfiguration('python', workspaceFolder?.uri);
     const configuredPath = config.get<string>('defaultInterpreterPath') || config.get<string>('pythonPath');
     if (configuredPath) {
       this._cachedPythonPath = configuredPath;
@@ -202,59 +215,85 @@ class MpRemoteManagerClass {
     const myLock = new Promise<void>(res => { release = res; });
     const prev = this._lock;
     this._lock = prev.then(() => myLock);
+    
     await prev;
-    // Prefer python -m when available; use exec to obtain ChildProcess so it can be cancelled
-    const pythonPath = opts.pythonPath || await this.detectPythonPath();
-    // If this invocation opens a connection, remember the port while running
-    const connIndex = args.findIndex(a => a === 'connect');
-    if (connIndex >= 0 && args.length > connIndex + 1) {
-      this.activeConnectionPort = args[connIndex + 1];
-    }
-    const escaped = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\"')}"` : a).join(' ');
-    // Build execFile arguments to handle pythonPath that may contain extra args (e.g. 'py -3')
-    const parsedCmd = splitCommand(pythonPath || 'python');
-    const exe = parsedCmd.exe;
-    const preArgs = parsedCmd.args;
-    const execArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
-    const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
-    const execOpt: any = { cwd: opts.cwd, env };
-
-    return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      try {
-        const child = execFile(exe, execArgs, execOpt, (err, stdout, stderr) => {
-          try {
-            if (this.activeChild === child) this.activeChild = null;
-            if (this.activeChildKillTimeout) { clearTimeout(this.activeChildKillTimeout); this.activeChildKillTimeout = undefined; }
-            // clear active connection port when the child exits
-            this.activeConnectionPort = null;
-          } finally {
-            // release lock
-            release();
-          }
-          if (err) return reject(err);
-          return resolve({ stdout: String(stdout), stderr: String(stderr) });
-        });
-
-        this.activeChild = child;
-
-        
-
-        // Optional hard timeout to kill child if requested via opts.timeoutMs
-        if (opts.timeoutMs && this.activeChild) {
-          this.activeChildKillTimeout = setTimeout(() => {
-            try { this.activeChild?.kill(); } catch {};
-            this.activeChild = null;
-            this.activeConnectionPort = null;
-          }, opts.timeoutMs);
-        }
-      } catch (e) {
-        this.activeChild = null;
-        this.activeConnectionPort = null;
-        if (this.activeChildKillTimeout) { clearTimeout(this.activeChildKillTimeout); this.activeChildKillTimeout = undefined; }
-        try { release(); } catch {}
-        return reject(e);
+    
+    try {
+      // Prefer python -m when available; use exec to obtain ChildProcess so it can be cancelled
+      const pythonPath = opts.pythonPath || await this.detectPythonPath();
+      // If this invocation opens a connection, remember the port while running
+      const connIndex = args.findIndex(a => a === 'connect');
+      if (connIndex >= 0 && args.length > connIndex + 1) {
+        this.activeConnectionPort = args[connIndex + 1];
       }
-    });
+      const escaped = args.map(a => a.includes(' ') ? `"${a.replace(/"/g, '\"')}"` : a).join(' ');
+      // Build execFile arguments to handle pythonPath that may contain extra args (e.g. 'py -3')
+      const parsedCmd = splitCommand(pythonPath || 'python');
+      const exe = parsedCmd.exe;
+      const preArgs = parsedCmd.args;
+      const execArgs = preArgs.concat(['-m', 'mpremote']).concat(args);
+      const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(opts.env || {}) };
+      const execOpt: any = { cwd: opts.cwd, env };
+
+      return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        // Track if we've already resolved/rejected to avoid double-calling
+        let settled = false;
+        
+        const settleWithError = (error: Error) => {
+          if (settled) return;
+          settled = true;
+          this.activeChild = null;
+          this.activeConnectionPort = null;
+          if (this.activeChildKillTimeout) { 
+            clearTimeout(this.activeChildKillTimeout); 
+            this.activeChildKillTimeout = undefined; 
+          }
+          try { release(); } catch {}
+          reject(error);
+        };
+        
+        const settleWithResult = (result: { stdout: string; stderr: string }) => {
+          if (settled) return;
+          settled = true;
+          this.activeChild = null;
+          this.activeConnectionPort = null;
+          if (this.activeChildKillTimeout) { 
+            clearTimeout(this.activeChildKillTimeout); 
+            this.activeChildKillTimeout = undefined; 
+          }
+          try { release(); } catch {}
+          resolve(result);
+        };
+
+        try {
+          const child = execFile(exe, execArgs, execOpt, (err, stdout, stderr) => {
+            if (err) {
+              settleWithError(err as Error);
+            } else {
+              settleWithResult({ stdout: String(stdout), stderr: String(stderr) });
+            }
+          });
+
+          this.activeChild = child;
+
+          // Optional hard timeout to kill child if requested via opts.timeoutMs
+          if (opts.timeoutMs && this.activeChild) {
+            this.activeChildKillTimeout = setTimeout(() => {
+              console.warn(`[MpRemoteManager] Command timed out after ${opts.timeoutMs}ms, killing process`);
+              try { this.activeChild?.kill(); } catch {}
+              // Explicitly reject with timeout error - don't rely solely on execFile callback
+              settleWithError(new Error(`mpremote command timed out after ${opts.timeoutMs}ms`));
+            }, opts.timeoutMs);
+          }
+        } catch (e) {
+          settleWithError(e as Error);
+        }
+      });
+    } catch (outerError) {
+      // Ensure lock is released even if detectPythonPath or other setup fails
+      try { release(); } catch {}
+      throw outerError;
+    }
   }
 
   async spawn(args: string[], opts: RunOptions = {}): Promise<ChildProcess> {
