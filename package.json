@@ -3,12 +3,14 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.51",
+  "version": "0.3.52",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
   },
-  "extensionDependencies": [],
+  "extensionDependencies": [
+    "ms-python.python"
+  ],
   "extensionPack": [],
   "extensionKind": [
     "workspace"
@@ -27,6 +29,7 @@
     "onStartupFinished"
   ],
   "recommends": [
+    "ms-python.python",
     "ms-python.vscode-pylance"
   ],
   "main": "./dist/core/extension.js",

@@ -392,27 +392,57 @@ export class CodeCompletionManager {
   /**
    * 重启 Pylance 语言服务器以应用更改
    */
-  private async restartPylanceLanguageServer(): Promise<void> {
+  private async tryRestartLanguageServer(): Promise<boolean> {
+    const cmd = 'python.analysis.restartLanguageServer';
+
+    // Ensure Python extension exists
+    const pythonExt = vscode.extensions.getExtension('ms-python.python');
+    if (!pythonExt) {
+      console.warn('[CodeCompletion] Python extension not installed; cannot restart language server');
+      return false;
+    }
+
+    // Try to activate Python extension if needed
     try {
-        await vscode.commands.executeCommand('python.analysis.restartLanguageServer');
+      if (!pythonExt.isActive) {
+        await pythonExt.activate();
+      }
     } catch (e) {
-        // 命令可能不存在（如果未安装 Pylance），记录为错误
-        console.error('[CodeCompletion] Failed to restart Pylance:', e);
+      console.warn('[CodeCompletion] Failed to activate Python extension:', e);
+      return false;
+    }
+
+    // Ensure command is registered
+    try {
+      const commands = await vscode.commands.getCommands(true);
+      if (!commands.includes(cmd)) {
+        console.warn('[CodeCompletion] Command not available:', cmd);
+        return false;
+      }
+    } catch (e) {
+      console.warn('[CodeCompletion] Failed to query commands:', e);
+      return false;
+    }
+
+    try {
+      await vscode.commands.executeCommand(cmd);
+      return true;
+    } catch (e) {
+      console.warn('[CodeCompletion] executeCommand failed:', e);
+      return false;
     }
   }
 
+  private async restartPylanceLanguageServer(): Promise<void> {
+    await this.tryRestartLanguageServer();
+  }
+
   private async safeRestartLanguageServer(): Promise<void> {
-    try {
-      await vscode.commands.executeCommand('python.analysis.restartLanguageServer');
-    } catch (e) {
-      // 如果第一次失败，等待并重试一次
-      await new Promise(r => setTimeout(r, 600));
-      try {
-        await vscode.commands.executeCommand('python.analysis.restartLanguageServer');
-      } catch (e2) {
-        console.error('[CodeCompletion] safeRestartLanguageServer failed:', e2);
-      }
-    }
+    const ok = await this.tryRestartLanguageServer();
+    if (ok) return;
+    // 如果第一次失败，等待并重试一次
+    await new Promise(r => setTimeout(r, 600));
+    await this.tryRestartLanguageServer();
   }
 
   /**
