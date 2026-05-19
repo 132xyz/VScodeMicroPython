@@ -3,7 +3,7 @@ param(
     [ValidateSet("patch", "minor", "major")]
     [string]$VersionType = "patch",
     [Parameter(Mandatory=$false)]
-    [switch]$SkipVersion
+    [switch]$S
 )
 
 # 先编译，只有编译成功才会考虑增加版本号和打包
@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 编译成功后，按需增加版本号（除非用户通过 -SkipVersion 指定跳过）
-if (-not $SkipVersion) {
+if (-not $S) {
     # 自动增加版本号
     Write-Host "Reading current version from package.json..." -ForegroundColor Green
 
