@@ -168,7 +168,7 @@
   "messages.scriptsPathCopied": "Scripts directory path copied to clipboard",
   "messages.fileCreatedLocallyButUploadFailed": "File created locally but upload to board failed: {0}",
 
-  "configuration.enableCodeCompletion.description": "Enable code completion for MicroPython. 'auto' = automatically detect based on sync settings, 'true' = always enabled, 'false' = disabled",
+  "configuration.enableCodeCompletion.description": "Enable MicroPython code completion integration for the current workspace.",
   "configuration.enableCodeCompletion.enumDescriptions.auto": "Automatically enable when MicroPython project is detected",
   "configuration.enableCodeCompletion.enumDescriptions.enabled": "Always enable code completion",
   "configuration.enableCodeCompletion.enumDescriptions.disabled": "Disable code completion",

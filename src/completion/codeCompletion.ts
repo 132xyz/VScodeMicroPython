@@ -6,6 +6,15 @@ import { boardInfoService } from '../board/boardInfoService';
 import { indexStubPaths, findBestMatch } from './stubIndex';
 import { installStubPackage } from './stubInstaller';
 import { refreshIndex } from './stubIndex';
+import {
+  buildStubPackageRecommendation,
+  detectPyrightConfigOverride,
+  inspectStubRoot,
+  type StubInspection,
+  type StubPackageRecommendation,
+} from './stubSupport';
+
+const ABSENT_DIAGNOSTIC_OVERRIDE = '__absent__';
 
 /**
  * 代码补全管理器
@@ -18,6 +27,7 @@ export class CodeCompletionManager {
   private stubStatusBarItem: vscode.StatusBarItem;
   private context?: vscode.ExtensionContext;
   private lastStubPath?: string;
+  private lastTypeshedPath?: string;
 
   private constructor() {
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -40,6 +50,7 @@ export class CodeCompletionManager {
   public async initialize(context: vscode.ExtensionContext): Promise<void> {
     this.context = context;
     try { this.lastStubPath = await context.workspaceState.get<string>('mpy.lastStubPath'); } catch {}
+    try { this.lastTypeshedPath = await context.workspaceState.get<string>('mpy.lastTypeshedPath'); } catch {}
     // 初始化代码补全管理器
 
     // 注册命令
@@ -56,9 +67,22 @@ export class CodeCompletionManager {
     // 监听配置变化
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('microPythonWorkBench.enableCodeCompletion') ||
-            e.affectsConfiguration('microPythonWorkBench.codeCompletionExtraPaths')) {
-          this.handleConfigurationChange();
+        if (e.affectsConfiguration('microPythonWorkBench.enableCodeCompletion')) {
+          void this.handleConfigurationChange();
+          return;
+        }
+
+        if (
+          this.isEnabled &&
+          (
+            e.affectsConfiguration('microPythonWorkBench.codeCompletionExtraPaths')
+          )
+        ) {
+          const activeStubPath = this.lastStubPath || this.context?.workspaceState.get<string>('mpy.lastStubPath');
+          const activeStub = inspectStubRoot(activeStubPath);
+          if (activeStub) {
+            void this.updatePythonConfiguration(activeStub);
+          }
         }
       })
     );
@@ -113,168 +137,69 @@ export class CodeCompletionManager {
         return;
       }
 
-      // 查找已安装的 stubs（只在启用时查找一次）
-      // 注意：codeCompletionExtraPaths 不用于搜索可选 stub，而是直接加入 Pylance 搜索路径
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-      const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const ws = vscode.workspace.workspaceFolders?.[0];
-      const root = ws ? ws.uri.fsPath : undefined;
-      const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall].filter(Boolean);
+      const searchPaths = this.getStubSearchPaths();
+      const resolvedInstall = this.getResolvedInstallPath();
+      const boardInfo = boardInfoService.getBoardInfo();
+      const recommendation = buildStubPackageRecommendation(boardInfo);
+      const boardHint = boardInfo?.machine ? String(boardInfo.machine).split(/\s+with\s+/i)[0] : undefined;
+      const auto = vscode.workspace.getConfiguration('microPythonWorkBench').get<boolean>('stubAutoSelect', true);
+      this.warnIfPyrightOverrides();
 
       const entries = indexStubPaths(searchPaths);
-      let chosenPath: string | null = null;
+      let selectedStub = this.pickBestInstalledStub(
+        entries,
+        recommendation,
+        boardInfo?.sysname,
+        boardInfo?.machine,
+        boardHint
+      );
 
-      const boardInfo = boardInfoService.getBoardInfo();
-      // normalize release (strip -preview and any suffix after '-') and prefer sysname as port
-      const normalizeToKebab = (s?: string) => {
-        if (!s) return '';
-        return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-      };
+      if (!selectedStub && entries.length === 0 && boardInfo && auto && recommendation.primary) {
+        const install = await vscode.window.showInformationMessage(
+          recommendation.secondary
+            ? `未找到匹配的 MicroPython stubs，是否安装 ${recommendation.primary} 到工作区? (备选: ${recommendation.secondary})`
+            : `未找到匹配的 MicroPython stubs，是否安装 ${recommendation.primary} 到工作区?`,
+          'Install', 'Choose Stub', 'Cancel'
+        );
 
-      let cleanedRelease: string | undefined = undefined;
-      if (boardInfo && boardInfo.release) {
-        cleanedRelease = String(boardInfo.release).split('-')[0];
-      }
-
-      if (boardInfo) {
-        const portForMatch = boardInfo.sysname || boardInfo.machine;
-        const best = findBestMatch(entries, { release: cleanedRelease, machine: portForMatch });
-        if (best) chosenPath = best.path;
-      }
-
-      // If nothing found and auto-select enabled, prompt to install
-      const auto = vscode.workspace.getConfiguration('microPythonWorkBench').get<boolean>('stubAutoSelect', true);
-      let finalStubPath: string | null = null;
-
-      if (!chosenPath) {
-        if (entries.length === 0 && boardInfo && auto) {
-          // build candidate package names using sysname as port and board extracted from machine
-          const portRaw = boardInfo.sysname || boardInfo.machine || '';
-          // try to extract board name from machine info e.g. 'ESP32-S3-AMOLED with ESP32S3' -> 'ESP32-S3-AMOLED'
-          const boardRaw = boardInfo.machine ? String(boardInfo.machine).split(/\s+with\s+/i)[0] : '';
-          const portNorm = normalizeToKebab(portRaw);
-          const boardNorm = normalizeToKebab(boardRaw);
-          const versionSpec = cleanedRelease ? (() => {
-            const m = /^(\d+)\.(\d+)/.exec(cleanedRelease!);
-            return m ? `==${m[1]}.${m[2]}.*` : '';
-          })() : '';
-
-          // Prefer port-only package (e.g. micropython-esp32-stubs==1.28.*).
-          const primary = `micropython-${portNorm}-stubs${versionSpec}`;
-          // Board-specific candidate as secondary (e.g. micropython-esp32-esp32-s3-amoled-stubs==...)
-          const secondary = boardNorm ? `micropython-${portNorm}-${boardNorm}-stubs${versionSpec}` : undefined;
-
-          const install = await vscode.window.showInformationMessage(
-            secondary
-              ? `未找到匹配的 MicroPython stubs，是否安装 ${primary} 到工作区? (备选: ${secondary})`
-              : `未找到匹配的 MicroPython stubs，是否安装 ${primary} 到工作区?`,
-            'Install', 'Cancel'
-          );
-          if (install === 'Install') {
-            const ws = vscode.workspace.workspaceFolders?.[0];
-            const installPathResolved = ws ? path.join(ws.uri.fsPath, installPath) : installPath;
-            try {
-              const installedDir = await installStubPackage(primary, installPathResolved);
-              // re-index including the installed subdir
-              const reEntries = indexStubPaths([installedDir, installPathResolved]);
-              const best = findBestMatch(reEntries, { release: cleanedRelease, machine: boardInfo.sysname || boardInfo.machine });
-              if (best) finalStubPath = best.path;
-              else finalStubPath = installedDir;
-            } catch (e) {
-              vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
-            }
+        if (install === 'Install') {
+          try {
+            selectedStub = await this.installStubPackageAndInspect(recommendation.primary, resolvedInstall);
+          } catch (e) {
+            vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
           }
+        } else if (install === 'Choose Stub') {
+          await this.chooseStub();
+          return;
         }
       }
 
-      // fallback to chosenPath or bundled path
-      let stubPath = finalStubPath || chosenPath || this.getStubPath();
-
-      // Ensure stubPath points to a directory that actually contains core pyi files (e.g. machine.pyi).
-      const ensureContainsCore = (p: string | undefined | null): string | null => {
-        if (!p) return null;
-        try {
-          if (fs.existsSync(path.join(p, 'machine.pyi')) || fs.existsSync(path.join(p, 'umachine.pyi')) || fs.existsSync(path.join(p, 'micropython.pyi'))) {
-            return p;
-          }
-          // search one level down for candidate directories containing machine.pyi
-          const items = fs.readdirSync(p, { withFileTypes: true });
-          for (const it of items) {
-            if (!it.isDirectory()) continue;
-            const sub = path.join(p, it.name);
-            if (fs.existsSync(path.join(sub, 'machine.pyi')) || fs.existsSync(path.join(sub, 'umachine.pyi')) || fs.existsSync(path.join(sub, 'micropython.pyi'))) {
-              return sub;
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
-        return null;
-      };
-
-      const validated = ensureContainsCore(stubPath);
-      if (validated) stubPath = validated;
-
-      // Version mismatch handling: if device mpy version > stub version, prompt user
-      try {
-        const boardInfoNow = boardInfoService.getBoardInfo();
-        if (boardInfoNow && boardInfoNow.release) {
-          const parseRel = (r: string) => {
-            const m = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(r);
-            if (!m) return null;
-            return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3] || '0') };
-          };
-          const deviceVer = parseRel(boardInfoNow.release);
-          if (deviceVer) {
-            // find entry corresponding to stubPath
-            const allEntries = refreshIndex(searchPaths);
-            const currentEntry = allEntries.find(e => e.path === stubPath) || allEntries.find(e => stubPath.includes(e.name));
-            if (currentEntry && currentEntry.version) {
-              const cmp = (a: any, b: any) => {
-                if (a.major !== b.major) return a.major - b.major;
-                if (a.minor !== b.minor) return a.minor - b.minor;
-                return a.patch - b.patch;
-              };
-              if (cmp(deviceVer, currentEntry.version) > 0) {
-                // device newer than stub
-                const choice = await vscode.window.showQuickPick([
-                  { label: 'Use Latest Available', description: '选择已安装的最新可用 pyi' },
-                  { label: 'Choose Installed...', description: '从已安装的 pyi 中选择' },
-                  { label: 'Keep Current', description: '继续使用当前选择（可能不完全兼容）' }
-                ], { placeHolder: `设备 MicroPython ${boardInfoNow.release} 高于选中 stub ${currentEntry.name}（v${currentEntry.version.major}.${currentEntry.version.minor}.${currentEntry.version.patch}），请选择回退策略` });
-
-                if (choice && choice.label === 'Use Latest Available') {
-                  const withVer = allEntries.filter(e => e.version).sort((a, b) => (b.version!.major - a.version!.major) || (b.version!.minor - a.version!.minor) || (b.version!.patch - a.version!.patch));
-                  if (withVer.length > 0) stubPath = withVer[0].path;
-                } else if (choice && choice.label === 'Choose Installed...') {
-                  const pick = await vscode.window.showQuickPick(allEntries.map(e => ({ label: e.name, description: e.path })), { placeHolder: '选择已安装的 stub' });
-                  if (pick) {
-                    const sel = allEntries.find(e => e.name === pick.label);
-                    if (sel) stubPath = sel.path;
-                  }
-                } else {
-                  // Keep current
-                }
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[CodeCompletion] version mismatch handling failed', e);
+      if (!selectedStub) {
+        selectedStub = this.getBundledStubInspection();
       }
 
-      await this.updatePythonConfiguration(stubPath);
-
-      // Persist the stubPath we just applied so we can reliably clear it on disable.
-      try {
-        if (this.context && stubPath) {
-          this.lastStubPath = stubPath;
-          await this.context.workspaceState.update('mpy.lastStubPath', stubPath);
+      if (!selectedStub) {
+        const action = await vscode.window.showWarningMessage(
+          '未找到可用的 MicroPython stubs。请先选择或安装匹配版本。',
+          'Choose Stub'
+        );
+        if (action === 'Choose Stub') {
+          await this.chooseStub();
         }
-      } catch (e) {
-        console.warn('[CodeCompletion] failed to persist lastStubPath', e);
+        return;
       }
+
+      selectedStub = await this.handleVersionMismatch(
+        selectedStub,
+        refreshIndex(searchPaths),
+        recommendation,
+        resolvedInstall
+      );
+      if (!selectedStub) return;
+
+      await this.updatePythonConfiguration(selectedStub);
+      await this.persistAppliedStubState(selectedStub);
 
       this.isEnabled = true;
     } catch (error) {
@@ -291,12 +216,15 @@ export class CodeCompletionManager {
     try {
       const pythonConfig = vscode.workspace.getConfiguration('python');
       const currentStubPath = pythonConfig.get<string>('analysis.stubPath', '');
+      const currentTypeshedPaths = pythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
+      const diagnosticChanged = await this.restoreManagedMissingModuleSourceOverride(pythonConfig);
 
       const last = this.lastStubPath || (this.context ? this.context.workspaceState.get<string>('mpy.lastStubPath') : undefined);
+      const lastTypeshed = this.lastTypeshedPath || (this.context ? this.context.workspaceState.get<string>('mpy.lastTypeshedPath') : undefined);
 
-      const ws = vscode.workspace.workspaceFolders?.[0];
-      const wsRoot = ws ? ws.uri.fsPath : undefined;
+      const wsRoot = this.getWorkspaceRoot();
       const installPathCfg = vscode.workspace.getConfiguration('microPythonWorkBench').get<string>('stubInstallPath', '.mpy-workbench/pyi');
+      const workspaceInstallRoot = wsRoot ? path.join(wsRoot, installPathCfg) : installPathCfg;
 
       const isInWorkspaceInstall = (p?: string) => {
         if (!p) return false;
@@ -307,7 +235,7 @@ export class CodeCompletionManager {
           if (normalized.startsWith(rootNorm)) return true;
         }
         if (installPathCfg && wsRoot) {
-          const expected = path.join(wsRoot, installPathCfg).replace(/\\/g, '/').toLowerCase();
+          const expected = workspaceInstallRoot.replace(/\\/g, '/').toLowerCase();
           if (normalized.startsWith(expected)) return true;
         }
         return false;
@@ -333,6 +261,20 @@ export class CodeCompletionManager {
       if (shouldClear) {
         await pythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Workspace);
 
+        const normalizedLastTypeshed = lastTypeshed ? lastTypeshed.replace(/\\/g, '/') : undefined;
+        const filteredTypeshedPaths = currentTypeshedPaths.filter(p => {
+          const normalized = p.replace(/\\/g, '/');
+          const matchesLast = Boolean(normalizedLastTypeshed) && normalized === normalizedLastTypeshed;
+          return !matchesLast && !isInWorkspaceInstall(p);
+        });
+        if (filteredTypeshedPaths.length !== currentTypeshedPaths.length) {
+          await pythonConfig.update(
+            'analysis.typeshedPaths',
+            filteredTypeshedPaths.length > 0 ? filteredTypeshedPaths : undefined,
+            vscode.ConfigurationTarget.Workspace
+          );
+        }
+
         // 清理我们可能加入的 extraPaths
         const extra = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
         const newExtra = extra.filter(p => !(p && (p.replace(/\\/g,'/').toLowerCase().includes('.mpy-workbench') || p.toLowerCase().includes('code_completion'))));
@@ -350,7 +292,11 @@ export class CodeCompletionManager {
 
         // Clear persisted record
         try { await this.context?.workspaceState.update('mpy.lastStubPath', undefined); } catch {}
+        try { await this.context?.workspaceState.update('mpy.lastTypeshedPath', undefined); } catch {}
         this.lastStubPath = undefined;
+        this.lastTypeshedPath = undefined;
+      } else if (diagnosticChanged) {
+        await this.safeRestartLanguageServer();
       }
 
       this.isEnabled = false;
@@ -434,7 +380,10 @@ export class CodeCompletionManager {
   }
 
   private async restartPylanceLanguageServer(): Promise<void> {
-    await this.tryRestartLanguageServer();
+    const ok = await this.tryRestartLanguageServer();
+    if (!ok) {
+      vscode.window.showInformationMessage('Pylance 配置已更新，但无法自动重启语言服务。请手动执行 “Python: Restart Language Server”。');
+    }
   }
 
   private async safeRestartLanguageServer(): Promise<void> {
@@ -442,16 +391,23 @@ export class CodeCompletionManager {
     if (ok) return;
     // 如果第一次失败，等待并重试一次
     await new Promise(r => setTimeout(r, 600));
-    await this.tryRestartLanguageServer();
+    const retried = await this.tryRestartLanguageServer();
+    if (!retried) {
+      vscode.window.showInformationMessage('Pylance 配置已更新，但无法自动重启语言服务。请手动执行 “Python: Restart Language Server”。');
+    }
   }
 
   /**
    * 更新Python配置
    * 同时负责清理可能残留的全局配置
    */
-  private async updatePythonConfiguration(stubPath: string): Promise<void> {
+  private async updatePythonConfiguration(stubInfo: StubInspection | null): Promise<void> {
     const pythonConfig = vscode.workspace.getConfiguration('python');
     const extension = vscode.extensions.getExtension('WebForks.mpy');
+    const stubPath = stubInfo?.root ?? '';
+    const workspaceRoot = this.getWorkspaceRoot();
+    const installPathCfg = vscode.workspace.getConfiguration('microPythonWorkBench').get<string>('stubInstallPath', '.mpy-workbench/pyi');
+    const workspaceInstallRoot = workspaceRoot ? path.join(workspaceRoot, installPathCfg) : installPathCfg;
     
     // 获取可能的旧路径以便清理
     // 我们不仅要清理当前版本，还要尝试清理可能存在的旧版本路径
@@ -461,6 +417,22 @@ export class CodeCompletionManager {
         const normalized = p.toLowerCase().replace(/\\/g, '/');
         return (normalized.includes('webforks.mpy') || normalized.includes('vscodemicropython')) && 
                normalized.includes('code_completion');
+    };
+
+    const normalizePath = (p?: string) => (p || '').replace(/\\/g, '/').toLowerCase();
+    const isWorkspaceInstallPath = (p?: string) => {
+      if (!p) return false;
+      const normalized = normalizePath(p);
+      return normalized.includes('.mpy-workbench') || normalized.startsWith(normalizePath(workspaceInstallRoot));
+    };
+
+    const isOwnedPath = (p?: string) => {
+      if (!p) return false;
+      const normalized = normalizePath(p);
+      return isExtensionPath(p)
+        || isWorkspaceInstallPath(p)
+        || normalized === normalizePath(this.lastStubPath)
+        || normalized === normalizePath(this.lastTypeshedPath);
     };
 
     let oldPaths: string[] = [];
@@ -496,6 +468,16 @@ export class CodeCompletionManager {
       await globalPythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Global);
     }
 
+    const globalTypeshedPaths = globalPythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
+    const newGlobalTypeshedPaths = globalTypeshedPaths.filter(p => !isOwnedPath(p));
+    if (newGlobalTypeshedPaths.length !== globalTypeshedPaths.length) {
+      await globalPythonConfig.update(
+        'analysis.typeshedPaths',
+        newGlobalTypeshedPaths.length > 0 ? newGlobalTypeshedPaths : undefined,
+        vscode.ConfigurationTarget.Global
+      );
+    }
+
 
     // --- 2. 更新 Workspace 配置 ---
     
@@ -526,6 +508,8 @@ export class CodeCompletionManager {
     // 清理 autoComplete.extraPaths
     const autoCompleteExtraPaths = pythonConfig.get<string[]>('autoComplete.extraPaths', []);
     const newAutoCompleteExtraPaths = autoCompleteExtraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
+    const autoCompleteChanged = newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length ||
+      autoCompleteExtraPaths.some((p, i) => p !== newAutoCompleteExtraPaths[i]);
     if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
       await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
     }
@@ -547,11 +531,330 @@ export class CodeCompletionManager {
          needRestart = true;
        }
     }
+
+    const currentTypeshedPaths = pythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
+    const userManagedTypeshedPaths = currentTypeshedPaths.filter(p => !isOwnedPath(p));
+    let appliedTypeshedPath: string | undefined;
+    if (stubInfo?.hasTypeshedRoot && stubPath) {
+      const alreadyApplied = currentTypeshedPaths.length === 1 && normalizePath(currentTypeshedPaths[0]) === normalizePath(stubPath);
+      if (alreadyApplied || userManagedTypeshedPaths.length === 0) {
+        if (!alreadyApplied) {
+          await pythonConfig.update('analysis.typeshedPaths', [stubPath], vscode.ConfigurationTarget.Workspace);
+          needRestart = true;
+        }
+        appliedTypeshedPath = stubPath;
+      } else {
+        vscode.window.showWarningMessage('检测到工作区已有自定义 python.analysis.typeshedPaths。已保留原配置；如需 MicroPython 标准库提示，请手动将当前 stub 根设为首个 typeshed path。');
+      }
+    } else {
+      const filteredTypeshedPaths = currentTypeshedPaths.filter(p => !isOwnedPath(p));
+      const typeshedChanged = filteredTypeshedPaths.length !== currentTypeshedPaths.length ||
+        currentTypeshedPaths.some((p, i) => p !== filteredTypeshedPaths[i]);
+      if (typeshedChanged) {
+        await pythonConfig.update(
+          'analysis.typeshedPaths',
+          filteredTypeshedPaths.length > 0 ? filteredTypeshedPaths : undefined,
+          vscode.ConfigurationTarget.Workspace
+        );
+        needRestart = true;
+      }
+    }
+
+    this.lastTypeshedPath = appliedTypeshedPath;
+    try {
+      await this.context?.workspaceState.update('mpy.lastTypeshedPath', appliedTypeshedPath);
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to persist lastTypeshedPath', e);
+    }
+
+    const diagnosticChanged = stubPath
+      ? await this.ensureMissingModuleSourceSuppression(pythonConfig)
+      : await this.restoreManagedMissingModuleSourceOverride(pythonConfig);
     
     // 配置修改后重启 Pylance（仅需一次）
-    if (needRestart || extraChanged) {
-      await this.restartPylanceLanguageServer();
+    if (needRestart || extraChanged || autoCompleteChanged || diagnosticChanged) {
+      await this.safeRestartLanguageServer();
     }
+  }
+
+  private getDiagnosticSeverityOverrides(pythonConfig: vscode.WorkspaceConfiguration): Record<string, string> {
+    const raw = pythonConfig.get<Record<string, unknown>>('analysis.diagnosticSeverityOverrides', {}) || {};
+    const overrides: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (typeof value === 'string') {
+        overrides[key] = value;
+      }
+    }
+    return overrides;
+  }
+
+  private async clearManagedMissingModuleSourceState(): Promise<void> {
+    try {
+      await this.context?.workspaceState.update('mpy.managedMissingModuleSourceDiagnostic', undefined);
+      await this.context?.workspaceState.update('mpy.previousMissingModuleSourceDiagnostic', undefined);
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to clear managed diagnostic state', e);
+    }
+  }
+
+  private async ensureMissingModuleSourceSuppression(pythonConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
+    const overrides = this.getDiagnosticSeverityOverrides(pythonConfig);
+    const managed = this.context?.workspaceState.get<boolean>('mpy.managedMissingModuleSourceDiagnostic', false) ?? false;
+    const currentValue = overrides.reportMissingModuleSource;
+
+    if (managed) {
+      if (currentValue === 'none') {
+        return false;
+      }
+      overrides.reportMissingModuleSource = 'none';
+      await pythonConfig.update('analysis.diagnosticSeverityOverrides', overrides, vscode.ConfigurationTarget.Workspace);
+      return true;
+    }
+
+    if (currentValue === 'none') {
+      return false;
+    }
+
+    const previousValue = Object.prototype.hasOwnProperty.call(overrides, 'reportMissingModuleSource')
+      ? currentValue
+      : ABSENT_DIAGNOSTIC_OVERRIDE;
+
+    try {
+      await this.context?.workspaceState.update('mpy.previousMissingModuleSourceDiagnostic', previousValue);
+      await this.context?.workspaceState.update('mpy.managedMissingModuleSourceDiagnostic', true);
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to persist managed diagnostic state', e);
+    }
+
+    overrides.reportMissingModuleSource = 'none';
+    await pythonConfig.update('analysis.diagnosticSeverityOverrides', overrides, vscode.ConfigurationTarget.Workspace);
+    return true;
+  }
+
+  private async restoreManagedMissingModuleSourceOverride(pythonConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
+    const managed = this.context?.workspaceState.get<boolean>('mpy.managedMissingModuleSourceDiagnostic', false) ?? false;
+    if (!managed) {
+      return false;
+    }
+
+    const previousValue = this.context?.workspaceState.get<string>('mpy.previousMissingModuleSourceDiagnostic');
+    const overrides = this.getDiagnosticSeverityOverrides(pythonConfig);
+    const currentValue = overrides.reportMissingModuleSource;
+    let changed = false;
+
+    if (previousValue === ABSENT_DIAGNOSTIC_OVERRIDE || previousValue === undefined) {
+      if (Object.prototype.hasOwnProperty.call(overrides, 'reportMissingModuleSource')) {
+        delete overrides.reportMissingModuleSource;
+        changed = true;
+      }
+    } else if (currentValue !== previousValue) {
+      overrides.reportMissingModuleSource = previousValue;
+      changed = true;
+    }
+
+    if (changed) {
+      await pythonConfig.update(
+        'analysis.diagnosticSeverityOverrides',
+        Object.keys(overrides).length > 0 ? overrides : undefined,
+        vscode.ConfigurationTarget.Workspace
+      );
+    }
+
+    await this.clearManagedMissingModuleSourceState();
+    return changed;
+  }
+
+  private getWorkspaceRoot(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  }
+
+  private getResolvedInstallPath(): string {
+    const config = vscode.workspace.getConfiguration('microPythonWorkBench');
+    const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
+    const workspaceRoot = this.getWorkspaceRoot();
+    return workspaceRoot ? path.join(workspaceRoot, installPath) : installPath;
+  }
+
+  private getStubSearchPaths(): string[] {
+    return [this.getResolvedInstallPath()].filter(Boolean);
+  }
+
+  private getBundledStubInspection(): StubInspection | null {
+    try {
+      return inspectStubRoot(this.getStubPath());
+    } catch {
+      return null;
+    }
+  }
+
+  private warnIfPyrightOverrides(): void {
+    const override = detectPyrightConfigOverride(this.getWorkspaceRoot());
+    if (!override) return;
+
+    void vscode.window.showWarningMessage(
+      `检测到 ${path.basename(override.path)} 会覆盖 VS Code 的 python.analysis.* 设置。若代码提示未按预期生效，请在该配置中同步 stubPath/typeshedPath。`
+    );
+  }
+
+  private parseReleaseVersion(release?: string | undefined): { major: number; minor: number; patch: number } | null {
+    if (!release) return null;
+
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(release);
+    if (!match) return null;
+
+    return {
+      major: Number(match[1]),
+      minor: Number(match[2]),
+      patch: Number(match[3] || '0'),
+    };
+  }
+
+  private compareReleaseVersion(
+    left: { major: number; minor: number; patch: number },
+    right: { major: number; minor: number; patch: number }
+  ): number {
+    if (left.major !== right.major) return left.major - right.major;
+    if (left.minor !== right.minor) return left.minor - right.minor;
+    return left.patch - right.patch;
+  }
+
+  private pickBestInstalledStub(
+    entries: ReturnType<typeof indexStubPaths>,
+    recommendation: StubPackageRecommendation,
+    port?: string,
+    machine?: string,
+    board?: string
+  ): StubInspection | null {
+    const best = findBestMatch(entries, {
+      release: recommendation.cleanedRelease,
+      port,
+      machine,
+      board,
+    });
+    return best ? inspectStubRoot(best.path) : null;
+  }
+
+  private async chooseInstalledEntry(entries: ReturnType<typeof indexStubPaths>, placeHolder: string): Promise<StubInspection | null> {
+    if (!entries || entries.length === 0) return null;
+
+    const items = entries.map(entry => ({
+      label: entry.name + (entry.version ? ` (v${entry.version.major}.${entry.version.minor}.${entry.version.patch})` : ''),
+      description: entry.path,
+    }));
+    const pick = await vscode.window.showQuickPick(items, { placeHolder });
+    if (!pick) return null;
+
+    const selected = entries.find(entry => pick.description === entry.path || pick.label.startsWith(entry.name));
+    return selected ? inspectStubRoot(selected.path) : null;
+  }
+
+  private async installStubPackageAndInspect(pkgSpec: string, installRoot: string): Promise<StubInspection> {
+    const installedDir = await installStubPackage(pkgSpec, installRoot);
+    const inspected = inspectStubRoot(installedDir);
+    if (!inspected) {
+      throw new Error(`已安装 ${pkgSpec}，但未发现有效的 stub 根：${installedDir}`);
+    }
+    return inspected;
+  }
+
+  private async promptSpecificInstall(
+    installRoot: string,
+    recommendation: StubPackageRecommendation
+  ): Promise<StubInspection | null> {
+    const basePackage = recommendation.basePackage;
+    const prompt = basePackage
+      ? `输入要安装的版本号（如 1.28.0.post3）或完整包规格。留空将安装最新 ${basePackage}`
+      : '输入要安装的完整 pip 包规格，例如 micropython-esp32-stubs==1.28.0.post3';
+    const value = await vscode.window.showInputBox({
+      prompt,
+      placeHolder: basePackage || 'micropython-esp32-stubs==1.28.0.post3',
+      ignoreFocusOut: true,
+    });
+
+    if (value === undefined) return null;
+
+    const trimmed = value.trim();
+    let pkgSpec = trimmed;
+    if (!pkgSpec && basePackage) {
+      pkgSpec = basePackage;
+    } else if (pkgSpec && /^\d/.test(pkgSpec) && basePackage) {
+      pkgSpec = `${basePackage}==${pkgSpec}`;
+    }
+
+    if (!pkgSpec) return null;
+    return this.installStubPackageAndInspect(pkgSpec, installRoot);
+  }
+
+  private async persistAppliedStubState(stubInfo: StubInspection): Promise<void> {
+    try {
+      if (!this.context) return;
+      this.lastStubPath = stubInfo.root;
+      await this.context.workspaceState.update('mpy.lastStubPath', stubInfo.root);
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to persist lastStubPath', e);
+    }
+  }
+
+  private async handleVersionMismatch(
+    currentStub: StubInspection,
+    entries: ReturnType<typeof refreshIndex>,
+    recommendation: StubPackageRecommendation,
+    installRoot: string
+  ): Promise<StubInspection | null> {
+    const boardInfo = boardInfoService.getBoardInfo();
+    const deviceVersion = this.parseReleaseVersion(boardInfo?.release || recommendation.cleanedRelease);
+    if (!deviceVersion) return currentStub;
+
+    const currentEntry = entries.find(entry => entry.path === currentStub.root || currentStub.root.startsWith(entry.path));
+    if (!currentEntry?.version) return currentStub;
+    if (this.compareReleaseVersion(deviceVersion, currentEntry.version) <= 0) {
+      return currentStub;
+    }
+
+    const choice = await vscode.window.showQuickPick([
+      { label: 'Use Latest Available', description: '选择已安装的最新可用 pyi' },
+      { label: 'Choose Installed...', description: '从已安装的 pyi 中选择' },
+      { label: 'Install Matching Version...', description: '安装与当前设备版本最接近的推荐 pyi' },
+      { label: 'Install Specific Version...', description: '安装指定版本或完整包规格' },
+      { label: 'Keep Current', description: '继续使用当前选择（可能不完全兼容）' },
+    ], {
+      placeHolder: `设备 MicroPython ${boardInfo?.release || recommendation.cleanedRelease} 高于选中 stub ${currentEntry.name}，请选择处理方式`,
+    });
+
+    if (!choice || choice.label === 'Keep Current') {
+      return currentStub;
+    }
+
+    if (choice.label === 'Use Latest Available') {
+      const withVersion = entries.filter((entry) => Boolean(entry.version));
+      if (withVersion.length === 0) return currentStub;
+
+      withVersion.sort((left, right) => this.compareReleaseVersion(right.version!, left.version!));
+      return inspectStubRoot(withVersion[0].path) || currentStub;
+    }
+
+    if (choice.label === 'Choose Installed...') {
+      return (await this.chooseInstalledEntry(entries, '选择已安装的 stub')) || currentStub;
+    }
+
+    if (choice.label === 'Install Matching Version...' && recommendation.primary) {
+      try {
+        return await this.installStubPackageAndInspect(recommendation.primary, installRoot);
+      } catch (e) {
+        vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
+        return currentStub;
+      }
+    }
+
+    if (choice.label === 'Install Specific Version...') {
+      try {
+        return (await this.promptSpecificInstall(installRoot, recommendation)) || currentStub;
+      } catch (e) {
+        vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    }
+
+    return currentStub;
   }
 
   /**
@@ -730,108 +1033,49 @@ export class CodeCompletionManager {
    */
   public async chooseStub(): Promise<void> {
     try {
-      const config = vscode.workspace.getConfiguration('microPythonWorkBench');
-      const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-      const ws = vscode.workspace.workspaceFolders?.[0];
-      const root = ws ? ws.uri.fsPath : undefined;
-      const resolvedInstall = root ? path.join(root, installPath) : installPath;
-      const searchPaths = [resolvedInstall].filter(Boolean) as string[];
+      const resolvedInstall = this.getResolvedInstallPath();
+      const searchPaths = this.getStubSearchPaths();
+      const boardInfo = boardInfoService.getBoardInfo();
+      const recommendation = buildStubPackageRecommendation(boardInfo);
+      this.warnIfPyrightOverrides();
 
       let entries = indexStubPaths(searchPaths);
-      if (!entries || entries.length === 0) {
-        const pick = await vscode.window.showInformationMessage('未发现已安装的 MicroPython stubs。是否刷新索引或安装匹配的 stubs?', 'Refresh', 'Install', 'Cancel');
-        if (pick === 'Refresh') {
-          refreshIndex(searchPaths);
-          entries = indexStubPaths(searchPaths);
-        } else if (pick === 'Install') {
-          // try to build a sensible candidate from detected board info
-          const boardInfo = boardInfoService.getBoardInfo();
-          const normalizeToKebab = (s?: string) => {
-            if (!s) return '';
-            return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-          };
-          const cleanedRelease = boardInfo && boardInfo.release ? String(boardInfo.release).split('-')[0] : undefined;
-          const portRaw = boardInfo?.sysname || boardInfo?.machine || '';
-          const boardRaw = boardInfo?.machine ? String(boardInfo.machine).split(/\s+with\s+/i)[0] : '';
-          const portNorm = normalizeToKebab(portRaw);
-          const boardNorm = normalizeToKebab(boardRaw);
-          const versionSpec = cleanedRelease ? (() => {
-            const m = /^(\d+)\.(\d+)/.exec(cleanedRelease!);
-            return m ? `==${m[1]}.${m[2]}.*` : '';
-          })() : '';
-          const primary = `micropython-${portNorm}-stubs${versionSpec}`;
-          const secondary = boardNorm ? `micropython-${portNorm}-${boardNorm}-stubs${versionSpec}` : undefined;
-          const install = await vscode.window.showInformationMessage(
-            secondary
-              ? `未找到匹配的 MicroPython stubs，是否安装 ${primary} 到工作区? (备选: ${secondary})`
-              : `未找到匹配的 MicroPython stubs，是否安装 ${primary} 到工作区?`,
-            'Install', 'Cancel'
-          );
-          if (install === 'Install') {
-            try {
-              const installedDir = await installStubPackage(primary, resolvedInstall);
-              // reindex including installed dir
-              refreshIndex([installedDir, resolvedInstall]);
-              entries = indexStubPaths([installedDir, resolvedInstall]);
-            } catch (e) {
-              vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
-              return;
-            }
-          } else return;
-        } else {
+      const actions: vscode.QuickPickItem[] = [];
+      if (entries.length > 0) {
+        actions.push({ label: 'Use Installed...', description: '从已安装的 pyi 中选择' });
+      }
+      if (recommendation.primary) {
+        actions.push({ label: 'Install Matching Version...', description: `安装推荐版本 ${recommendation.primary}` });
+      }
+      actions.push({ label: 'Install Specific Version...', description: '安装指定版本或完整包规格' });
+      actions.push({ label: 'Refresh Index', description: '刷新已安装 stub 索引' });
+
+      const action = await vscode.window.showQuickPick(actions, { placeHolder: '选择 MicroPython stub 操作' });
+      if (!action) return;
+
+      let selectedStub: StubInspection | null = null;
+      if (action.label === 'Use Installed...') {
+        selectedStub = await this.chooseInstalledEntry(entries, '选择要用于代码补全的 stub');
+      } else if (action.label === 'Install Matching Version...') {
+        if (!recommendation.primary) {
+          vscode.window.showWarningMessage('当前未检测到设备版本，无法推荐安装匹配的 stub。');
           return;
         }
+        selectedStub = await this.installStubPackageAndInspect(recommendation.primary, resolvedInstall);
+        entries = refreshIndex(searchPaths);
+      } else if (action.label === 'Install Specific Version...') {
+        selectedStub = await this.promptSpecificInstall(resolvedInstall, recommendation);
+        entries = refreshIndex(searchPaths);
+      } else if (action.label === 'Refresh Index') {
+        entries = refreshIndex(searchPaths);
+        selectedStub = await this.chooseInstalledEntry(entries, '选择要用于代码补全的 stub');
       }
 
-      if (!entries || entries.length === 0) {
-        vscode.window.showInformationMessage('没有可用的 stub 可供选择');
-        return;
-      }
+      if (!selectedStub) return;
 
-      const items = entries.map(e => ({ label: e.name + (e.version ? ` (v${e.version.major}.${e.version.minor}.${e.version.patch})` : ''), description: e.path }));
-      const pick = await vscode.window.showQuickPick(items, { placeHolder: '选择要用于代码补全的 stub' });
-      if (!pick) return;
+      await this.updatePythonConfiguration(selectedStub);
+      await this.persistAppliedStubState(selectedStub);
 
-      const selected = entries.find(e => pick.description === e.path || pick.label.startsWith(e.name));
-      if (!selected) return;
-
-      // ensure contains core pyi
-      const ensureContainsCore = (p: string | undefined | null): string | null => {
-        if (!p) return null;
-        try {
-          if (fs.existsSync(path.join(p, 'machine.pyi')) || fs.existsSync(path.join(p, 'umachine.pyi')) || fs.existsSync(path.join(p, 'micropython.pyi'))) {
-            return p;
-          }
-          const items = fs.readdirSync(p, { withFileTypes: true });
-          for (const it of items) {
-            if (!it.isDirectory()) continue;
-            const sub = path.join(p, it.name);
-            if (fs.existsSync(path.join(sub, 'machine.pyi')) || fs.existsSync(path.join(sub, 'umachine.pyi')) || fs.existsSync(path.join(sub, 'micropython.pyi'))) {
-              return sub;
-            }
-          }
-        } catch (e) {}
-        return null;
-      };
-
-      let stubPath = selected.path;
-      const validated = ensureContainsCore(stubPath);
-      if (validated) stubPath = validated;
-
-      await this.updatePythonConfiguration(stubPath);
-
-      // Persist
-      try {
-        if (this.context && stubPath) {
-          this.lastStubPath = stubPath;
-          await this.context.workspaceState.update('mpy.lastStubPath', stubPath);
-        }
-      } catch (e) {
-        console.warn('[CodeCompletion] failed to persist lastStubPath', e);
-      }
-
-      // restart LS robustly
-      await this.safeRestartLanguageServer();
       this.updateStatusBar();
     } catch (e) {
       vscode.window.showErrorMessage('选择 stub 失败: ' + (e instanceof Error ? e.message : String(e)));

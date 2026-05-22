@@ -168,7 +168,7 @@
   "messages.scriptsPathCopied": "脚本目录路径已复制到剪贴板",
   "messages.fileCreatedLocallyButUploadFailed": "文件已本地创建但上传到开发板失败：{0}",
 
-  "configuration.enableCodeCompletion.description": "启用 MicroPython 代码补全。'auto' = 根据同步设置自动检测，'true' = 始终启用，'false' = 禁用",
+  "configuration.enableCodeCompletion.description": "为当前工作区启用 MicroPython 代码补全接入。",
   "configuration.enableCodeCompletion.enumDescriptions.auto": "检测到 MicroPython 项目时自动启用",
   "configuration.enableCodeCompletion.enumDescriptions.enabled": "始终启用代码补全",
   "configuration.enableCodeCompletion.enumDescriptions.disabled": "禁用代码补全",

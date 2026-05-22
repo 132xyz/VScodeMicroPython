@@ -33,10 +33,10 @@ function parseDistInfoName(n: string) {
 }
 
 function parsePortBoardFromName(n: string) {
-  // crude parse: find parts after version
-  // split by '-' and look for esp32/esp8266/pyboard parts
-  const parts = n.split('-');
-  const after = parts.slice(1);
+  const cleaned = n.replace(/-(merged|docstubs|frozen)$/i, '');
+  const parts = cleaned.split('-');
+  const versionIndex = parts.findIndex(part => /^v\d+(_\d+){1,2}$/i.test(part));
+  const after = versionIndex >= 0 ? parts.slice(versionIndex + 1) : parts.slice(1);
   let port: string | null = null;
   let board: string | null = null;
   if (after.length > 0) {
@@ -44,6 +44,67 @@ function parsePortBoardFromName(n: string) {
     if (after.length > 1) board = after[1] || null;
   }
   return { port, board };
+}
+
+function normalizeKey(value?: string | null): string {
+  if (!value) return '';
+
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function parseVersionString(version?: string) {
+  if (!version) return null;
+
+  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(version);
+  if (!match) return null;
+
+  return {
+    major: Number(match[1] || 0),
+    minor: Number(match[2] || 0),
+    patch: Number(match[3] || 0),
+  };
+}
+
+function inspectDirectoryEntry(fullPath: string, fallbackName: string): StubEntry | null {
+  let items: fs.Dirent[];
+  try {
+    items = fs.readdirSync(fullPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const containsPyi = items.some(item => item.isFile() && (item.name.endsWith('.pyi') || item.name.endsWith('.py')));
+  const distInfoDirs = items.filter(item => item.isDirectory() && item.name.endsWith('.dist-info'));
+  if (!containsPyi && distInfoDirs.length === 0) return null;
+
+  if (distInfoDirs.length > 0) {
+    const info = parseDistInfoName(distInfoDirs[0].name);
+    if (info) {
+      const normalizedName = info.pkg.replace(/_/g, '-');
+      const parsed = parsePortBoardFromName(normalizedName);
+      return {
+        name: `${normalizedName}-${info.ver}`,
+        version: info.version,
+        port: parsed.port,
+        board: parsed.board,
+        path: fullPath,
+      };
+    }
+  }
+
+  const version = parseVersionFromName(fallbackName);
+  const parsed = parsePortBoardFromName(fallbackName);
+  return {
+    name: fallbackName,
+    version,
+    port: parsed.port,
+    board: parsed.board,
+    path: fullPath,
+  };
 }
 
 let cachedEntries: StubEntry[] | null = null;
@@ -59,36 +120,18 @@ export function indexStubPaths(searchPaths: string[], forceRefresh = false): Stu
       if (!fs.existsSync(base)) continue;
       const items = fs.readdirSync(base, { withFileTypes: true });
 
-      // If base itself contains .pyi files or a dist-info dir, treat base as a stub package
-      const baseFiles = items.filter(i => i.isFile()).map(i => i.name);
-      const containsPyiAtRoot = baseFiles.some(f => f.endsWith('.pyi') || f.endsWith('.py'));
-      const distInfoDirs = items.filter(i => i.isDirectory() && i.name.endsWith('.dist-info'));
-      if (containsPyiAtRoot || distInfoDirs.length > 0) {
-        // prefer dist-info to construct name/version
-        if (distInfoDirs.length > 0) {
-          const info = parseDistInfoName(distInfoDirs[0].name);
-          if (info) {
-            const normName = info.pkg.replace(/_/g, '-');
-            out.push({ name: `${normName}-${info.ver}`, version: info.version, port: null, board: null, path: base });
-          } else {
-            out.push({ name: path.basename(base), version: null, port: null, board: null, path: base });
-          }
-        } else {
-          out.push({ name: path.basename(base), version: null, port: null, board: null, path: base });
-        }
+      const baseEntry = inspectDirectoryEntry(base, path.basename(base));
+      if (baseEntry) {
+        out.push(baseEntry);
       }
 
       for (const it of items) {
         if (!it.isDirectory()) continue;
         const full = path.join(base, it.name);
-        // Heuristic: accept directory if it contains any .pyi files or a package folder
-        let dirEntries: string[] = [];
-        try { dirEntries = fs.readdirSync(full); } catch { continue; }
-        const containsPyi = dirEntries.some(f => f.endsWith('.pyi') || f.endsWith('.py'));
-        if (!containsPyi) continue;
-        const ver = parseVersionFromName(it.name);
-        const pb = parsePortBoardFromName(it.name);
-        out.push({ name: it.name, version: ver, port: pb.port, board: pb.board, path: full });
+        const childEntry = inspectDirectoryEntry(full, it.name);
+        if (childEntry) {
+          out.push(childEntry);
+        }
       }
     } catch (e) {
       // ignore path read errors
@@ -116,40 +159,66 @@ function compareVersion(a: NonNullable<StubEntry['version']>, b: NonNullable<Stu
   return a.patch - b.patch;
 }
 
-export function findBestMatch(entries: StubEntry[], opts: { release?: string | undefined; machine?: string | undefined } = {}): StubEntry | null {
+function scoreVersion(entryVersion: NonNullable<StubEntry['version']> | null | undefined, deviceVersion: { major: number; minor: number; patch: number } | null) {
+  if (!entryVersion || !deviceVersion) return 0;
+
+  let score = 0;
+  if (entryVersion.major === deviceVersion.major) score += 200;
+  if (entryVersion.minor === deviceVersion.minor) score += 220;
+  if (entryVersion.patch === deviceVersion.patch) score += 140;
+
+  const delta = Math.abs(compareVersion(entryVersion, deviceVersion));
+  score += Math.max(0, 40 - delta * 5);
+  if (compareVersion(entryVersion, deviceVersion) <= 0) score += 30;
+
+  return score;
+}
+
+function scoreNameMatch(entry: StubEntry, opts: { port?: string; machine?: string; board?: string }) {
+  const normalizedName = normalizeKey(entry.name);
+  const portHint = normalizeKey(opts.port);
+  const machineHint = normalizeKey(opts.machine);
+  const boardHint = normalizeKey(opts.board);
+
+  let score = 0;
+  if (portHint && normalizedName.includes(portHint)) score += 120;
+  if (boardHint && normalizedName.includes(boardHint)) score += 80;
+  if (machineHint && normalizedName.includes(machineHint)) score += 50;
+
+  return score;
+}
+
+export function findBestMatch(entries: StubEntry[], opts: { release?: string | undefined; port?: string | undefined; machine?: string | undefined; board?: string | undefined } = {}): StubEntry | null {
   if (!entries || entries.length === 0) return null;
-  const relRaw = opts.release;
-  const mach = opts.machine;
 
-  // clean release: drop any suffix like '-preview'
-  const rel = relRaw ? String(relRaw).split('-')[0] : undefined;
+  const rel = opts.release ? String(opts.release).split('-')[0] : undefined;
+  const deviceVersion = parseVersionString(rel);
 
-  // attempt exact match by machine (sysname) or by version tokens present in name
-  if (mach) {
-    const mnorm = mach.toString().toLowerCase();
-    const byMachine = entries.find(e => e.name.toLowerCase().includes(mnorm));
-    if (byMachine) return byMachine;
-  }
+  let bestEntry: StubEntry | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
 
-  if (rel) {
-    // try to match version tokens like v1_28_0 or v1_28
-    const mFull = rel.replace(/\./g, '_'); // e.g. 1.28.0 -> 1_28_0
-    const vFull = `v${mFull}`;
-    const mMinor = (/^(\d+)\.(\d+)/.exec(rel) || []).slice(1).join('_');
-    const vMinor = mMinor ? `v${mMinor}` : '';
+  for (const entry of entries) {
+    const score = scoreVersion(entry.version, deviceVersion) + scoreNameMatch(entry, opts);
+    if (score > bestScore) {
+      bestEntry = entry;
+      bestScore = score;
+      continue;
+    }
 
-    const byRelFull = entries.find(e => e.name.toLowerCase().includes(vFull.toLowerCase()));
-    if (byRelFull) return byRelFull;
-    if (vMinor) {
-      const byRelMinor = entries.find(e => e.name.toLowerCase().includes(vMinor.toLowerCase()));
-      if (byRelMinor) return byRelMinor;
+    if (
+      score === bestScore &&
+      bestEntry?.version &&
+      entry.version &&
+      compareVersion(entry.version, bestEntry.version) > 0
+    ) {
+      bestEntry = entry;
     }
   }
 
-  // fallback: pick latest by version
+  if (bestEntry) return bestEntry;
+
   const withVer = entries.filter(e => e.version).sort((a, b) => compareVersion(b.version as any, a.version as any));
   if (withVer.length > 0) return withVer[0];
 
-  // last resort: first entry
   return entries[0] || null;
 }

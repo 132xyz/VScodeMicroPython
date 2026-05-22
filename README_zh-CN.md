@@ -76,39 +76,39 @@
 
 该扩展使用 Python stub 文件为 MicroPython 模块提供智能代码补全。此功能与 VS Code 的 Pylance 语言服务器集成，提供 IntelliSense 支持。
 
-### 自动检测
+### 工作原理
 
-代码补全在以下情况下自动启用：
-- 检测到 MicroPython 项目（基于同步设置或项目结构）
-- 工作区包含 MicroPython 特定文件或配置
-- 通过命令或设置手动覆盖
-
-### 多语言支持
-
-- **英文**：默认文档语言
-- **中文**：当 VS Code 语言设置为中文时自动使用
-- 支持 47+ 个 MicroPython 模块的类型注解
+- 启用代码补全后，扩展会优先选择工作区中已安装的 MicroPython stub 包。
+- 如果选中的 stub 根目录同时包含 typeshed 风格目录树，扩展还会同步更新 Pylance 的标准库类型来源，以便更准确地解析 MicroPython 的内置符号和标准库模块。
+- 如果工作区中存在 `pyrightconfig.json`，或 `pyproject.toml` 中定义了 `[tool.pyright]`，这些配置可能会覆盖 VS Code 里的 `python.analysis.*` 设置。
 
 ### 配置选项
 
 ```json
 {
-  "microPythonWorkBench.enableCodeCompletion": "auto",
-  "microPythonWorkBench.enableMultiLanguageDocs": true
+  "microPythonWorkBench.enableCodeCompletion": true,
+  "microPythonWorkBench.stubInstallPath": ".mpy-workbench/pyi",
+  "microPythonWorkBench.codeCompletionExtraPaths": [],
+  "microPythonWorkBench.stubAutoSelect": true
 }
 ```
 
 - `microPythonWorkBench.enableCodeCompletion`：
-  - `"auto"`（默认）：自动为 MicroPython 项目启用
-  - `"manual"`：通过命令手动控制
-  - `"forced"`：无论项目类型如何始终启用
-  - `"disabled"`：完全禁用
+  - `true`：为当前工作区启用 MicroPython 代码补全
+  - `false`：禁用扩展托管的 MicroPython 补全接入
+- `microPythonWorkBench.stubInstallPath`：工作区内用于保存已安装 stub 包的相对目录
+- `microPythonWorkBench.codeCompletionExtraPaths`：启用补全时附加到 Pylance 导入解析中的额外目录
+- `microPythonWorkBench.stubAutoSelect`：在可能的情况下，自动为当前连接的板子选择并应用最合适的已安装 stub
 
-- `microPythonWorkBench.enableMultiLanguageDocs`：根据 VS Code 区域设置启用多语言文档
-
-### 手动控制
+### 安装与切换 Stub
 
 从命令面板使用 `MPY 工作台：切换代码补全` 来手动启用/禁用当前工作区的代码补全。
+
+- 使用状态栏中的 `MPY: Stub` 项来管理当前工作区的 MicroPython stub。
+- Stub 选择器支持：从已安装项中选择、安装与当前设备匹配的推荐版本、安装指定包或指定版本、刷新已安装 stub 索引。
+- 已安装 stub 默认保存在 `.mpy-workbench/pyi` 目录下，便于同一工作区内并存多个版本。
+- 如果你手动用 pip 把 stub 安装到该目录，刷新索引后它也会出现在已安装 stub 列表中。
+- 某些 MicroPython stub 包是混合结构：既包含 typeshed 风格的标准库目录，也包含像 `machine`、`time` 这样的顶层纯 stub 模块。由于这些模块的真实运行时在板子上而不在本地解释器中，启用 MicroPython 代码补全时，扩展会自动压制这类 `reportMissingModuleSource` 告警。
 
 # MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
 

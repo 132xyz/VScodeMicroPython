@@ -48,12 +48,35 @@
 'invalid', '1.invalid.0', 'a.b.c'
 ```
 
+#### 2. `stubSupport` 代码补全辅助逻辑
+
+**测试文件**: `tests/stubSupport.test.ts`
+
+**测试覆盖**:
+- ✅ 识别直接的 hybrid stub 根目录
+- ✅ 识别安装目录下的嵌套 stub 根目录
+- ✅ 根据板子信息生成推荐的 pyi 包名
+- ✅ 识别 `pyrightconfig.json` 覆盖
+- ✅ 识别 `pyproject.toml` 中的 `[tool.pyright]`
+
+#### 3. `stubIndex` stub 索引与匹配逻辑
+
+**测试文件**: `tests/stubIndex.test.ts`
+
+**测试覆盖**:
+- ✅ 解析带 `dist-info` 的已安装 stub 目录
+- ✅ 解析无 `dist-info` 时的目录名回退规则
+- ✅ 根据版本、端口、板子选择最佳匹配 stub
+- ✅ 在提示缺失时回退到最高版本
+
 ## 运行测试
 
 ### 运行所有测试
 ```bash
 npm test
 ```
+
+当前 CI 与本地 Jest 只执行符合 `*.test.ts` / `*.spec.ts` 约定的 TypeScript 测试文件。旧的手工 `.js` 脚本和编译产物已移除，避免与当前测试体系和代码补全实现产生混淆。
 
 ### 运行测试并生成覆盖率报告
 ```bash

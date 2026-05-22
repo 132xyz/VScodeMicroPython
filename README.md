@@ -121,39 +121,39 @@ This behavior ensures device files are always placed under the configured sync d
 
 The extension provides intelligent code completion for MicroPython modules using Python stub files. This feature integrates with VS Code's Pylance language server to provide IntelliSense support.
 
-### Auto-detection
+### How It Works
 
-Code completion automatically enables when:
-- A MicroPython project is detected (based on sync settings or project structure)
-- The workspace contains MicroPython-specific files or configurations
-- Manual override via command or settings
-
-### Multi-language Support
-
-- **English**: Default documentation language
-- **Chinese**: Automatically used when VS Code language is set to Chinese
-- Supports 47+ MicroPython modules with type annotations
+- Enabling code completion makes the extension pick a workspace-installed MicroPython stub package when possible.
+- If the selected stub root contains a typeshed-style tree, the extension also updates Pylance's standard-library source so MicroPython-specific builtins and stdlib modules can be resolved more accurately.
+- If your workspace contains `pyrightconfig.json` or a `pyproject.toml` with a `[tool.pyright]` section, those files can override VS Code `python.analysis.*` settings.
 
 ### Configuration Options
 
 ```json
 {
-  "microPythonWorkBench.enableCodeCompletion": "auto",
-  "microPythonWorkBench.enableMultiLanguageDocs": true
+  "microPythonWorkBench.enableCodeCompletion": true,
+  "microPythonWorkBench.stubInstallPath": ".mpy-workbench/pyi",
+  "microPythonWorkBench.codeCompletionExtraPaths": [],
+  "microPythonWorkBench.stubAutoSelect": true
 }
 ```
 
 - `microPythonWorkBench.enableCodeCompletion`:
-  - `"auto"` (default): Automatically enable for MicroPython projects
-  - `"manual"`: Manual control via commands
-  - `"forced"`: Always enabled regardless of project type
-  - `"disabled"`: Completely disabled
+  - `true`: Enable MicroPython code completion for the current workspace
+  - `false`: Disable the extension-managed MicroPython completion integration
+- `microPythonWorkBench.stubInstallPath`: Workspace-relative directory where installed stub packages are stored
+- `microPythonWorkBench.codeCompletionExtraPaths`: Additional directories appended to Pylance import resolution when completion is enabled
+- `microPythonWorkBench.stubAutoSelect`: Automatically pick and apply the best installed stub for the connected board when possible
 
-- `microPythonWorkBench.enableMultiLanguageDocs`: Enable multi-language documentation based on VS Code locale
-
-### Manual Control
+### Installing And Switching Stubs
 
 Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually enable/disable code completion for the current workspace.
+
+- Use the `MPY: Stub` status bar item to manage MicroPython stubs for the workspace.
+- The stub picker can choose from installed stubs, install the recommended version for the detected board, install a specific package/version, or refresh the installed stub index.
+- Installed stubs are stored under `.mpy-workbench/pyi` by default so multiple versions can coexist inside the workspace.
+- If you manually install a stub package with pip into that directory, it will appear in the installed stub picker after the index is refreshed.
+- Some MicroPython stub packages are hybrid trees that contain both a typeshed-style stdlib and top-level stub-only modules such as `machine` or `time`. When MicroPython code completion is enabled, the extension suppresses `reportMissingModuleSource` for this case because the device runtime exists on the board, not in the local Python interpreter.
 
 ### Requirements
 
