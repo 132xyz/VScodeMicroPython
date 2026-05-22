@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.55",
+  "version": "0.3.59",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -513,7 +513,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "启用代码补全时直接加入 Pylance 搜索路径的额外目录。这些路径中的 .pyi 文件将被 Pylance 用于代码提示。"
+          "description": "启用代码补全时额外合并到当前 MicroPython stub 根中的目录或 .pyi 文件路径。适合补充第三方设备库的类型声明。"
         },
         "microPythonWorkBench.stubAutoSelect": {
           "type": "boolean",

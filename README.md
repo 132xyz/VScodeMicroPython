@@ -142,7 +142,7 @@ The extension provides intelligent code completion for MicroPython modules using
   - `true`: Enable MicroPython code completion for the current workspace
   - `false`: Disable the extension-managed MicroPython completion integration
 - `microPythonWorkBench.stubInstallPath`: Workspace-relative directory where installed stub packages are stored
-- `microPythonWorkBench.codeCompletionExtraPaths`: Additional directories appended to Pylance import resolution when completion is enabled
+- `microPythonWorkBench.codeCompletionExtraPaths`: Extra directories or .pyi files merged into the active MicroPython stub root when completion is enabled
 - `microPythonWorkBench.stubAutoSelect`: Automatically pick and apply the best installed stub for the connected board when possible
 
 ### Installing And Switching Stubs

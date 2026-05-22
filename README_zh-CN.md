@@ -97,7 +97,7 @@
   - `true`：为当前工作区启用 MicroPython 代码补全
   - `false`：禁用扩展托管的 MicroPython 补全接入
 - `microPythonWorkBench.stubInstallPath`：工作区内用于保存已安装 stub 包的相对目录
-- `microPythonWorkBench.codeCompletionExtraPaths`：启用补全时附加到 Pylance 导入解析中的额外目录
+- `microPythonWorkBench.codeCompletionExtraPaths`：启用补全时合并到当前 MicroPython stub 根中的额外目录或 .pyi 文件路径
 - `microPythonWorkBench.stubAutoSelect`：在可能的情况下，自动为当前连接的板子选择并应用最合适的已安装 stub
 
 ### 安装与切换 Stub

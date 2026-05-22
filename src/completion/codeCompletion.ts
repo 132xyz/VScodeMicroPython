@@ -13,6 +13,7 @@ import {
   type StubInspection,
   type StubPackageRecommendation,
 } from './stubSupport';
+import { buildOverlayStubRoot } from './stubOverlay';
 
 const ABSENT_DIAGNOSTIC_OVERRIDE = '__absent__';
 
@@ -156,23 +157,7 @@ export class CodeCompletionManager {
       );
 
       if (!selectedStub && entries.length === 0 && boardInfo && auto && recommendation.primary) {
-        const install = await vscode.window.showInformationMessage(
-          recommendation.secondary
-            ? `未找到匹配的 MicroPython stubs，是否安装 ${recommendation.primary} 到工作区? (备选: ${recommendation.secondary})`
-            : `未找到匹配的 MicroPython stubs，是否安装 ${recommendation.primary} 到工作区?`,
-          'Install', 'Choose Stub', 'Cancel'
-        );
-
-        if (install === 'Install') {
-          try {
-            selectedStub = await this.installStubPackageAndInspect(recommendation.primary, resolvedInstall);
-          } catch (e) {
-            vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
-          }
-        } else if (install === 'Choose Stub') {
-          await this.chooseStub();
-          return;
-        }
+        console.info('[CodeCompletion] no matching stubs found during enable; use MPY: Stub to install or choose one');
       }
 
       if (!selectedStub) {
@@ -180,13 +165,7 @@ export class CodeCompletionManager {
       }
 
       if (!selectedStub) {
-        const action = await vscode.window.showWarningMessage(
-          '未找到可用的 MicroPython stubs。请先选择或安装匹配版本。',
-          'Choose Stub'
-        );
-        if (action === 'Choose Stub') {
-          await this.chooseStub();
-        }
+        vscode.window.setStatusBarMessage('未找到可用的 MicroPython stubs，请使用 MPY: Stub 选择或安装。', 6000);
         return;
       }
 
@@ -197,6 +176,8 @@ export class CodeCompletionManager {
         resolvedInstall
       );
       if (!selectedStub) return;
+
+      selectedStub = this.applyExtraStubOverlay(selectedStub);
 
       await this.updatePythonConfiguration(selectedStub);
       await this.persistAppliedStubState(selectedStub);
@@ -277,7 +258,13 @@ export class CodeCompletionManager {
 
         // 清理我们可能加入的 extraPaths
         const extra = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
-        const newExtra = extra.filter(p => !(p && (p.replace(/\\/g,'/').toLowerCase().includes('.mpy-workbench') || p.toLowerCase().includes('code_completion'))));
+        const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
+        const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+        const newExtra = extra.filter(p => !(p && (
+          p.replace(/\\/g,'/').toLowerCase().includes('.mpy-workbench')
+          || p.toLowerCase().includes('code_completion')
+          || userExtraPaths.includes(p)
+        )));
         if (newExtra.length !== extra.length) {
           await pythonConfig.update('analysis.extraPaths', newExtra, vscode.ConfigurationTarget.Workspace);
         }
@@ -287,16 +274,11 @@ export class CodeCompletionManager {
           await pythonConfig.update('autoComplete.extraPaths', newAc, vscode.ConfigurationTarget.Workspace);
         }
 
-        // Restart language server robustly
-        await this.safeRestartLanguageServer();
-
         // Clear persisted record
         try { await this.context?.workspaceState.update('mpy.lastStubPath', undefined); } catch {}
         try { await this.context?.workspaceState.update('mpy.lastTypeshedPath', undefined); } catch {}
         this.lastStubPath = undefined;
         this.lastTypeshedPath = undefined;
-      } else if (diagnosticChanged) {
-        await this.safeRestartLanguageServer();
       }
 
       this.isEnabled = false;
@@ -485,18 +467,11 @@ export class CodeCompletionManager {
     const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
     const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
     
-    // 清理 analysis.extraPaths：移除扩展旧路径，保留用户其他路径
+    // 清理 analysis.extraPaths：移除扩展旧路径以及此前直接注入的额外 pyi 目录
     const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
-    let newExtraPaths = extraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
-    
-    // 如果启用（stubPath 非空），将用户配置的 codeCompletionExtraPaths 加入
-    if (stubPath && userExtraPaths.length > 0) {
-      for (const p of userExtraPaths) {
-        if (p && !newExtraPaths.includes(p)) {
-          newExtraPaths.push(p);
-        }
-      }
-    }
+    const newExtraPaths = extraPaths.filter(
+      p => !isExtensionPath(p) && !oldPaths.includes(p) && !userExtraPaths.includes(p)
+    );
     
     // 如果有变化则更新
     const extraChanged = extraPaths.length !== newExtraPaths.length || 
@@ -571,9 +546,10 @@ export class CodeCompletionManager {
       ? await this.ensureMissingModuleSourceSuppression(pythonConfig)
       : await this.restoreManagedMissingModuleSourceOverride(pythonConfig);
     
-    // 配置修改后重启 Pylance（仅需一次）
+    // 近期 Pylance 版本在 stop/restart 上不稳定，这里只写配置，不再强制重启。
+    // 若语言服务没有即时刷新，用户仍可手动执行“Python: Restart Language Server”。
     if (needRestart || extraChanged || autoCompleteChanged || diagnosticChanged) {
-      await this.safeRestartLanguageServer();
+      vscode.window.setStatusBarMessage('MPY 补全配置已更新；若提示未立即刷新，请手动执行 Python: Restart Language Server。', 6000);
     }
   }
 
@@ -677,6 +653,26 @@ export class CodeCompletionManager {
 
   private getStubSearchPaths(): string[] {
     return [this.getResolvedInstallPath()].filter(Boolean);
+  }
+
+  private applyExtraStubOverlay(baseStub: StubInspection): StubInspection {
+    const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
+    const configuredExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+
+    const workspaceRoot = this.getWorkspaceRoot();
+    if (!workspaceRoot) return baseStub;
+
+    try {
+      const overlayRoot = buildOverlayStubRoot(baseStub.root, workspaceRoot, configuredExtraPaths);
+      if (overlayRoot === baseStub.root) return baseStub;
+
+      const overlayStub = inspectStubRoot(overlayRoot);
+      return overlayStub || { ...baseStub, root: overlayRoot };
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to build extra stub overlay', e);
+      vscode.window.setStatusBarMessage('额外 pyi 目录合并失败，已回退到基础 MicroPython stubs。', 6000);
+      return baseStub;
+    }
   }
 
   private getBundledStubInspection(): StubInspection | null {
@@ -811,48 +807,10 @@ export class CodeCompletionManager {
       return currentStub;
     }
 
-    const choice = await vscode.window.showQuickPick([
-      { label: 'Use Latest Available', description: '选择已安装的最新可用 pyi' },
-      { label: 'Choose Installed...', description: '从已安装的 pyi 中选择' },
-      { label: 'Install Matching Version...', description: '安装与当前设备版本最接近的推荐 pyi' },
-      { label: 'Install Specific Version...', description: '安装指定版本或完整包规格' },
-      { label: 'Keep Current', description: '继续使用当前选择（可能不完全兼容）' },
-    ], {
-      placeHolder: `设备 MicroPython ${boardInfo?.release || recommendation.cleanedRelease} 高于选中 stub ${currentEntry.name}，请选择处理方式`,
-    });
-
-    if (!choice || choice.label === 'Keep Current') {
-      return currentStub;
-    }
-
-    if (choice.label === 'Use Latest Available') {
-      const withVersion = entries.filter((entry) => Boolean(entry.version));
-      if (withVersion.length === 0) return currentStub;
-
-      withVersion.sort((left, right) => this.compareReleaseVersion(right.version!, left.version!));
-      return inspectStubRoot(withVersion[0].path) || currentStub;
-    }
-
-    if (choice.label === 'Choose Installed...') {
-      return (await this.chooseInstalledEntry(entries, '选择已安装的 stub')) || currentStub;
-    }
-
-    if (choice.label === 'Install Matching Version...' && recommendation.primary) {
-      try {
-        return await this.installStubPackageAndInspect(recommendation.primary, installRoot);
-      } catch (e) {
-        vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
-        return currentStub;
-      }
-    }
-
-    if (choice.label === 'Install Specific Version...') {
-      try {
-        return (await this.promptSpecificInstall(installRoot, recommendation)) || currentStub;
-      } catch (e) {
-        vscode.window.showErrorMessage('安装 stubs 失败: ' + (e instanceof Error ? e.message : String(e)));
-      }
-    }
+    vscode.window.setStatusBarMessage(
+      `设备 MicroPython ${boardInfo?.release || recommendation.cleanedRelease} 高于当前 stub ${currentEntry.name}；将继续使用已安装的最接近版本，如需切换或安装请使用 MPY: Stub。`,
+      7000,
+    );
 
     return currentStub;
   }
