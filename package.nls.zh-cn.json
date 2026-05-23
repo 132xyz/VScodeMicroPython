@@ -19,7 +19,6 @@
   "messages.esp32ConnectSet": "ESP32 连接设置为 {0}",
   "messages.download": "下载",
   "views.microPythonWorkBenchFs.boardActions.name": "开发板操作",
-  "commands.uploadActiveFile.title": "MicroPython 工作台：上传活动文件",
   "messages.fileSavedAndUploaded": "文件已本地保存并上传到开发板：{0}",
   "commands.renameNode.title": "MicroPython 工作台：重命名文件/文件夹",
   "messages.renameError": "重命名错误：{0}",

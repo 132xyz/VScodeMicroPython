@@ -11,7 +11,6 @@
 - 📂 设备远程文件资源管理器（打开、下载文件/文件夹、上传、重命名、删除）
 - 🔄 双向同步：比较本地文件与设备并同步已更改的文件
 - 📝 在文件视图中创建一个新文件并在首次保存时将其上传到开发板
-- 💽 通过 esptool 烧录 MicroPython 固件并自动检测开发板（目录驱动）
 - 💻 集成的 MicroPython REPL 终端
 - ⏯️ 向开发板发送命令（停止、软重置等）
 - 🧭 文件视图显示检测到的开发板名称和状态栏显示上次自动同步时间
@@ -41,10 +40,8 @@
 - `MPY 工作台：同步已更改文件（本地 → 开发板）` — 上传已更改的本地文件
 - `MPY 工作台：同步已更改文件（开发板 → 本地）` — 下载已更改的开发板文件
 - `MPY 工作台：同步所有文件` — 完整上传或下载
-- `MPY 工作台：上传活动文件` — 上传当前编辑器文件
 - `MPY 工作台：选择串口` — 选择设备串口
 - `MPY 工作台：打开 REPL 终端` — 打开 MicroPython REPL
-- `MPY 工作台：烧录 MicroPython 固件` — 使用捆绑目录和 esptool 烧录固件
 - `MPY 工作台：切换工作区保存时自动同步` — 启用/禁用工作区自动同步
 - `MPY 工作台：切换代码补全` — 启用/禁用 MicroPython 代码补全
 
@@ -55,7 +52,7 @@
 - 工作区覆盖文件：`.mpy-workbench/config.json`
 - 同步清单：`.mpy-workbench/esp32sync.json`
 
-使用命令 `MicroPython 工作台：切换工作区保存时自动同步` 来启用或禁用当前工作区的自动同步。如果不存在工作区配置，扩展将回退到全局设置 `microPythonWorkBench.autoSyncOnSave`（默认：`false`）。
+使用命令 `MicroPython 工作台：切换工作区保存时自动同步` 来启用或禁用当前工作区的自动同步。该开关优先把工作区专属值保存在扩展的 workspaceState 中；如果没有保存值，扩展才会回退到 VS Code 设置 `microPythonWorkBench.autoSyncOnSave`，最后再回退到旧的 `.mpy-workbench/config.json`。
 
 ### 本地同步根目录
 
@@ -110,43 +107,10 @@
 - 如果你手动用 pip 把 stub 安装到该目录，刷新索引后它也会出现在已安装 stub 列表中。
 - 某些 MicroPython stub 包是混合结构：既包含 typeshed 风格的标准库目录，也包含像 `machine`、`time` 这样的顶层纯 stub 模块。由于这些模块的真实运行时在板子上而不在本地解释器中，启用 MicroPython 代码补全时，扩展会自动压制这类 `reportMissingModuleSource` 告警。
 
-# MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
-
-[English](README.md)
-
-### 要求
-
-```bash
-python -m pip install --user mpremote
-```
-  2. 确保本机安装依赖：
-
-  ```bash
-  # Python 3.8+（建议 >=3.10）
-  # `mpremote` 是本扩展所需的工具。请在扩展将使用的 Python 环境中安装：
-  python -m pip install --user mpremote
-  # 如果需要烧录固件，请安装 `esptool`：
-  python -m pip install --user esptool
-  ```
-  - `executeBootMain`：发送 Ctrl-D 以便重置后重新启动自动运行 `main.py`/`boot.py` 的开发板。
-  - `openReplEmpty`：重新打开 REPL 而无需发送任何内容。
-  - `none`：不重新打开 REPL。
-
 ## 状态指示器
 
 - 状态栏显示 `MPY: 自动同步 开/关`、取消所有任务按钮，以及 `MPY: 上次同步 <时间>` 在每次自动同步运行后。
 - 文件视图标题在选择固定串口后显示检测到的开发板名称/ID。
-
-- ### 要求
-- **Python 3.8+** - 扩展使用 Python 运行 `mpremote`（建议 >=3.10）
-- **mpremote** - 必需：请在扩展将要使用的 Python 环境中安装，例如：
-
-```bash
-python -m pip install --user mpremote
-```
-- **固件烧录：** `esptool` 需要在扩展将使用的 Python 环境中安装（例如 `python -m pip install --user esptool`）。扩展会检测常见 Python 可执行程序（`python`、`py -3` 等）和 PATH 中的 `esptool`。
-- **代码补全（可选）：** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展以获得增强的 IntelliSense 支持
-- 如需使用特定的 Python 解释器，可在扩展设置中调整 `microPythonWorkBench.pythonPath`。
 
 ## 快速开始
 
@@ -164,8 +128,8 @@ npm run package
 
 ```bash
 # Python 3.8+（建议 >=3.10）
-# `mpremote` 已随扩展内置，无需单独安装。
-python -m pip install --user esptool
+# `mpremote` 是本扩展所需工具，请先安装到扩展将使用的 Python 环境中。
+python -m pip install --user mpremote
 ```
 
 3. 打开包含 MicroPython 项目的工作区，选择串口（`MPY 工作台：选择串口`），在文件视图中进行同步/上传操作。
@@ -188,13 +152,13 @@ python -m pip install --user esptool
 
 ## 使用要求
 
-- **Python 3.8+** - 扩展使用 Python 运行内置的 mpremote 工具
-- **mpremote** - ✅ **已内置，无需外部安装**
-- **固件烧录**：需要在同一 Python 环境中安装 `esptool`。使用 `pip install esptool` 安装。
+- **Python 3.8+** - 扩展使用 Python 运行 mpremote 及相关辅助命令
+- **mpremote** - 必需：请安装到扩展将使用的 Python 环境中，例如 `python -m pip install --user mpremote`
+- **手动固件烧录（可选）**：如果你要在扩展外手动烧录开发板，请在同一 Python 环境中安装 `esptool`
 - **代码补全（可选）**：[Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展提供增强的 IntelliSense 支持
 - 如需使用特定的 Python 解释器，可在扩展设置中调整 Python 路径。
 
-- 固件目录与板子测试目前以 ESP32 系列为主（ESP32-S3、ESP32-C3）。若要支持其他板子，请先补充 `assets/firmwareCatalog.json` 条目并测试。
+- 当前兼容性与现场验证主要集中在 ESP32 系列（ESP32-S3、ESP32-C3）。如需扩展到其他板子，请先做串口、文件同步和 REPL 的联调验证。
 - 仓库已配置 CI，会在多平台和 Node.js 版本上运行构建/测试，但单元测试覆盖尚不足——建议在本地运行 `npm test` 并为核心模块（`sync`、`board`、`completion`）补充测试用例。
 
 ## 固件烧录（已移除）
@@ -212,7 +176,7 @@ python -m esptool --chip esp32 --port COM3 write_flash -z --flash_mode qio --fla
 ## 后续步骤
 
 - ✅ 扩大开发板兼容性（目前仅在 ESP32-S3 和 ESP32-C3 上测试）
-- 🔌 扩展固件目录以超越初始 ESP32-C6 条目
+- 🧪 补强 board、sync 与 REPL 运行时路径的自动化测试
 - 🪟 执行完整的 Windows 测试：验证 mpremote 与 COM 端口的兼容性，并确保文件操作和 REPL 在 Windows 环境中的一致行为
 
 ## 贡献
@@ -225,6 +189,5 @@ MIT — 请参阅此仓库中的 `LICENSE` 文件。
 
 ## 致谢
 
-- 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 `code_completion/` 目录提供了代码补全数据。
- - 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 `code_completion/` 目录提供了代码补全数据。
- - 感谢原始项目 `mpy-workbench`（Daniel Bustillos）提供了最初的设计与实现参考：https://github.com/DanielBustillos/mpy-workbench
+- 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 MicroPython 代码补全支持提供了重要参考。
+- 感谢原始项目 `mpy-workbench`（Daniel Bustillos）提供了最初的设计与实现参考：https://github.com/DanielBustillos/mpy-workbench

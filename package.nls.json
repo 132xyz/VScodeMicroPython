@@ -19,7 +19,6 @@
   "messages.esp32ConnectSet": "ESP32 connect set to {0}",
   "messages.download": "Download",
   "views.microPythonWorkBenchFs.boardActions.name": "Board Actions",
-  "commands.uploadActiveFile.title": "MicroPython WorkBench: Upload Active File",
   "messages.fileSavedAndUploaded": "File saved locally and uploaded to board: {0}",
   "commands.renameNode.title": "MicroPython WorkBench: Rename File/Folder",
   "messages.renameError": "Error al renombrar: {0}",

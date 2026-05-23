@@ -44,7 +44,6 @@ import { boardCommands } from "../commands/boardCommands";
 import { replCommands } from "../commands/replCommands";
 import { debugCommands } from "../commands/debugCommands";
 import { utilityCommands } from "../commands/utilityCommands";
-import { mpremoteCommands } from "../commands/mpremoteCommands";
 import { Localization } from "./localization";
 import { codeCompletionManager } from "../completion/codeCompletion";
 import { boardInfoService } from '../board/boardInfoService';
@@ -559,7 +558,7 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         const config = vscode.workspace.getConfiguration('microPythonWorkBench');
         const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
-        const extraPaths = config.get<string[]>('stubExtraPaths', []) || [];
+        const extraPaths = config.get<string[]>('codeCompletionExtraPaths', []) || [];
         const ws = vscode.workspace.workspaceFolders?.[0];
         const root = ws ? ws.uri.fsPath : undefined;
         const resolvedInstall = root ? path.join(root, installPath) : installPath;
@@ -644,7 +643,6 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand("microPythonWorkBench.uploadActiveFile", utilityCommands.uploadActiveFile),
     vscode.commands.registerCommand("microPythonWorkBench.runActiveFile", runActiveFile),
     vscode.commands.registerCommand("microPythonWorkBench.checkDiffs", () => boardOperations.checkDiffs()),
     vscode.commands.registerCommand("microPythonWorkBench.syncDiffsLocalToBoard", syncCommands.syncDiffsLocalToBoard),

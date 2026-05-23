@@ -14,8 +14,10 @@ import {
   type StubPackageRecommendation,
 } from './stubSupport';
 import { buildOverlayStubRoot } from './stubOverlay';
-
-const ABSENT_DIAGNOSTIC_OVERRIDE = '__absent__';
+import {
+  applyPythonCompletionConfiguration,
+  restoreManagedMissingModuleSourceOverride,
+} from './completionPythonConfig';
 
 /**
  * 代码补全管理器
@@ -28,6 +30,7 @@ export class CodeCompletionManager {
   private stubStatusBarItem: vscode.StatusBarItem;
   private context?: vscode.ExtensionContext;
   private lastStubPath?: string;
+  private lastBaseStubPath?: string;
   private lastTypeshedPath?: string;
 
   private constructor() {
@@ -51,6 +54,7 @@ export class CodeCompletionManager {
   public async initialize(context: vscode.ExtensionContext): Promise<void> {
     this.context = context;
     try { this.lastStubPath = await context.workspaceState.get<string>('mpy.lastStubPath'); } catch {}
+    try { this.lastBaseStubPath = await context.workspaceState.get<string>('mpy.lastBaseStubPath'); } catch {}
     try { this.lastTypeshedPath = await context.workspaceState.get<string>('mpy.lastTypeshedPath'); } catch {}
     // 初始化代码补全管理器
 
@@ -79,10 +83,10 @@ export class CodeCompletionManager {
             e.affectsConfiguration('microPythonWorkBench.codeCompletionExtraPaths')
           )
         ) {
-          const activeStubPath = this.lastStubPath || this.context?.workspaceState.get<string>('mpy.lastStubPath');
-          const activeStub = inspectStubRoot(activeStubPath);
+          const activeBaseStubPath = this.lastBaseStubPath || this.context?.workspaceState.get<string>('mpy.lastBaseStubPath');
+          const activeStub = inspectStubRoot(activeBaseStubPath);
           if (activeStub) {
-            void this.updatePythonConfiguration(activeStub);
+            void this.updatePythonConfiguration(this.applyExtraStubOverlay(activeStub));
           }
         }
       })
@@ -177,10 +181,11 @@ export class CodeCompletionManager {
       );
       if (!selectedStub) return;
 
-      selectedStub = this.applyExtraStubOverlay(selectedStub);
+      const baseStub = selectedStub;
+      selectedStub = this.applyExtraStubOverlay(baseStub);
 
       await this.updatePythonConfiguration(selectedStub);
-      await this.persistAppliedStubState(selectedStub);
+      await this.persistAppliedStubState(baseStub, selectedStub);
 
       this.isEnabled = true;
     } catch (error) {
@@ -198,7 +203,7 @@ export class CodeCompletionManager {
       const pythonConfig = vscode.workspace.getConfiguration('python');
       const currentStubPath = pythonConfig.get<string>('analysis.stubPath', '');
       const currentTypeshedPaths = pythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
-      const diagnosticChanged = await this.restoreManagedMissingModuleSourceOverride(pythonConfig);
+      await restoreManagedMissingModuleSourceOverride(this.context?.workspaceState, pythonConfig);
 
       const last = this.lastStubPath || (this.context ? this.context.workspaceState.get<string>('mpy.lastStubPath') : undefined);
       const lastTypeshed = this.lastTypeshedPath || (this.context ? this.context.workspaceState.get<string>('mpy.lastTypeshedPath') : undefined);
@@ -276,8 +281,10 @@ export class CodeCompletionManager {
 
         // Clear persisted record
         try { await this.context?.workspaceState.update('mpy.lastStubPath', undefined); } catch {}
+        try { await this.context?.workspaceState.update('mpy.lastBaseStubPath', undefined); } catch {}
         try { await this.context?.workspaceState.update('mpy.lastTypeshedPath', undefined); } catch {}
         this.lastStubPath = undefined;
+        this.lastBaseStubPath = undefined;
         this.lastTypeshedPath = undefined;
       }
 
@@ -384,260 +391,34 @@ export class CodeCompletionManager {
    * 同时负责清理可能残留的全局配置
    */
   private async updatePythonConfiguration(stubInfo: StubInspection | null): Promise<void> {
-    const pythonConfig = vscode.workspace.getConfiguration('python');
     const extension = vscode.extensions.getExtension('WebForks.mpy');
-    const stubPath = stubInfo?.root ?? '';
     const workspaceRoot = this.getWorkspaceRoot();
-    const installPathCfg = vscode.workspace.getConfiguration('microPythonWorkBench').get<string>('stubInstallPath', '.mpy-workbench/pyi');
-    const workspaceInstallRoot = workspaceRoot ? path.join(workspaceRoot, installPathCfg) : installPathCfg;
-    
-    // 获取可能的旧路径以便清理
-    // 我们不仅要清理当前版本，还要尝试清理可能存在的旧版本路径
-    // 简单的判断逻辑：路径中包含 'webforks.mpy' 或 'VScodeMicroPython' 且包含 'code_completion'
-    const isExtensionPath = (p: string) => {
-        if (!p) return false;
-        const normalized = p.toLowerCase().replace(/\\/g, '/');
-        return (normalized.includes('webforks.mpy') || normalized.includes('vscodemicropython')) && 
-               normalized.includes('code_completion');
-    };
-
-    const normalizePath = (p?: string) => (p || '').replace(/\\/g, '/').toLowerCase();
-    const isWorkspaceInstallPath = (p?: string) => {
-      if (!p) return false;
-      const normalized = normalizePath(p);
-      return normalized.includes('.mpy-workbench') || normalized.startsWith(normalizePath(workspaceInstallRoot));
-    };
-
-    const isOwnedPath = (p?: string) => {
-      if (!p) return false;
-      const normalized = normalizePath(p);
-      return isExtensionPath(p)
-        || isWorkspaceInstallPath(p)
-        || normalized === normalizePath(this.lastStubPath)
-        || normalized === normalizePath(this.lastTypeshedPath);
-    };
-
-    let oldPaths: string[] = [];
-    if (extension) {
-        oldPaths = [
-            path.join(extension.extensionPath, 'code_completion', 'default'),
-            path.join(extension.extensionPath, 'code_completion', 'zh-cn')
-        ];
-    }
-
-    // --- 1. 清理 Global (User)配置 ---
-    // 这是一个防御性措施，防止以前的版本或者单文件模式下意外污染了全局配置
-    // 导致当项目内配置被禁用（或对项目外文件无效）时，回退到全局的错误配置
-    const globalPythonConfig = vscode.workspace.getConfiguration('python', null);
-    
-    // 清理全局 analysis.extraPaths
-    const globalExtraPaths = globalPythonConfig.get<string[]>('analysis.extraPaths', []) || [];
-    const newGlobalExtraPaths = globalExtraPaths.filter(p => !isExtensionPath(p));
-    if (newGlobalExtraPaths.length !== globalExtraPaths.length) {
-      await globalPythonConfig.update('analysis.extraPaths', newGlobalExtraPaths, vscode.ConfigurationTarget.Global);
-    }
-
-    // 清理全局 autoComplete.extraPaths
-    const globalAutoCompletePaths = globalPythonConfig.get<string[]>('autoComplete.extraPaths', []) || [];
-    const newGlobalAutoCompletePaths = globalAutoCompletePaths.filter(p => !isExtensionPath(p));
-    if (newGlobalAutoCompletePaths.length !== globalAutoCompletePaths.length) {
-      await globalPythonConfig.update('autoComplete.extraPaths', newGlobalAutoCompletePaths, vscode.ConfigurationTarget.Global);
-    }
-
-    // 清理全局 analysis.stubPath
-    const globalStubPath = globalPythonConfig.get<string>('analysis.stubPath', '');
-    if (isExtensionPath(globalStubPath)) {
-      await globalPythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Global);
-    }
-
-    const globalTypeshedPaths = globalPythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
-    const newGlobalTypeshedPaths = globalTypeshedPaths.filter(p => !isOwnedPath(p));
-    if (newGlobalTypeshedPaths.length !== globalTypeshedPaths.length) {
-      await globalPythonConfig.update(
-        'analysis.typeshedPaths',
-        newGlobalTypeshedPaths.length > 0 ? newGlobalTypeshedPaths : undefined,
-        vscode.ConfigurationTarget.Global
-      );
-    }
-
-
-    // --- 2. 更新 Workspace 配置 ---
-    
-    // 获取用户配置的 codeCompletionExtraPaths
     const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
+    const stubInstallPath = mpyConfig.get<string>('stubInstallPath', '.mpy-workbench/pyi');
     const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
-    
-    // 清理 analysis.extraPaths：移除扩展旧路径以及此前直接注入的额外 pyi 目录
-    const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
-    const newExtraPaths = extraPaths.filter(
-      p => !isExtensionPath(p) && !oldPaths.includes(p) && !userExtraPaths.includes(p)
-    );
-    
-    // 如果有变化则更新
-    const extraChanged = extraPaths.length !== newExtraPaths.length || 
-      extraPaths.some((p, i) => p !== newExtraPaths[i]);
-    if (extraChanged) {
-      await pythonConfig.update('analysis.extraPaths', newExtraPaths, vscode.ConfigurationTarget.Workspace);
-    }
+    const result = await applyPythonCompletionConfiguration({
+      stubInfo,
+      workspaceState: this.context?.workspaceState,
+      extensionPath: extension?.extensionPath,
+      workspaceRoot,
+      stubInstallPath,
+      lastStubPath: this.lastStubPath,
+      lastTypeshedPath: this.lastTypeshedPath,
+      userExtraPaths,
+    });
 
-    // 清理 autoComplete.extraPaths
-    const autoCompleteExtraPaths = pythonConfig.get<string[]>('autoComplete.extraPaths', []);
-    const newAutoCompleteExtraPaths = autoCompleteExtraPaths.filter(p => !isExtensionPath(p) && !oldPaths.includes(p));
-    const autoCompleteChanged = newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length ||
-      autoCompleteExtraPaths.some((p, i) => p !== newAutoCompleteExtraPaths[i]);
-    if (newAutoCompleteExtraPaths.length !== autoCompleteExtraPaths.length) {
-      await pythonConfig.update('autoComplete.extraPaths', newAutoCompleteExtraPaths, vscode.ConfigurationTarget.Workspace);
-    }
-
-    // 更新 analysis.stubPath
-    const currentStubPath = pythonConfig.get<string>('analysis.stubPath', '');
-    
-    let needRestart = false;
-    if (stubPath) {
-      // 启用：设置 stubPath
-      if (currentStubPath !== stubPath) {
-        await pythonConfig.update('analysis.stubPath', stubPath, vscode.ConfigurationTarget.Workspace);
-        needRestart = true;
-      }
-    } else {
-       // 禁用：如果当前 stubPath 是我们的，则清除
-       if (isExtensionPath(currentStubPath) || oldPaths.includes(currentStubPath)) {
-         await pythonConfig.update('analysis.stubPath', undefined, vscode.ConfigurationTarget.Workspace);
-         needRestart = true;
-       }
-    }
-
-    const currentTypeshedPaths = pythonConfig.get<string[]>('analysis.typeshedPaths', []) || [];
-    const userManagedTypeshedPaths = currentTypeshedPaths.filter(p => !isOwnedPath(p));
-    let appliedTypeshedPath: string | undefined;
-    if (stubInfo?.hasTypeshedRoot && stubPath) {
-      const alreadyApplied = currentTypeshedPaths.length === 1 && normalizePath(currentTypeshedPaths[0]) === normalizePath(stubPath);
-      if (alreadyApplied || userManagedTypeshedPaths.length === 0) {
-        if (!alreadyApplied) {
-          await pythonConfig.update('analysis.typeshedPaths', [stubPath], vscode.ConfigurationTarget.Workspace);
-          needRestart = true;
-        }
-        appliedTypeshedPath = stubPath;
-      } else {
-        vscode.window.showWarningMessage('检测到工作区已有自定义 python.analysis.typeshedPaths。已保留原配置；如需 MicroPython 标准库提示，请手动将当前 stub 根设为首个 typeshed path。');
-      }
-    } else {
-      const filteredTypeshedPaths = currentTypeshedPaths.filter(p => !isOwnedPath(p));
-      const typeshedChanged = filteredTypeshedPaths.length !== currentTypeshedPaths.length ||
-        currentTypeshedPaths.some((p, i) => p !== filteredTypeshedPaths[i]);
-      if (typeshedChanged) {
-        await pythonConfig.update(
-          'analysis.typeshedPaths',
-          filteredTypeshedPaths.length > 0 ? filteredTypeshedPaths : undefined,
-          vscode.ConfigurationTarget.Workspace
-        );
-        needRestart = true;
-      }
-    }
-
-    this.lastTypeshedPath = appliedTypeshedPath;
+    this.lastTypeshedPath = result.appliedTypeshedPath;
     try {
-      await this.context?.workspaceState.update('mpy.lastTypeshedPath', appliedTypeshedPath);
+      await this.context?.workspaceState.update('mpy.lastTypeshedPath', result.appliedTypeshedPath);
     } catch (e) {
       console.warn('[CodeCompletion] failed to persist lastTypeshedPath', e);
     }
-
-    const diagnosticChanged = stubPath
-      ? await this.ensureMissingModuleSourceSuppression(pythonConfig)
-      : await this.restoreManagedMissingModuleSourceOverride(pythonConfig);
     
     // 近期 Pylance 版本在 stop/restart 上不稳定，这里只写配置，不再强制重启。
     // 若语言服务没有即时刷新，用户仍可手动执行“Python: Restart Language Server”。
-    if (needRestart || extraChanged || autoCompleteChanged || diagnosticChanged) {
+    if (result.settingsChanged) {
       vscode.window.setStatusBarMessage('MPY 补全配置已更新；若提示未立即刷新，请手动执行 Python: Restart Language Server。', 6000);
     }
-  }
-
-  private getDiagnosticSeverityOverrides(pythonConfig: vscode.WorkspaceConfiguration): Record<string, string> {
-    const raw = pythonConfig.get<Record<string, unknown>>('analysis.diagnosticSeverityOverrides', {}) || {};
-    const overrides: Record<string, string> = {};
-    for (const [key, value] of Object.entries(raw)) {
-      if (typeof value === 'string') {
-        overrides[key] = value;
-      }
-    }
-    return overrides;
-  }
-
-  private async clearManagedMissingModuleSourceState(): Promise<void> {
-    try {
-      await this.context?.workspaceState.update('mpy.managedMissingModuleSourceDiagnostic', undefined);
-      await this.context?.workspaceState.update('mpy.previousMissingModuleSourceDiagnostic', undefined);
-    } catch (e) {
-      console.warn('[CodeCompletion] failed to clear managed diagnostic state', e);
-    }
-  }
-
-  private async ensureMissingModuleSourceSuppression(pythonConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
-    const overrides = this.getDiagnosticSeverityOverrides(pythonConfig);
-    const managed = this.context?.workspaceState.get<boolean>('mpy.managedMissingModuleSourceDiagnostic', false) ?? false;
-    const currentValue = overrides.reportMissingModuleSource;
-
-    if (managed) {
-      if (currentValue === 'none') {
-        return false;
-      }
-      overrides.reportMissingModuleSource = 'none';
-      await pythonConfig.update('analysis.diagnosticSeverityOverrides', overrides, vscode.ConfigurationTarget.Workspace);
-      return true;
-    }
-
-    if (currentValue === 'none') {
-      return false;
-    }
-
-    const previousValue = Object.prototype.hasOwnProperty.call(overrides, 'reportMissingModuleSource')
-      ? currentValue
-      : ABSENT_DIAGNOSTIC_OVERRIDE;
-
-    try {
-      await this.context?.workspaceState.update('mpy.previousMissingModuleSourceDiagnostic', previousValue);
-      await this.context?.workspaceState.update('mpy.managedMissingModuleSourceDiagnostic', true);
-    } catch (e) {
-      console.warn('[CodeCompletion] failed to persist managed diagnostic state', e);
-    }
-
-    overrides.reportMissingModuleSource = 'none';
-    await pythonConfig.update('analysis.diagnosticSeverityOverrides', overrides, vscode.ConfigurationTarget.Workspace);
-    return true;
-  }
-
-  private async restoreManagedMissingModuleSourceOverride(pythonConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
-    const managed = this.context?.workspaceState.get<boolean>('mpy.managedMissingModuleSourceDiagnostic', false) ?? false;
-    if (!managed) {
-      return false;
-    }
-
-    const previousValue = this.context?.workspaceState.get<string>('mpy.previousMissingModuleSourceDiagnostic');
-    const overrides = this.getDiagnosticSeverityOverrides(pythonConfig);
-    const currentValue = overrides.reportMissingModuleSource;
-    let changed = false;
-
-    if (previousValue === ABSENT_DIAGNOSTIC_OVERRIDE || previousValue === undefined) {
-      if (Object.prototype.hasOwnProperty.call(overrides, 'reportMissingModuleSource')) {
-        delete overrides.reportMissingModuleSource;
-        changed = true;
-      }
-    } else if (currentValue !== previousValue) {
-      overrides.reportMissingModuleSource = previousValue;
-      changed = true;
-    }
-
-    if (changed) {
-      await pythonConfig.update(
-        'analysis.diagnosticSeverityOverrides',
-        Object.keys(overrides).length > 0 ? overrides : undefined,
-        vscode.ConfigurationTarget.Workspace
-      );
-    }
-
-    await this.clearManagedMissingModuleSourceState();
-    return changed;
   }
 
   private getWorkspaceRoot(): string | undefined {
@@ -781,11 +562,13 @@ export class CodeCompletionManager {
     return this.installStubPackageAndInspect(pkgSpec, installRoot);
   }
 
-  private async persistAppliedStubState(stubInfo: StubInspection): Promise<void> {
+  private async persistAppliedStubState(baseStubInfo: StubInspection, appliedStubInfo: StubInspection): Promise<void> {
     try {
       if (!this.context) return;
-      this.lastStubPath = stubInfo.root;
-      await this.context.workspaceState.update('mpy.lastStubPath', stubInfo.root);
+      this.lastBaseStubPath = baseStubInfo.root;
+      this.lastStubPath = appliedStubInfo.root;
+      await this.context.workspaceState.update('mpy.lastBaseStubPath', baseStubInfo.root);
+      await this.context.workspaceState.update('mpy.lastStubPath', appliedStubInfo.root);
     } catch (e) {
       console.warn('[CodeCompletion] failed to persist lastStubPath', e);
     }
@@ -921,7 +704,8 @@ export class CodeCompletionManager {
     try {
       const pythonConfig = vscode.workspace.getConfiguration('python');
       const currentStubPath = (pythonConfig.get<string>('analysis.stubPath') || this.lastStubPath || '').trim();
-      if (!currentStubPath) return 'no stub';
+      const displayStubPath = (this.lastBaseStubPath || currentStubPath).trim();
+      if (!displayStubPath) return 'no stub';
 
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
@@ -931,11 +715,11 @@ export class CodeCompletionManager {
       const searchPaths = [resolvedInstall].filter(Boolean) as string[];
 
       const entries = indexStubPaths(searchPaths);
-      const found = entries.find(e => currentStubPath === e.path || currentStubPath.startsWith(e.path));
+      const found = entries.find(e => displayStubPath === e.path || displayStubPath.startsWith(e.path));
       if (found) return found.name + (found.version ? ` v${found.version.major}.${found.version.minor}.${found.version.patch}` : '');
 
       // fallback to base name of path
-      try { return path.basename(currentStubPath); } catch { return 'unknown'; }
+      try { return path.basename(displayStubPath); } catch { return 'unknown'; }
     } catch (e) {
       return 'unknown';
     }
@@ -945,7 +729,8 @@ export class CodeCompletionManager {
     try {
       const pythonConfig = vscode.workspace.getConfiguration('python');
       const currentStubPath = (pythonConfig.get<string>('analysis.stubPath') || this.lastStubPath || '').trim();
-      if (!currentStubPath) return 'MPY:—';
+      const displayStubPath = (this.lastBaseStubPath || currentStubPath).trim();
+      if (!displayStubPath) return 'MPY:—';
 
       const config = vscode.workspace.getConfiguration('microPythonWorkBench');
       const installPath = config.get<string>('stubInstallPath', '.mpy-workbench/pyi');
@@ -955,7 +740,7 @@ export class CodeCompletionManager {
       const searchPaths = [resolvedInstall].filter(Boolean) as string[];
 
       const entries = indexStubPaths(searchPaths);
-      const found = entries.find(e => currentStubPath === e.path || currentStubPath.startsWith(e.path));
+      const found = entries.find(e => displayStubPath === e.path || displayStubPath.startsWith(e.path));
       if (found) {
         const name = found.name || path.basename(found.path || '');
         const ver = found.version ? `${found.version.major}.${found.version.minor}` : '';
@@ -965,7 +750,7 @@ export class CodeCompletionManager {
 
       // fallback to base name of path, truncated
       try {
-        const b = path.basename(currentStubPath);
+        const b = path.basename(displayStubPath);
         return b.length > 18 ? b.slice(0, 15) + '…' : b;
       } catch { return 'MPY:—'; }
     } catch (e) {
@@ -1031,8 +816,11 @@ export class CodeCompletionManager {
 
       if (!selectedStub) return;
 
+      const baseStub = selectedStub;
+      selectedStub = this.applyExtraStubOverlay(baseStub);
+
       await this.updatePythonConfiguration(selectedStub);
-      await this.persistAppliedStubState(selectedStub);
+      await this.persistAppliedStubState(baseStub, selectedStub);
 
       this.updateStatusBar();
     } catch (e) {

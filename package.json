@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.59",
+  "version": "0.3.60",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -102,10 +102,6 @@
       {
         "command": "microPythonWorkBench.openFile",
         "title": "%commands.openFile.title%"
-      },
-      {
-        "command": "microPythonWorkBench.uploadActiveFile",
-        "title": "%commands.uploadActiveFile.title%"
       },
       {
         "command": "microPythonWorkBench.newFileBoardAndLocal",

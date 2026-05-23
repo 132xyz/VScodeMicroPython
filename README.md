@@ -11,7 +11,6 @@ The extension leverages **mpremote** for all board interactions, including file 
 - 📂 Remote file explorer for the device (open, download files/folders, upload, rename, delete)
 - 🔄 Two-way sync: compare local files with the device and sync changed files
 - 📝 Create a new file in the Files view and upload it to the board on first save
-- 💽 Flash MicroPython firmware via esptool with board auto-detection (catalog driven)
 - 💻 Integrated MicroPython REPL terminal
 - ⏯️ Send commands to the board (stop, soft reset, etc.)
 - 🧭 Files view shows the detected board name and status bar displays last auto-sync time
@@ -33,19 +32,10 @@ npm run package
 
 ```bash
 # Python 3.8+ (recommended >=3.10)
-# `mpremote` is bundled with the extension — no external installation required.
-# If you plan to flash firmware, install `esptool` into the Python environment you
-# want the extension to use:
-python -m pip install --user esptool
+# `mpremote` is required by this extension. Install it into the Python environment
+# you want the extension to use:
+python -m pip install --user mpremote
 ```
-
- ```bash
- # Python 3.8+ (recommended >=3.10)
- # `mpremote` is required by this extension. Install it into the Python environment
- # you want the extension to use, for example:
- #
- # python -m pip install --user mpremote
- # ```
 
 ## Configuration
 
@@ -59,7 +49,7 @@ For full list of configuration options see `package.json` -> `contributes.config
 
 ## Current limitations and notes
 
-- Firmware catalog and board testing currently focused on ESP32 variants (ESP32-S3, ESP32-C3). Expand catalog entries before relying on automatic detection for other boards.
+- Compatibility validation currently focuses on ESP32 variants (ESP32-S3, ESP32-C3). Before relying on other boards, verify serial, sync, and REPL behavior end to end.
 - The project includes a CI workflow that runs build/tests across multiple OS and Node.js versions; however unit test coverage is limited—please run `npm test` locally and extend tests for core modules (`sync`, `board`, `completion`).
 
 **⚡ Connect to board and run a file**
@@ -86,10 +76,8 @@ These commands perform full or incremental synchronization between your local wo
 - `MPY Workbench: Sync changed Files (Local → Board)` — upload changed local files
 - `MPY Workbench: Sync changed Files (Board → Local)` — download changed board files
 - `MPY Workbench: Sync all files` — full upload or download
-- `MPY Workbench: Upload Active File` — upload the current editor file
 - `MPY Workbench: Select Serial Port` — pick device port
 - `MPY Workbench: Open REPL Terminal` — open MicroPython REPL
-- `MPY Workbench: Flash MicroPython Firmware` — flash firmware using the bundled catalog and esptool
 - `MPY Workbench: Toggle workspace Auto-Sync on Save` — enable/disable workspace auto-sync
 - `MPY Workbench: Toggle Code Completion` — enable/disable MicroPython code completion
 
@@ -100,7 +88,7 @@ The extension stores per-workspace settings and manifests inside a workspace fol
 - Workspace override file: `.mpy-workbench/config.json`
 - Sync manifest: `.mpy-workbench/esp32sync.json`
 
-Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. If no workspace config exists the extension falls back to the global setting `microPythonWorkBench.autoSyncOnSave` (default: `false`).
+Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. The toggle stores its workspace-specific value in the extension workspace state. If no stored value exists, the extension falls back to the VS Code setting `microPythonWorkBench.autoSyncOnSave`, and finally to the legacy `.mpy-workbench/config.json` value when present.
 
 ### Local sync root directory
 
@@ -176,9 +164,9 @@ Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually
 
 ## Requirements
 
-- **Python 3.8+** - The extension uses Python to run the bundled mpremote tool
-- **mpremote** - ✅ **Bundled with extension** (no external installation needed)
-- **Firmware flashing:** `esptool` available in the same Python environment. Install with `pip install esptool`. The extension checks `python`, `py -3` (Windows), and `esptool.py`/`esptool` on PATH.
+- **Python 3.8+** - The extension uses Python to run mpremote and related helpers
+- **mpremote** - Required in the Python environment the extension uses, for example `python -m pip install --user mpremote`
+- **Manual firmware flashing (optional):** If you want to flash boards outside the extension, install `esptool` in the same Python environment
 - **Code Completion (optional):** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) extension for enhanced IntelliSense support
 - The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
 
@@ -197,7 +185,7 @@ Replace `COM3` / options as appropriate for your board.
 ## Next steps
 
 - ✅ Broaden board compatibility (currently tested only with ESP32-S3 and ESP32-C3)
-- 🔌 Expand the firmware catalog beyond the initial ESP32-C6 entry
+- 🧪 Extend automated coverage for board, sync, and REPL runtime paths
 - 🪟 Perform full Windows testing: validate mpremote compatibility with COM ports and ensure consistent behavior of file operations and REPL across Windows environments
 
 ## Contributing
@@ -210,6 +198,5 @@ MIT — see the `LICENSE` file in this repository.
 
 ## Acknowledgements
 
-- Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project provided the code completion data included in the `code_completion/` directory of this repository.
- - Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project provided the code completion data included in the `code_completion/` directory of this repository.
- - Thanks to the original `mpy-workbench` project by Daniel Bustillos for the initial design and implementation reference: https://github.com/DanielBustillos/mpy-workbench
+- Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project helped shape the MicroPython completion support used by this repository.
+- Thanks to the original `mpy-workbench` project by Daniel Bustillos for the initial design and implementation reference: https://github.com/DanielBustillos/mpy-workbench
