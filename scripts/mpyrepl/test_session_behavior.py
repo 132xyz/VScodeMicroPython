@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import os
 import sys
 import unittest
@@ -19,6 +20,7 @@ import bootstrap
 bootstrap.configure_import_path()
 
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.completion import Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.history import InMemoryHistory
@@ -26,7 +28,16 @@ from prompt_toolkit.output import DummyOutput
 
 from completion_engine import ReplCompleter
 from completion_state import ReplSessionSymbols
-from session import PROMPT_EXIT, build_prompt_session
+from indent import INDENT
+from session import (
+    PROMPT_EXIT,
+    PROMPT_SOFT_RESET,
+    _continuation_after_newline,
+    _dedent_backspace_count,
+    _should_accept_on_enter,
+    _should_insert_indent,
+    build_prompt_session,
+)
 
 
 class SessionBehaviorTests(unittest.TestCase):
@@ -134,6 +145,87 @@ class SessionBehaviorTests(unittest.TestCase):
         self.assertEqual(first, "def f():\n    return 1")
         self.assertEqual(second, PROMPT_EXIT)
         self.assertEqual(session.default_buffer.text, "def f():\n    return 1")
+
+    def test_session_helpers_cover_indent_and_accept_logic(self) -> None:
+        self.assertTrue(_should_insert_indent(Document("    ", cursor_position=4)))
+        self.assertFalse(_should_insert_indent(Document("value", cursor_position=5)))
+        self.assertEqual(_dedent_backspace_count(Document("    ", cursor_position=4)), 4)
+        self.assertEqual(_dedent_backspace_count(Document("      ", cursor_position=6)), 2)
+        self.assertEqual(_dedent_backspace_count(Document("value", cursor_position=5)), 0)
+        self.assertEqual(
+            _continuation_after_newline(Document("if True:", cursor_position=len("if True:"))),
+            INDENT,
+        )
+        self.assertTrue(_should_accept_on_enter(Document("", cursor_position=0)))
+        self.assertTrue(_should_accept_on_enter(Document("value = 1", cursor_position=9)))
+        self.assertFalse(_should_accept_on_enter(Document("value = 1", cursor_position=3)))
+        self.assertTrue(
+            _should_accept_on_enter(
+                Document("if True:\n    pass\n", cursor_position=len("if True:\n    pass\n"))
+            )
+        )
+
+    def test_control_bindings_return_soft_reset_and_exit(self) -> None:
+        with create_pipe_input() as pipe:
+            session = build_prompt_session(input=pipe, output=DummyOutput())
+            pipe.send_bytes(b"\x04")
+            self.assertEqual(session.prompt(">>> "), PROMPT_SOFT_RESET)
+
+            pipe.send_bytes(b"\x1d")
+            self.assertEqual(session.prompt(">>> "), PROMPT_EXIT)
+
+            pipe.send_bytes(b"\x18")
+            self.assertEqual(session.prompt(">>> "), PROMPT_EXIT)
+
+    def test_tab_indent_and_backspace_dedent_modify_buffer(self) -> None:
+        with create_pipe_input() as pipe:
+            session = build_prompt_session(input=pipe, output=DummyOutput())
+            pipe.send_bytes(b"\t\x18")
+            result = session.prompt(">>> ")
+
+        self.assertEqual(result, PROMPT_EXIT)
+        self.assertEqual(session.default_buffer.text, INDENT)
+
+        with create_pipe_input() as pipe:
+            session = build_prompt_session(input=pipe, output=DummyOutput())
+            pipe.send_text("    ")
+            pipe.send_bytes(b"\x7f\x18")
+            result = session.prompt(">>> ")
+
+        self.assertEqual(result, PROMPT_EXIT)
+        self.assertEqual(session.default_buffer.text, "")
+
+    def test_tab_completion_and_plain_backspace_paths(self) -> None:
+        class _SimpleCompleter:
+            def has_completion_target(self, document) -> bool:
+                return True
+
+            def get_completions(self, document, event):
+                return [Completion("print", start_position=-2)]
+
+            async def get_completions_async(self, document, event):
+                for completion in self.get_completions(document, event):
+                    yield completion
+
+        completer = _SimpleCompleter()
+
+        with create_pipe_input() as pipe:
+            session = build_prompt_session(completer=completer, input=pipe, output=DummyOutput())
+            pipe.send_text("pr")
+            pipe.send_bytes(b"\t\x18")
+            result = session.prompt(">>> ")
+
+        self.assertEqual(result, PROMPT_EXIT)
+        self.assertEqual(session.default_buffer.text, "print")
+
+        with create_pipe_input() as pipe:
+            session = build_prompt_session(input=pipe, output=DummyOutput())
+            pipe.send_text("ab")
+            pipe.send_bytes(b"\x7f\x18")
+            result = session.prompt(">>> ")
+
+        self.assertEqual(result, PROMPT_EXIT)
+        self.assertEqual(session.default_buffer.text, "a")
 
 
 if __name__ == "__main__":

@@ -78,9 +78,24 @@ npm test
 
 当前 CI 与本地 Jest 只执行符合 `*.test.ts` / `*.spec.ts` 约定的 TypeScript 测试文件。旧的手工 `.js` 脚本和编译产物已移除，避免与当前测试体系和代码补全实现产生混淆。
 
-### 运行测试并生成覆盖率报告
+### 运行 JS 测试并生成覆盖率报告
 ```bash
-npx jest --coverage
+npm run test:js:coverage
+```
+
+### 运行 Python REPL 测试并显示本地源码覆盖率
+
+Python REPL 测试依赖 `pyserial`：
+
+```bash
+python -m pip install -r scripts/mpyrepl/requirements-test.txt
+npm run test:py
+```
+
+### 一次性显示 JS 和 Python 覆盖率
+
+```bash
+npm run test:coverage
 ```
 
 ### 监听模式运行测试

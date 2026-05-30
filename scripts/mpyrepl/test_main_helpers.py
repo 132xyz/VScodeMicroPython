@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import io
 import unittest
 from pathlib import Path
@@ -44,9 +45,13 @@ class FakeGate:
 class FakeSymbols:
     def __init__(self) -> None:
         self.clear_calls = 0
+        self.recorded = []
 
     def clear(self) -> None:
         self.clear_calls += 1
+
+    def record_successful_source(self, source: str) -> None:
+        self.recorded.append(source)
 
 
 class FakeCompleter:
@@ -55,6 +60,32 @@ class FakeCompleter:
 
     def clear_runtime_cache(self) -> None:
         self.clear_runtime_cache_calls += 1
+
+
+class FakePromptSession:
+    def __init__(self, responses) -> None:
+        self._responses = list(responses)
+        self.default_buffer = mock.Mock()
+        self.app = SimpleNamespace(is_running=False, loop=None)
+
+    async def prompt_async(self, *args, **kwargs):
+        if "pre_run" in kwargs and kwargs["pre_run"] is not None:
+            kwargs["pre_run"]()
+        value = self._responses.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+
+class FakeRuntimeCompleter(FakeCompleter):
+    instances = []
+
+    def __init__(self, session_symbols, stub_root: str = "", dotted_provider=None) -> None:
+        super().__init__()
+        self.session_symbols = session_symbols
+        self.stub_root = stub_root
+        self.dotted_provider = dotted_provider
+        FakeRuntimeCompleter.instances.append(self)
 
 
 class FakeContextTransport:
@@ -90,6 +121,7 @@ class FakeContextTransport:
 class MainHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeContextTransport.instances.clear()
+        FakeRuntimeCompleter.instances.clear()
 
     def test_serial_operation_gate_tracks_current_operation(self) -> None:
         gate = mpyrepl_main.SerialOperationGate()
@@ -278,6 +310,8 @@ class MainHelperTests(unittest.TestCase):
                 with mock.patch.object(mpyrepl_main, "run_exec", return_value=7) as run_exec:
                     self.assertEqual(mpyrepl_main.main(), 7)
 
+        self.assertTrue(hasattr(load_main_module(), "run_async_repl"))
+
         config = run_exec.call_args.args[0]
         self.assertEqual(config.port, "COM4")
         self.assertEqual(config.baudrate, 115200)
@@ -406,6 +440,104 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.interrupt.call_count, 5)
         self.assertEqual(request_prompt_exit.call_count, 4)
         self.assertEqual(state.pending_action, "exit")
+
+    async def test_run_async_repl_executes_code_and_records_symbols(self) -> None:
+        config = ReplConfig(port="COM4")
+        prompt_session = FakePromptSession(["print(1)", mpyrepl_main.PROMPT_EXIT])
+        symbols = FakeSymbols()
+        restore_sigint = mock.Mock()
+
+        async def fake_to_thread(func, *args):
+            return func(*args)
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "ReplSessionSymbols", return_value=symbols):
+                with mock.patch.object(mpyrepl_main, "ReplCompleter", FakeRuntimeCompleter):
+                    with mock.patch.object(mpyrepl_main, "build_prompt_session", return_value=prompt_session):
+                        with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+                            with mock.patch.object(
+                                mpyrepl_main,
+                                "execute_once",
+                                return_value=ExecResult(stdout=b"", stderr=b""),
+                            ) as execute_once:
+                                with mock.patch.object(
+                                    mpyrepl_main,
+                                    "install_sigint_forwarder",
+                                    return_value=restore_sigint,
+                                ):
+                                    with mock.patch.object(
+                                        mpyrepl_main,
+                                        "patch_stdout",
+                                        return_value=contextlib.nullcontext(),
+                                    ):
+                                        with mock.patch.object(
+                                            mpyrepl_main.asyncio,
+                                            "to_thread",
+                                            side_effect=fake_to_thread,
+                                        ):
+                                            result = await mpyrepl_main.run_async_repl(
+                                                config,
+                                                1.0,
+                                                "",
+                                                "stubs",
+                                                2.0,
+                                            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(symbols.recorded, ["print(1)"])
+        self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 1)
+        execute_once.assert_called_once()
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.enter_raw_repl_calls, [False])
+        self.assertEqual(transport.exit_raw_repl_calls, 1)
+        prompt_session.default_buffer.load_history_if_not_yet_loaded.assert_called()
+        restore_sigint.assert_called_once_with()
+
+    async def test_run_async_repl_handles_interrupt_control_exit_and_soft_reset(self) -> None:
+        config = ReplConfig(port="COM4")
+        prompt_session = FakePromptSession(
+            [KeyboardInterrupt(), mpyrepl_main.PROMPT_CONTROL_EXIT, mpyrepl_main.PROMPT_SOFT_RESET, ":q"]
+        )
+        symbols = FakeSymbols()
+
+        async def fake_to_thread(func, *args):
+            return func(*args)
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "ReplSessionSymbols", return_value=symbols):
+                with mock.patch.object(mpyrepl_main, "ReplCompleter", FakeRuntimeCompleter):
+                    with mock.patch.object(mpyrepl_main, "build_prompt_session", return_value=prompt_session):
+                        with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+                            with mock.patch.object(mpyrepl_main, "execute_once") as execute_once:
+                                with mock.patch.object(
+                                    mpyrepl_main,
+                                    "install_sigint_forwarder",
+                                    return_value=mock.Mock(),
+                                ):
+                                    with mock.patch.object(
+                                        mpyrepl_main,
+                                        "patch_stdout",
+                                        return_value=contextlib.nullcontext(),
+                                    ):
+                                        with mock.patch.object(
+                                            mpyrepl_main.asyncio,
+                                            "to_thread",
+                                            side_effect=fake_to_thread,
+                                        ):
+                                            result = await mpyrepl_main.run_async_repl(
+                                                config,
+                                                1.0,
+                                                "",
+                                                "",
+                                                2.0,
+                                            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(symbols.clear_calls, 1)
+        self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 1)
+        execute_once.assert_not_called()
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.soft_reset_calls, 1)
 
 
 if __name__ == "__main__":

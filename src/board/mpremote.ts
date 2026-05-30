@@ -24,9 +24,18 @@ async function formatMpremoteCmd(args: string[], pythonPath?: string | null): Pr
   return `mpremote ${escaped}`;
 }
 
-function normalizeConnect(c: string): string {
-  if (c.startsWith("serial://")) return c.replace(/^serial:\/\//, "");
-  if (c.startsWith("serial:/")) return c.replace(/^serial:\//, "");
+export function normalizeConnect(c: string): string {
+  if (c.startsWith("serial://") || c.startsWith("serial:/")) {
+    const normalized = c.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+    if (normalized.startsWith("/dev/")) return normalized;
+    if (process.platform === 'win32' && normalized.startsWith('/')) {
+      return normalized.slice(1);
+    }
+    if (/^\/COM\d+$/i.test(normalized)) {
+      return normalized.slice(1);
+    }
+    return normalized;
+  }
 
   // On macOS, add /dev/ prefix if it's missing and looks like a cu.* device
   if (c.startsWith("cu.") && !c.startsWith("/dev/")) {

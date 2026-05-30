@@ -29,17 +29,22 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Install Python test dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r scripts/mpyrepl/requirements-test.txt
+
     - name: Install dependencies
       run: npm ci
 
     - name: Compile TypeScript
       run: npm run compile
 
-    - name: Run tests
-      run: npm test
+    - name: Run JS tests with coverage
+      run: npm run test:js:coverage
 
     - name: Run Python REPL tests with coverage summary
-      run: python scripts/mpyrepl/run_python_tests_with_coverage.py
+      run: npm run test:py
 
     - name: Package extension (for validation)
       run: npm run package

@@ -198,7 +198,7 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
   try {
     const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
     if (!connect || connect === "auto") return;
-    const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+    const device = mp.normalizeConnect(connect);
 
     // If the previous terminal is gone, recreate it
     if (!replTerminal || !isReplOpen()) {
@@ -395,7 +395,7 @@ export async function softReset(): Promise<void> {
 
   // Use mpremote connect with explicit port
   const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
-  const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+  const device = mp.normalizeConnect(connect);
   const cmd = await buildShellCommand(["connect", device, "reset"]);
   await new Promise<void>((resolve) => {
     exec(cmd, (error: any, stdout: any, stderr: any) => {
@@ -420,7 +420,7 @@ export async function runActiveFile(): Promise<void> {
     return;
   }
 
-  const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+  const device = mp.normalizeConnect(connect);
   const filePath = ed.document.uri.fsPath;
 
   // If the REPL terminal is open, close it before executing and remember to restore later
@@ -534,7 +534,7 @@ export async function getReplTerminal(
     throw new Error("Select a specific serial port first (not 'auto')");
   }
 
-  const device = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+  const device = mp.normalizeConnect(connect);
   const shouldInterrupt = opts?.interrupt ?? vscode.workspace.getConfiguration().get<boolean>(
     "microPythonWorkBench.interruptOnConnect",
     true
@@ -718,7 +718,7 @@ export async function robustInterrupt(port?: string): Promise<void> {
     if (!connect || connect === "auto") {
       throw new Error("Select a specific serial port first (not 'auto').");
     }
-    devicePort = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+    devicePort = mp.normalizeConnect(connect);
   }
 
   debugLog(`robustInterrupt: Starting for port ${devicePort}`);
@@ -793,7 +793,7 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
     if (!connect || connect === "auto") {
       throw new Error("Select a specific serial port first (not 'auto').");
     }
-    devicePort = connect.replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+    devicePort = mp.normalizeConnect(connect);
   }
 
   debugLog(`robustInterruptAndReset: Starting for port ${devicePort}`);

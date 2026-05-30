@@ -10,7 +10,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
 import bootstrap
+
+bootstrap.configure_import_path()
+
+import completion_engine as completion_engine_module
+import completion_state as completion_state_module
+import session as session_module
+import transport as transport_module
 from cli import build_parser
 from completion_engine import (
     ReplCompleter,
@@ -119,7 +131,9 @@ class SupportModuleTests(unittest.TestCase):
         symbols.record_successful_source(
             """
 import machine as hw
+import xml.etree.ElementTree as etree
 from math import sin as sine, cos
+from pkg import *
 value = 1
 left, (middle, right) = (1, (2, 3))
 counter: int = 0
@@ -137,7 +151,10 @@ class Demo:
 def func():
     pass
 async def coro():
-    pass
+    async for stream_item in agen():
+        pass
+    async with ctx() as resource:
+        pass
 """.strip()
         )
 
@@ -145,6 +162,7 @@ async def coro():
         for name in (
             "_",
             "hw",
+            "etree",
             "sine",
             "cos",
             "value",
@@ -163,6 +181,9 @@ async def coro():
             self.assertIn(name, candidates)
 
         self.assertEqual(symbols.resolve_module_alias("hw"), "machine")
+        self.assertEqual(symbols.resolve_module_alias("etree"), "xml")
+
+        symbols.record_successful_source("def broken(:\n")
 
         symbols.clear()
         self.assertEqual(symbols.bare_candidates(), {"_"})
@@ -322,6 +343,16 @@ async def coro():
             channel.clear()
             self.assertFalse(control_path.exists())
 
+    def test_file_control_channel_handles_non_dict_and_io_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            control_path = Path(tmp_dir) / "control.json"
+            channel = FileControlChannel(str(control_path))
+            control_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+            self.assertIsNone(channel.read_next())
+
+            with mock.patch.object(Path, "read_text", side_effect=OSError("boom")):
+                self.assertIsNone(channel.read_next())
+
     def test_utf8_stream_decoder_handles_split_code_points(self) -> None:
         decoder = Utf8StreamDecoder()
         payload = "中A".encode("utf-8")
@@ -362,6 +393,12 @@ async def coro():
         self.assertEqual(repl_config.port, "COM4")
         self.assertEqual(repl_config.baudrate, 230400)
         self.assertTrue(repl_config.soft_reset_on_connect)
+
+    def test_reload_heavy_modules_for_import_smoke(self) -> None:
+        self.assertTrue(hasattr(importlib.reload(session_module), "build_prompt_session"))
+        self.assertTrue(hasattr(importlib.reload(completion_engine_module), "ReplCompleter"))
+        self.assertTrue(hasattr(importlib.reload(completion_state_module), "ReplSessionSymbols"))
+        self.assertTrue(hasattr(importlib.reload(transport_module), "SerialReplTransport"))
 
 
 if __name__ == "__main__":

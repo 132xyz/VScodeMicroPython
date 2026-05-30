@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.75",
+  "version": "0.3.77",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -38,7 +38,9 @@
     "watch": "tsc -watch -p ./",
     "package": "npx @vscode/vsce package",
     "test": "jest",
+    "test:js:coverage": "jest --coverage --runInBand",
     "test:py": "python scripts/mpyrepl/run_python_tests_with_coverage.py",
+    "test:coverage": "npm run test:js:coverage && npm run test:py",
     "test:watch": "jest --watch"
   },
   "devDependencies": {

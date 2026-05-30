@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as vscode from "vscode";
 import { getPythonPath } from "../python/pythonInterpreter";
+import { normalizeConnect } from "./mpremote";
 
 class SerialMonitor {
   private timer?: NodeJS.Timeout;
@@ -44,7 +45,7 @@ class SerialMonitor {
   private async tick(): Promise<void> {
     if (!this.running || this.busy) return;
     const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
-    const device = (connect || '').replace(/^serial:\/\//, "").replace(/^serial:\//, "");
+    const device = normalizeConnect(connect || '');
     // Spawn a short-lived miniterm to read any pending output, then kill.
     const args = ["-m", "serial.tools.miniterm", device, "115200", "--eol", "LF"];
     const pythonPath = await getPythonPath();

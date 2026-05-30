@@ -750,7 +750,8 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
           }
         } catch {}
-        const deviceDest = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + rel;
+        const normalizedRootPath = rootPath === "/" ? "" : rootPath.replace(/\/$/, "");
+        const deviceDest = `${normalizedRootPath}/${rel}`;
       const rawBehavior = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.replRestoreBehavior", "none");
       const behavior = normalizeReplBehavior(rawBehavior);
       let resumeCmd: string | undefined;

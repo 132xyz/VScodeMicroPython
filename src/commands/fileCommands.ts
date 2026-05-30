@@ -112,7 +112,8 @@ export const fileCommands = {
     // On first save, upload to board (unless ignored)
     const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (savedDoc) => {
       if (savedDoc.uri.fsPath !== abs) return;
-      const devicePath = (rootPath === "/" ? "/" : rootPath.replace(/\/$/, "")) + "/" + filename.replace(/^\/+/, "");
+      const normalizedRootPath = rootPath === "/" ? "" : rootPath.replace(/\/$/, "");
+      const devicePath = `${normalizedRootPath}/${filename.replace(/^\/+/, "")}`;
       try {
         const matcher = await createIgnoreMatcher(ws.uri.fsPath);
         const rel = filename.replace(/^\/+/, "");
