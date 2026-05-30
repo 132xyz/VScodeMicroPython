@@ -1,0 +1,229 @@
+    1: from __future__ import annotations
+       
+    1: from ctypes import Structure, Union, c_char, c_long, c_short, c_ulong
+    1: from ctypes.wintypes import BOOL, DWORD, LPVOID, WCHAR, WORD
+    1: from typing import TYPE_CHECKING
+       
+       # Input/Output standard device numbers. Note that these are not handle objects.
+       # It's the `windll.kernel32.GetStdHandle` system call that turns them into a
+       # real handle object.
+    1: STD_INPUT_HANDLE = c_ulong(-10)
+    1: STD_OUTPUT_HANDLE = c_ulong(-11)
+    1: STD_ERROR_HANDLE = c_ulong(-12)
+       
+       
+    2: class COORD(Structure):
+    1:     """
+           Struct in wincon.h
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms682119(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               X: int
+               Y: int
+       
+    1:     _fields_ = [
+    1:         ("X", c_short),  # Short
+    1:         ("Y", c_short),  # Short
+           ]
+       
+    1:     def __repr__(self) -> str:
+               return "{}(X={!r}, Y={!r}, type_x={!r}, type_y={!r})".format(
+                   self.__class__.__name__,
+                   self.X,
+                   self.Y,
+                   type(self.X),
+                   type(self.Y),
+               )
+       
+       
+    2: class UNICODE_OR_ASCII(Union):
+    1:     if TYPE_CHECKING:
+               AsciiChar: bytes
+               UnicodeChar: str
+       
+    1:     _fields_ = [
+    1:         ("AsciiChar", c_char),
+    1:         ("UnicodeChar", WCHAR),
+           ]
+       
+       
+    2: class KEY_EVENT_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms684166(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               KeyDown: int
+               RepeatCount: int
+               VirtualKeyCode: int
+               VirtualScanCode: int
+               uChar: UNICODE_OR_ASCII
+               ControlKeyState: int
+       
+    1:     _fields_ = [
+    1:         ("KeyDown", c_long),  # bool
+    1:         ("RepeatCount", c_short),  # word
+    1:         ("VirtualKeyCode", c_short),  # word
+    1:         ("VirtualScanCode", c_short),  # word
+    1:         ("uChar", UNICODE_OR_ASCII),  # Unicode or ASCII.
+    1:         ("ControlKeyState", c_long),  # double word
+           ]
+       
+       
+    2: class MOUSE_EVENT_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms684239(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               MousePosition: COORD
+               ButtonState: int
+               ControlKeyState: int
+               EventFlags: int
+       
+    1:     _fields_ = [
+    1:         ("MousePosition", COORD),
+    1:         ("ButtonState", c_long),  # dword
+    1:         ("ControlKeyState", c_long),  # dword
+    1:         ("EventFlags", c_long),  # dword
+           ]
+       
+       
+    2: class WINDOW_BUFFER_SIZE_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms687093(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               Size: COORD
+       
+    1:     _fields_ = [("Size", COORD)]
+       
+       
+    2: class MENU_EVENT_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms684213(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               CommandId: int
+       
+    1:     _fields_ = [("CommandId", c_long)]  # uint
+       
+       
+    2: class FOCUS_EVENT_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms683149(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               SetFocus: int
+       
+    1:     _fields_ = [("SetFocus", c_long)]  # bool
+       
+       
+    2: class EVENT_RECORD(Union):
+    1:     if TYPE_CHECKING:
+               KeyEvent: KEY_EVENT_RECORD
+               MouseEvent: MOUSE_EVENT_RECORD
+               WindowBufferSizeEvent: WINDOW_BUFFER_SIZE_RECORD
+               MenuEvent: MENU_EVENT_RECORD
+               FocusEvent: FOCUS_EVENT_RECORD
+       
+    1:     _fields_ = [
+    1:         ("KeyEvent", KEY_EVENT_RECORD),
+    1:         ("MouseEvent", MOUSE_EVENT_RECORD),
+    1:         ("WindowBufferSizeEvent", WINDOW_BUFFER_SIZE_RECORD),
+    1:         ("MenuEvent", MENU_EVENT_RECORD),
+    1:         ("FocusEvent", FOCUS_EVENT_RECORD),
+           ]
+       
+       
+    2: class INPUT_RECORD(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/ms683499(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               EventType: int
+               Event: EVENT_RECORD
+       
+    1:     _fields_ = [("EventType", c_short), ("Event", EVENT_RECORD)]  # word  # Union.
+       
+       
+    1: EventTypes = {
+    1:     1: "KeyEvent",
+    1:     2: "MouseEvent",
+    1:     4: "WindowBufferSizeEvent",
+    1:     8: "MenuEvent",
+    1:     16: "FocusEvent",
+       }
+       
+       
+    2: class SMALL_RECT(Structure):
+    1:     """struct in wincon.h."""
+       
+    1:     if TYPE_CHECKING:
+               Left: int
+               Top: int
+               Right: int
+               Bottom: int
+       
+    1:     _fields_ = [
+    1:         ("Left", c_short),
+    1:         ("Top", c_short),
+    1:         ("Right", c_short),
+    1:         ("Bottom", c_short),
+           ]
+       
+       
+    2: class CONSOLE_SCREEN_BUFFER_INFO(Structure):
+    1:     """struct in wincon.h."""
+       
+    1:     if TYPE_CHECKING:
+               dwSize: COORD
+               dwCursorPosition: COORD
+               wAttributes: int
+               srWindow: SMALL_RECT
+               dwMaximumWindowSize: COORD
+       
+    1:     _fields_ = [
+    1:         ("dwSize", COORD),
+    1:         ("dwCursorPosition", COORD),
+    1:         ("wAttributes", WORD),
+    1:         ("srWindow", SMALL_RECT),
+    1:         ("dwMaximumWindowSize", COORD),
+           ]
+       
+    1:     def __repr__(self) -> str:
+               return "CONSOLE_SCREEN_BUFFER_INFO({!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r},{!r})".format(
+                   self.dwSize.Y,
+                   self.dwSize.X,
+                   self.dwCursorPosition.Y,
+                   self.dwCursorPosition.X,
+                   self.wAttributes,
+                   self.srWindow.Top,
+                   self.srWindow.Left,
+                   self.srWindow.Bottom,
+                   self.srWindow.Right,
+                   self.dwMaximumWindowSize.Y,
+                   self.dwMaximumWindowSize.X,
+               )
+       
+       
+    2: class SECURITY_ATTRIBUTES(Structure):
+    1:     """
+           http://msdn.microsoft.com/en-us/library/windows/desktop/aa379560(v=vs.85).aspx
+           """
+       
+    1:     if TYPE_CHECKING:
+               nLength: int
+               lpSecurityDescriptor: int
+               bInheritHandle: int  # BOOL comes back as 'int'.
+       
+    1:     _fields_ = [
+    1:         ("nLength", DWORD),
+    1:         ("lpSecurityDescriptor", LPVOID),
+    1:         ("bInheritHandle", BOOL),
+           ]

@@ -1,0 +1,55 @@
+    1: from __future__ import annotations
+       
+    1: from typing import Callable
+       
+    1: from prompt_toolkit.eventloop import InputHook
+    1: from prompt_toolkit.formatted_text import AnyFormattedText
+    1: from prompt_toolkit.input import DummyInput
+    1: from prompt_toolkit.output import DummyOutput
+       
+    1: from .application import Application
+       
+    1: __all__ = [
+    1:     "DummyApplication",
+       ]
+       
+       
+    2: class DummyApplication(Application[None]):
+    1:     """
+           When no :class:`.Application` is running,
+           :func:`.get_app` will run an instance of this :class:`.DummyApplication` instead.
+           """
+       
+    1:     def __init__(self) -> None:
+               super().__init__(output=DummyOutput(), input=DummyInput())
+       
+    1:     def run(
+               self,
+               pre_run: Callable[[], None] | None = None,
+               set_exception_handler: bool = True,
+               handle_sigint: bool = True,
+               in_thread: bool = False,
+               inputhook: InputHook | None = None,
+           ) -> None:
+               raise NotImplementedError("A DummyApplication is not supposed to run.")
+       
+    1:     async def run_async(
+               self,
+               pre_run: Callable[[], None] | None = None,
+               set_exception_handler: bool = True,
+               handle_sigint: bool = True,
+               slow_callback_duration: float = 0.5,
+           ) -> None:
+               raise NotImplementedError("A DummyApplication is not supposed to run.")
+       
+    1:     async def run_system_command(
+               self,
+               command: str,
+               wait_for_enter: bool = True,
+               display_before_text: AnyFormattedText = "",
+               wait_text: str = "",
+           ) -> None:
+               raise NotImplementedError
+       
+    1:     def suspend_to_background(self, suspend_group: bool = True) -> None:
+               raise NotImplementedError

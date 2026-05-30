@@ -1,0 +1,44 @@
+    1: from __future__ import annotations
+       
+    1: from collections import deque
+       
+    1: from .base import Clipboard, ClipboardData
+       
+    1: __all__ = [
+    1:     "InMemoryClipboard",
+       ]
+       
+       
+    2: class InMemoryClipboard(Clipboard):
+    1:     """
+           Default clipboard implementation.
+           Just keep the data in memory.
+       
+           This implements a kill-ring, for Emacs mode.
+           """
+       
+    1:     def __init__(self, data: ClipboardData | None = None, max_size: int = 60) -> None:
+    2:         assert max_size >= 1
+       
+    2:         self.max_size = max_size
+    2:         self._ring: deque[ClipboardData] = deque()
+       
+    2:         if data is not None:
+                   self.set_data(data)
+       
+    1:     def set_data(self, data: ClipboardData) -> None:
+               self._ring.appendleft(data)
+       
+               while len(self._ring) > self.max_size:
+                   self._ring.pop()
+       
+    1:     def get_data(self) -> ClipboardData:
+               if self._ring:
+                   return self._ring[0]
+               else:
+                   return ClipboardData()
+       
+    1:     def rotate(self) -> None:
+               if self._ring:
+                   # Add the very first item at the end.
+                   self._ring.append(self._ring.popleft())

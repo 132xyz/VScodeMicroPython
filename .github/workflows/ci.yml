@@ -24,6 +24,11 @@ jobs:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
 
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
     - name: Install dependencies
       run: npm ci
 
@@ -32,6 +37,9 @@ jobs:
 
     - name: Run tests
       run: npm test
+
+    - name: Run Python REPL tests with coverage summary
+      run: python scripts/mpyrepl/run_python_tests_with_coverage.py
 
     - name: Package extension (for validation)
       run: npm run package

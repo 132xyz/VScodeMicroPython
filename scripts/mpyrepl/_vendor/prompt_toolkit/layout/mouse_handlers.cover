@@ -1,0 +1,56 @@
+    1: from __future__ import annotations
+       
+    1: from collections import defaultdict
+    1: from typing import TYPE_CHECKING, Callable
+       
+    1: from prompt_toolkit.mouse_events import MouseEvent
+       
+    1: if TYPE_CHECKING:
+           from prompt_toolkit.key_binding.key_bindings import NotImplementedOrNone
+       
+    1: __all__ = [
+    1:     "MouseHandler",
+    1:     "MouseHandlers",
+       ]
+       
+       
+    1: MouseHandler = Callable[[MouseEvent], "NotImplementedOrNone"]
+       
+       
+    2: class MouseHandlers:
+    1:     """
+           Two dimensional raster of callbacks for mouse events.
+           """
+       
+    1:     def __init__(self) -> None:
+   22:         def dummy_callback(mouse_event: MouseEvent) -> NotImplementedOrNone:
+                   """
+                   :param mouse_event: `MouseEvent` instance.
+                   """
+                   return NotImplemented
+       
+               # NOTE: Previously, the data structure was a dictionary mapping (x,y)
+               # to the handlers. This however would be more inefficient when copying
+               # over the mouse handlers of the visible region in the scrollable pane.
+       
+               # Map y (row) to x (column) to handlers.
+   22:         self.mouse_handlers: defaultdict[int, defaultdict[int, MouseHandler]] = (
+  268:             defaultdict(lambda: defaultdict(lambda: dummy_callback))
+               )
+       
+    1:     def set_mouse_handler_for_range(
+               self,
+               x_min: int,
+               x_max: int,
+               y_min: int,
+               y_max: int,
+               handler: Callable[[MouseEvent], NotImplementedOrNone],
+           ) -> None:
+               """
+               Set mouse handler for a region.
+               """
+  256:         for y in range(y_min, y_max):
+  246:             row = self.mouse_handlers[y]
+       
+19926:             for x in range(x_min, x_max):
+19680:                 row[x] = handler

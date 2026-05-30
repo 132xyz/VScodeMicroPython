@@ -1,0 +1,260 @@
+    1: from __future__ import annotations
+       
+    1: from abc import ABCMeta, abstractmethod
+    1: from typing import Callable, Iterable, Union
+       
+    1: __all__ = ["Filter", "Never", "Always", "Condition", "FilterOrBool"]
+       
+       
+    2: class Filter(metaclass=ABCMeta):
+    1:     """
+           Base class for any filter to activate/deactivate a feature, depending on a
+           condition.
+       
+           The return value of ``__call__`` will tell if the feature should be active.
+           """
+       
+    1:     def __init__(self) -> None:
+  352:         self._and_cache: dict[Filter, Filter] = {}
+  352:         self._or_cache: dict[Filter, Filter] = {}
+  352:         self._invert_result: Filter | None = None
+       
+    2:     @abstractmethod
+    2:     def __call__(self) -> bool:
+               """
+               The actual call to evaluate the filter.
+               """
+               return True
+       
+    1:     def __and__(self, other: Filter) -> Filter:
+               """
+               Chaining of filters using the & operator.
+               """
+ 3033:         assert isinstance(other, Filter), f"Expecting filter, got {other!r}"
+       
+ 3033:         if isinstance(other, Always):
+  710:             return self
+ 2323:         if isinstance(other, Never):
+                   return other
+       
+ 2323:         if other in self._and_cache:
+ 2123:             return self._and_cache[other]
+       
+  200:         result = _AndList.create([self, other])
+  200:         self._and_cache[other] = result
+  200:         return result
+       
+    1:     def __or__(self, other: Filter) -> Filter:
+               """
+               Chaining of filters using the | operator.
+               """
+   67:         assert isinstance(other, Filter), f"Expecting filter, got {other!r}"
+       
+   67:         if isinstance(other, Always):
+                   return other
+   67:         if isinstance(other, Never):
+                   return self
+       
+   67:         if other in self._or_cache:
+   63:             return self._or_cache[other]
+       
+    4:         result = _OrList.create([self, other])
+    4:         self._or_cache[other] = result
+    4:         return result
+       
+    1:     def __invert__(self) -> Filter:
+               """
+               Inverting of filters using the ~ operator.
+               """
+  396:         if self._invert_result is None:
+   14:             self._invert_result = _Invert(self)
+       
+  396:         return self._invert_result
+       
+    1:     def __bool__(self) -> None:
+               """
+               By purpose, we don't allow bool(...) operations directly on a filter,
+               because the meaning is ambiguous.
+       
+               Executing a filter has to be done always by calling it. Providing
+               defaults for `None` values should be done through an `is None` check
+               instead of for instance ``filter1 or Always()``.
+               """
+               raise ValueError(
+                   "The truth value of a Filter is ambiguous. Instead, call it as a function."
+               )
+       
+       
+    1: def _remove_duplicates(filters: list[Filter]) -> list[Filter]:
+  204:     result = []
+  785:     for f in filters:
+  581:         if f not in result:
+  580:             result.append(f)
+  204:     return result
+       
+       
+    2: class _AndList(Filter):
+    1:     """
+           Result of &-operation between several filters.
+           """
+       
+    1:     def __init__(self, filters: list[Filter]) -> None:
+  199:         super().__init__()
+  199:         self.filters = filters
+       
+    2:     @classmethod
+    2:     def create(cls, filters: Iterable[Filter]) -> Filter:
+               """
+               Create a new filter by applying an `&` operator between them.
+       
+               If there's only one unique filter in the given iterable, it will return
+               that one filter instead of an `_AndList`.
+               """
+  200:         filters_2: list[Filter] = []
+       
+  600:         for f in filters:
+  400:             if isinstance(f, _AndList):  # Turn nested _AndLists into one.
+  113:                 filters_2.extend(f.filters)
+                   else:
+  287:                 filters_2.append(f)
+       
+               # Remove duplicates. This could speed up execution, and doesn't make a
+               # difference for the evaluation.
+  200:         filters = _remove_duplicates(filters_2)
+       
+               # If only one filter is left, return that without wrapping into an
+               # `_AndList`.
+  200:         if len(filters) == 1:
+    1:             return filters[0]
+       
+  199:         return cls(filters)
+       
+    1:     def __call__(self) -> bool:
+ 2216:         return all(f() for f in self.filters)
+       
+    1:     def __repr__(self) -> str:
+               return "&".join(repr(f) for f in self.filters)
+       
+       
+    2: class _OrList(Filter):
+    1:     """
+           Result of |-operation between several filters.
+           """
+       
+    1:     def __init__(self, filters: list[Filter]) -> None:
+    4:         super().__init__()
+    4:         self.filters = filters
+       
+    2:     @classmethod
+    2:     def create(cls, filters: Iterable[Filter]) -> Filter:
+               """
+               Create a new filter by applying an `|` operator between them.
+       
+               If there's only one unique filter in the given iterable, it will return
+               that one filter instead of an `_OrList`.
+               """
+    4:         filters_2: list[Filter] = []
+       
+   12:         for f in filters:
+    8:             if isinstance(f, _OrList):  # Turn nested _AndLists into one.
+    1:                 filters_2.extend(f.filters)
+                   else:
+    7:                 filters_2.append(f)
+       
+               # Remove duplicates. This could speed up execution, and doesn't make a
+               # difference for the evaluation.
+    4:         filters = _remove_duplicates(filters_2)
+       
+               # If only one filter is left, return that without wrapping into an
+               # `_AndList`.
+    4:         if len(filters) == 1:
+                   return filters[0]
+       
+    4:         return cls(filters)
+       
+    1:     def __call__(self) -> bool:
+  120:         return any(f() for f in self.filters)
+       
+    1:     def __repr__(self) -> str:
+               return "|".join(repr(f) for f in self.filters)
+       
+       
+    2: class _Invert(Filter):
+    1:     """
+           Negation of another filter.
+           """
+       
+    1:     def __init__(self, filter: Filter) -> None:
+   14:         super().__init__()
+   14:         self.filter = filter
+       
+    1:     def __call__(self) -> bool:
+  128:         return not self.filter()
+       
+    1:     def __repr__(self) -> str:
+               return f"~{self.filter!r}"
+       
+       
+    2: class Always(Filter):
+    1:     """
+           Always enable feature.
+           """
+       
+    1:     def __call__(self) -> bool:
+  411:         return True
+       
+    1:     def __or__(self, other: Filter) -> Filter:
+    2:         return self
+       
+    1:     def __and__(self, other: Filter) -> Filter:
+  128:         return other
+       
+    1:     def __invert__(self) -> Never:
+               return Never()
+       
+       
+    2: class Never(Filter):
+    1:     """
+           Never enable feature.
+           """
+       
+    1:     def __call__(self) -> bool:
+  743:         return False
+       
+    1:     def __and__(self, other: Filter) -> Filter:
+               return self
+       
+    1:     def __or__(self, other: Filter) -> Filter:
+  346:         return other
+       
+    1:     def __invert__(self) -> Always:
+               return Always()
+       
+       
+    2: class Condition(Filter):
+    1:     """
+           Turn any callable into a Filter. The callable is supposed to not take any
+           arguments.
+       
+           This can be used as a decorator::
+       
+               @Condition
+               def feature_is_active():  # `feature_is_active` becomes a Filter.
+                   return True
+       
+           :param func: Callable which takes no inputs and returns a boolean.
+           """
+       
+    1:     def __init__(self, func: Callable[[], bool]) -> None:
+  121:         super().__init__()
+  121:         self.func = func
+       
+    1:     def __call__(self) -> bool:
+ 1647:         return self.func()
+       
+    1:     def __repr__(self) -> str:
+               return f"Condition({self.func!r})"
+       
+       
+       # Often used as type annotation.
+    1: FilterOrBool = Union[Filter, bool]

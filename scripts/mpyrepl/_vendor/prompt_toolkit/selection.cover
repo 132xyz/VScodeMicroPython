@@ -1,0 +1,58 @@
+    1: """
+       Data structures for the selection.
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from enum import Enum
+       
+    1: __all__ = [
+           "SelectionType",
+           "PasteMode",
+           "SelectionState",
+       ]
+       
+       
+    2: class SelectionType(Enum):
+    1:     """
+           Type of selection.
+           """
+       
+           #: Characters. (Visual in Vi.)
+    1:     CHARACTERS = "CHARACTERS"
+       
+           #: Whole lines. (Visual-Line in Vi.)
+    1:     LINES = "LINES"
+       
+           #: A block selection. (Visual-Block in Vi.)
+    1:     BLOCK = "BLOCK"
+       
+       
+    2: class PasteMode(Enum):
+    1:     EMACS = "EMACS"  # Yank like emacs.
+    1:     VI_AFTER = "VI_AFTER"  # When pressing 'p' in Vi.
+    1:     VI_BEFORE = "VI_BEFORE"  # When pressing 'P' in Vi.
+       
+       
+    2: class SelectionState:
+    1:     """
+           State of the current selection.
+       
+           :param original_cursor_position: int
+           :param type: :class:`~.SelectionType`
+           """
+       
+    1:     def __init__(
+               self,
+    1:         original_cursor_position: int = 0,
+    1:         type: SelectionType = SelectionType.CHARACTERS,
+           ) -> None:
+               self.original_cursor_position = original_cursor_position
+               self.type = type
+               self.shift_mode = False
+       
+    1:     def enter_shift_mode(self) -> None:
+               self.shift_mode = True
+       
+    1:     def __repr__(self) -> str:
+               return f"{self.__class__.__name__}(original_cursor_position={self.original_cursor_position!r}, type={self.type!r})"

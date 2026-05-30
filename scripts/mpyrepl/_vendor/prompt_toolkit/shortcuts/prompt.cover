@@ -1,0 +1,1538 @@
+    1: """
+       Line editing functionality.
+       ---------------------------
+       
+       This provides a UI for a line input, similar to GNU Readline, libedit and
+       linenoise.
+       
+       Either call the `prompt` function for every line input. Or create an instance
+       of the :class:`.PromptSession` class and call the `prompt` method from that
+       class. In the second case, we'll have a 'session' that keeps all the state like
+       the history in between several calls.
+       
+       There is a lot of overlap between the arguments taken by the `prompt` function
+       and the `PromptSession` (like `completer`, `style`, etcetera). There we have
+       the freedom to decide which settings we want for the whole 'session', and which
+       we want for an individual `prompt`.
+       
+       Example::
+       
+               # Simple `prompt` call.
+               result = prompt('Say something: ')
+       
+               # Using a 'session'.
+               s = PromptSession()
+               result = s.prompt('Say something: ')
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from asyncio import get_running_loop
+    1: from contextlib import contextmanager
+    1: from enum import Enum
+    1: from functools import partial
+    1: from typing import TYPE_CHECKING, Callable, Generic, Iterator, TypeVar, Union, cast
+       
+    1: from prompt_toolkit.application import Application
+    1: from prompt_toolkit.application.current import get_app
+    1: from prompt_toolkit.auto_suggest import AutoSuggest, DynamicAutoSuggest
+    1: from prompt_toolkit.buffer import Buffer
+    1: from prompt_toolkit.clipboard import Clipboard, DynamicClipboard, InMemoryClipboard
+    1: from prompt_toolkit.completion import Completer, DynamicCompleter, ThreadedCompleter
+    1: from prompt_toolkit.cursor_shapes import (
+           AnyCursorShapeConfig,
+           CursorShapeConfig,
+           DynamicCursorShapeConfig,
+       )
+    1: from prompt_toolkit.document import Document
+    1: from prompt_toolkit.enums import DEFAULT_BUFFER, SEARCH_BUFFER, EditingMode
+    1: from prompt_toolkit.eventloop import InputHook
+    1: from prompt_toolkit.filters import (
+           Condition,
+           FilterOrBool,
+           has_arg,
+           has_focus,
+           is_done,
+           is_true,
+           renderer_height_is_known,
+           to_filter,
+       )
+    1: from prompt_toolkit.formatted_text import (
+           AnyFormattedText,
+           StyleAndTextTuples,
+           fragment_list_to_text,
+           merge_formatted_text,
+           to_formatted_text,
+       )
+    1: from prompt_toolkit.history import History, InMemoryHistory
+    1: from prompt_toolkit.input.base import Input
+    1: from prompt_toolkit.key_binding.bindings.auto_suggest import load_auto_suggest_bindings
+    1: from prompt_toolkit.key_binding.bindings.completion import (
+           display_completions_like_readline,
+       )
+    1: from prompt_toolkit.key_binding.bindings.open_in_editor import (
+           load_open_in_editor_bindings,
+       )
+    1: from prompt_toolkit.key_binding.key_bindings import (
+           ConditionalKeyBindings,
+           DynamicKeyBindings,
+           KeyBindings,
+           KeyBindingsBase,
+           merge_key_bindings,
+       )
+    1: from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+    1: from prompt_toolkit.keys import Keys
+    1: from prompt_toolkit.layout import Float, FloatContainer, HSplit, Window
+    1: from prompt_toolkit.layout.containers import ConditionalContainer, WindowAlign
+    1: from prompt_toolkit.layout.controls import (
+           BufferControl,
+           FormattedTextControl,
+           SearchBufferControl,
+       )
+    1: from prompt_toolkit.layout.dimension import Dimension
+    1: from prompt_toolkit.layout.layout import Layout
+    1: from prompt_toolkit.layout.menus import CompletionsMenu, MultiColumnCompletionsMenu
+    1: from prompt_toolkit.layout.processors import (
+           AfterInput,
+           AppendAutoSuggestion,
+           ConditionalProcessor,
+           DisplayMultipleCursors,
+           DynamicProcessor,
+           HighlightIncrementalSearchProcessor,
+           HighlightSelectionProcessor,
+           PasswordProcessor,
+           Processor,
+           ReverseSearchProcessor,
+           merge_processors,
+       )
+    1: from prompt_toolkit.layout.utils import explode_text_fragments
+    1: from prompt_toolkit.lexers import DynamicLexer, Lexer
+    1: from prompt_toolkit.output import ColorDepth, DummyOutput, Output
+    1: from prompt_toolkit.styles import (
+           BaseStyle,
+           ConditionalStyleTransformation,
+           DynamicStyle,
+           DynamicStyleTransformation,
+           StyleTransformation,
+           SwapLightAndDarkStyleTransformation,
+           merge_style_transformations,
+       )
+    1: from prompt_toolkit.utils import (
+           get_cwidth,
+           is_dumb_terminal,
+           suspend_to_background_supported,
+           to_str,
+       )
+    1: from prompt_toolkit.validation import DynamicValidator, Validator
+    1: from prompt_toolkit.widgets import Frame
+    1: from prompt_toolkit.widgets.toolbars import (
+           SearchToolbar,
+           SystemToolbar,
+           ValidationToolbar,
+       )
+       
+    1: if TYPE_CHECKING:
+           from prompt_toolkit.formatted_text.base import MagicFormattedText
+       
+    1: __all__ = [
+           "PromptSession",
+           "prompt",
+           "confirm",
+           "create_confirm_session",  # Used by '_display_completions_like_readline'.
+           "CompleteStyle",
+       ]
+       
+    1: _StyleAndTextTuplesCallable = Callable[[], StyleAndTextTuples]
+    1: E = KeyPressEvent
+       
+       
+    1: def _split_multiline_prompt(
+           get_prompt_text: _StyleAndTextTuplesCallable,
+       ) -> tuple[
+           Callable[[], bool], _StyleAndTextTuplesCallable, _StyleAndTextTuplesCallable
+       ]:
+           """
+           Take a `get_prompt_text` function and return three new functions instead.
+           One that tells whether this prompt consists of multiple lines; one that
+           returns the fragments to be shown on the lines above the input; and another
+           one with the fragments to be shown at the first line of the input.
+           """
+       
+    2:     def has_before_fragments() -> bool:
+   72:         for fragment, char, *_ in get_prompt_text():
+   36:             if "\n" in char:
+                       return True
+   36:         return False
+       
+    2:     def before() -> StyleAndTextTuples:
+               result: StyleAndTextTuples = []
+               found_nl = False
+               for fragment, char, *_ in reversed(explode_text_fragments(get_prompt_text())):
+                   if found_nl:
+                       result.insert(0, (fragment, char))
+                   elif char == "\n":
+                       found_nl = True
+               return result
+       
+    2:     def first_input_line() -> StyleAndTextTuples:
+   61:         result: StyleAndTextTuples = []
+  305:         for fragment, char, *_ in reversed(explode_text_fragments(get_prompt_text())):
+  244:             if char == "\n":
+                       break
+                   else:
+  244:                 result.insert(0, (fragment, char))
+   61:         return result
+       
+    2:     return has_before_fragments, before, first_input_line
+       
+       
+    2: class _RPrompt(Window):
+    1:     """
+           The prompt that is displayed on the right side of the Window.
+           """
+       
+    1:     def __init__(self, text: AnyFormattedText) -> None:
+    4:         super().__init__(
+    2:             FormattedTextControl(text=text),
+    2:             align=WindowAlign.RIGHT,
+    2:             style="class:rprompt",
+               )
+       
+       
+    2: class CompleteStyle(str, Enum):
+    1:     """
+           How to display autocompletions for the prompt.
+           """
+       
+    1:     value: str
+       
+    1:     COLUMN = "COLUMN"
+    1:     MULTI_COLUMN = "MULTI_COLUMN"
+    1:     READLINE_LIKE = "READLINE_LIKE"
+       
+       
+       # Formatted text for the continuation prompt. It's the same like other
+       # formatted text, except that if it's a callable, it takes three arguments.
+    2: PromptContinuationText = Union[
+    2:     str,
+    1:     "MagicFormattedText",
+    1:     StyleAndTextTuples,
+           # (prompt_width, line_number, wrap_count) -> AnyFormattedText.
+    1:     Callable[[int, int, int], AnyFormattedText],
+       ]
+       
+    1: _T = TypeVar("_T")
+       
+       
+    2: class PromptSession(Generic[_T]):
+    1:     """
+           PromptSession for a prompt application, which can be used as a GNU Readline
+           replacement.
+       
+           This is a wrapper around a lot of ``prompt_toolkit`` functionality and can
+           be a replacement for `raw_input`.
+       
+           All parameters that expect "formatted text" can take either just plain text
+           (a unicode object), a list of ``(style_str, text)`` tuples or an HTML object.
+       
+           Example usage::
+       
+               s = PromptSession(message='>')
+               text = s.prompt()
+       
+           :param message: Plain text or formatted text to be shown before the prompt.
+               This can also be a callable that returns formatted text.
+           :param multiline: `bool` or :class:`~prompt_toolkit.filters.Filter`.
+               When True, prefer a layout that is more adapted for multiline input.
+               Text after newlines is automatically indented, and search/arg input is
+               shown below the input, instead of replacing the prompt.
+           :param wrap_lines: `bool` or :class:`~prompt_toolkit.filters.Filter`.
+               When True (the default), automatically wrap long lines instead of
+               scrolling horizontally.
+           :param is_password: Show asterisks instead of the actual typed characters.
+           :param editing_mode: ``EditingMode.VI`` or ``EditingMode.EMACS``.
+           :param vi_mode: `bool`, if True, Identical to ``editing_mode=EditingMode.VI``.
+           :param complete_while_typing: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Enable autocompletion while
+               typing.
+           :param validate_while_typing: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Enable input validation while
+               typing.
+           :param enable_history_search: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Enable up-arrow parting
+               string matching.
+           :param search_ignore_case:
+               :class:`~prompt_toolkit.filters.Filter`. Search case insensitive.
+           :param lexer: :class:`~prompt_toolkit.lexers.Lexer` to be used for the
+               syntax highlighting.
+           :param validator: :class:`~prompt_toolkit.validation.Validator` instance
+               for input validation.
+           :param completer: :class:`~prompt_toolkit.completion.Completer` instance
+               for input completion.
+           :param complete_in_thread: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Run the completer code in a
+               background thread in order to avoid blocking the user interface.
+               For ``CompleteStyle.READLINE_LIKE``, this setting has no effect. There
+               we always run the completions in the main thread.
+           :param reserve_space_for_menu: Space to be reserved for displaying the menu.
+               (0 means that no space needs to be reserved.)
+           :param auto_suggest: :class:`~prompt_toolkit.auto_suggest.AutoSuggest`
+               instance for input suggestions.
+           :param style: :class:`.Style` instance for the color scheme.
+           :param include_default_pygments_style: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Tell whether the default
+               styling for Pygments lexers has to be included. By default, this is
+               true, but it is recommended to be disabled if another Pygments style is
+               passed as the `style` argument, otherwise, two Pygments styles will be
+               merged.
+           :param style_transformation:
+               :class:`~prompt_toolkit.style.StyleTransformation` instance.
+           :param swap_light_and_dark_colors: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. When enabled, apply
+               :class:`~prompt_toolkit.style.SwapLightAndDarkStyleTransformation`.
+               This is useful for switching between dark and light terminal
+               backgrounds.
+           :param enable_system_prompt: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Pressing Meta+'!' will show
+               a system prompt.
+           :param enable_suspend: `bool` or :class:`~prompt_toolkit.filters.Filter`.
+               Enable Control-Z style suspension.
+           :param enable_open_in_editor: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. Pressing 'v' in Vi mode or
+               C-X C-E in emacs mode will open an external editor.
+           :param history: :class:`~prompt_toolkit.history.History` instance.
+           :param clipboard: :class:`~prompt_toolkit.clipboard.Clipboard` instance.
+               (e.g. :class:`~prompt_toolkit.clipboard.InMemoryClipboard`)
+           :param rprompt: Text or formatted text to be displayed on the right side.
+               This can also be a callable that returns (formatted) text.
+           :param bottom_toolbar: Formatted text or callable that returns formatted
+               text to be displayed at the bottom of the screen.
+           :param prompt_continuation: Text that needs to be displayed for a multiline
+               prompt continuation. This can either be formatted text or a callable
+               that takes a `prompt_width`, `line_number` and `wrap_count` as input
+               and returns formatted text. When this is `None` (the default), then
+               `prompt_width` spaces will be used.
+           :param complete_style: ``CompleteStyle.COLUMN``,
+               ``CompleteStyle.MULTI_COLUMN`` or ``CompleteStyle.READLINE_LIKE``.
+           :param mouse_support: `bool` or :class:`~prompt_toolkit.filters.Filter`
+               to enable mouse support.
+           :param placeholder: Text to be displayed when no input has been given
+               yet. Unlike the `default` parameter, this won't be returned as part of
+               the output ever. This can be formatted text or a callable that returns
+               formatted text.
+           :param show_frame: `bool` or
+               :class:`~prompt_toolkit.filters.Filter`. When True, surround the input
+               with a frame.
+           :param refresh_interval: (number; in seconds) When given, refresh the UI
+               every so many seconds.
+           :param input: `Input` object. (Note that the preferred way to change the
+               input/output is by creating an `AppSession`.)
+           :param output: `Output` object.
+           :param interrupt_exception: The exception type that will be raised when
+               there is a keyboard interrupt (control-c keypress).
+           :param eof_exception: The exception type that will be raised when there is
+               an end-of-file/exit event (control-d keypress).
+           """
+       
+    1:     _fields = (
+               "message",
+               "lexer",
+               "completer",
+               "complete_in_thread",
+               "is_password",
+               "editing_mode",
+               "key_bindings",
+               "is_password",
+               "bottom_toolbar",
+               "style",
+               "style_transformation",
+               "swap_light_and_dark_colors",
+               "color_depth",
+               "cursor",
+               "include_default_pygments_style",
+               "rprompt",
+               "multiline",
+               "prompt_continuation",
+               "wrap_lines",
+               "enable_history_search",
+               "search_ignore_case",
+               "complete_while_typing",
+               "validate_while_typing",
+               "complete_style",
+               "mouse_support",
+               "auto_suggest",
+               "clipboard",
+               "validator",
+               "refresh_interval",
+               "input_processors",
+               "placeholder",
+               "enable_system_prompt",
+               "enable_suspend",
+               "enable_open_in_editor",
+               "reserve_space_for_menu",
+               "tempfile_suffix",
+               "tempfile",
+               "show_frame",
+           )
+       
+   44:     def __init__(
+               self,
+               message: AnyFormattedText = "",
+               *,
+    1:         multiline: FilterOrBool = False,
+    1:         wrap_lines: FilterOrBool = True,
+    1:         is_password: FilterOrBool = False,
+    1:         vi_mode: bool = False,
+    1:         editing_mode: EditingMode = EditingMode.EMACS,
+    1:         complete_while_typing: FilterOrBool = True,
+    1:         validate_while_typing: FilterOrBool = True,
+    1:         enable_history_search: FilterOrBool = False,
+    1:         search_ignore_case: FilterOrBool = False,
+    1:         lexer: Lexer | None = None,
+    1:         enable_system_prompt: FilterOrBool = False,
+    1:         enable_suspend: FilterOrBool = False,
+    1:         enable_open_in_editor: FilterOrBool = False,
+    1:         validator: Validator | None = None,
+    1:         completer: Completer | None = None,
+    1:         complete_in_thread: bool = False,
+    1:         reserve_space_for_menu: int = 8,
+    1:         complete_style: CompleteStyle = CompleteStyle.COLUMN,
+    1:         auto_suggest: AutoSuggest | None = None,
+    1:         style: BaseStyle | None = None,
+    1:         style_transformation: StyleTransformation | None = None,
+    1:         swap_light_and_dark_colors: FilterOrBool = False,
+    1:         color_depth: ColorDepth | None = None,
+    1:         cursor: AnyCursorShapeConfig = None,
+    1:         include_default_pygments_style: FilterOrBool = True,
+    1:         history: History | None = None,
+    1:         clipboard: Clipboard | None = None,
+    1:         prompt_continuation: PromptContinuationText | None = None,
+    1:         rprompt: AnyFormattedText = None,
+    1:         bottom_toolbar: AnyFormattedText = None,
+    1:         mouse_support: FilterOrBool = False,
+    1:         input_processors: list[Processor] | None = None,
+    1:         placeholder: AnyFormattedText | None = None,
+    1:         key_bindings: KeyBindingsBase | None = None,
+    1:         erase_when_done: bool = False,
+    1:         tempfile_suffix: str | Callable[[], str] | None = ".txt",
+    1:         tempfile: str | Callable[[], str] | None = None,
+    1:         refresh_interval: float = 0,
+    1:         show_frame: FilterOrBool = False,
+    1:         input: Input | None = None,
+    1:         output: Output | None = None,
+    1:         interrupt_exception: type[BaseException] = KeyboardInterrupt,
+    1:         eof_exception: type[BaseException] = EOFError,
+           ) -> None:
+    2:         history = history or InMemoryHistory()
+    2:         clipboard = clipboard or InMemoryClipboard()
+       
+               # Ensure backwards-compatibility, when `vi_mode` is passed.
+    2:         if vi_mode:
+                   editing_mode = EditingMode.VI
+       
+               # Store all settings in this class.
+    2:         self._input = input
+    2:         self._output = output
+       
+               # Store attributes.
+               # (All except 'editing_mode'.)
+    2:         self.message = message
+    2:         self.lexer = lexer
+    2:         self.completer = completer
+    2:         self.complete_in_thread = complete_in_thread
+    2:         self.is_password = is_password
+    2:         self.key_bindings = key_bindings
+    2:         self.bottom_toolbar = bottom_toolbar
+    2:         self.style = style
+    2:         self.style_transformation = style_transformation
+    2:         self.swap_light_and_dark_colors = swap_light_and_dark_colors
+    2:         self.color_depth = color_depth
+    2:         self.cursor = cursor
+    2:         self.include_default_pygments_style = include_default_pygments_style
+    2:         self.rprompt = rprompt
+    2:         self.multiline = multiline
+    2:         self.prompt_continuation = prompt_continuation
+    2:         self.wrap_lines = wrap_lines
+    2:         self.enable_history_search = enable_history_search
+    2:         self.search_ignore_case = search_ignore_case
+    2:         self.complete_while_typing = complete_while_typing
+    2:         self.validate_while_typing = validate_while_typing
+    2:         self.complete_style = complete_style
+    2:         self.mouse_support = mouse_support
+    2:         self.auto_suggest = auto_suggest
+    2:         self.clipboard = clipboard
+    2:         self.validator = validator
+    2:         self.refresh_interval = refresh_interval
+    2:         self.input_processors = input_processors
+    2:         self.placeholder = placeholder
+    2:         self.enable_system_prompt = enable_system_prompt
+    2:         self.enable_suspend = enable_suspend
+    2:         self.enable_open_in_editor = enable_open_in_editor
+    2:         self.reserve_space_for_menu = reserve_space_for_menu
+    2:         self.tempfile_suffix = tempfile_suffix
+    2:         self.tempfile = tempfile
+    2:         self.show_frame = show_frame
+    2:         self.interrupt_exception = interrupt_exception
+    2:         self.eof_exception = eof_exception
+       
+               # Create buffers, layout and Application.
+    2:         self.history = history
+    2:         self.default_buffer = self._create_default_buffer()
+    2:         self.search_buffer = self._create_search_buffer()
+    2:         self.layout = self._create_layout()
+    2:         self.app = self._create_application(editing_mode, erase_when_done)
+       
+    1:     def _dyncond(self, attr_name: str) -> Condition:
+               """
+               Dynamically take this setting from this 'PromptSession' class.
+               `attr_name` represents an attribute name of this class. Its value
+               can either be a boolean or a `Filter`.
+       
+               This returns something that can be used as either a `Filter`
+               or `Filter`.
+               """
+       
+   60:         @Condition
+   60:         def dynamic() -> bool:
+  339:             value = cast(FilterOrBool, getattr(self, attr_name))
+  339:             return to_filter(value)()
+       
+   30:         return dynamic
+       
+    1:     def _create_default_buffer(self) -> Buffer:
+               """
+               Create and return the default input buffer.
+               """
+    2:         dyncond = self._dyncond
+       
+               # Create buffers list.
+    2:         def accept(buff: Buffer) -> bool:
+                   """Accept the content of the default buffer. This is called when
+                   the validation succeeds."""
+                   cast(Application[str], get_app()).exit(
+                       result=buff.document.text, style="class:accepted"
+                   )
+                   return True  # Keep text, we call 'reset' later on.
+       
+    4:         return Buffer(
+    2:             name=DEFAULT_BUFFER,
+                   # Make sure that complete_while_typing is disabled when
+                   # enable_history_search is enabled. (First convert to Filter,
+                   # to avoid doing bitwise operations on bool objects.)
+    4:             complete_while_typing=Condition(
+   56:                 lambda: is_true(self.complete_while_typing)
+   18:                 and not is_true(self.enable_history_search)
+   18:                 and not self.complete_style == CompleteStyle.READLINE_LIKE
+                   ),
+    2:             validate_while_typing=dyncond("validate_while_typing"),
+    2:             enable_history_search=dyncond("enable_history_search"),
+    5:             validator=DynamicValidator(lambda: self.validator),
+    4:             completer=DynamicCompleter(
+   20:                 lambda: ThreadedCompleter(self.completer)
+   18:                 if self.complete_in_thread and self.completer
+   18:                 else self.completer
+                   ),
+    2:             history=self.history,
+   20:             auto_suggest=DynamicAutoSuggest(lambda: self.auto_suggest),
+    2:             accept_handler=accept,
+    2:             tempfile_suffix=lambda: to_str(self.tempfile_suffix or ""),
+    2:             tempfile=lambda: to_str(self.tempfile or ""),
+               )
+       
+    1:     def _create_search_buffer(self) -> Buffer:
+    2:         return Buffer(name=SEARCH_BUFFER)
+       
+    1:     def _create_layout(self) -> Layout:
+               """
+               Create `Layout` for this prompt.
+               """
+    2:         dyncond = self._dyncond
+       
+               # Create functions that will dynamically split the prompt. (If we have
+               # a multiline prompt.)
+    2:         (
+    2:             has_before_fragments,
+    2:             get_prompt_text_1,
+    2:             get_prompt_text_2,
+    2:         ) = _split_multiline_prompt(self._get_prompt)
+       
+    2:         default_buffer = self.default_buffer
+    2:         search_buffer = self.search_buffer
+       
+               # Create processors list.
+    4:         @Condition
+    4:         def display_placeholder() -> bool:
+   53:             return self.placeholder is not None and self.default_buffer.text == ""
+       
+    2:         all_input_processors = [
+    2:             HighlightIncrementalSearchProcessor(),
+    2:             HighlightSelectionProcessor(),
+    4:             ConditionalProcessor(
+    2:                 AppendAutoSuggestion(), has_focus(default_buffer) & ~is_done
+                   ),
+    2:             ConditionalProcessor(PasswordProcessor(), dyncond("is_password")),
+    2:             DisplayMultipleCursors(),
+                   # Users can insert processors here.
+   55:             DynamicProcessor(lambda: merge_processors(self.input_processors or [])),
+    4:             ConditionalProcessor(
+    2:                 AfterInput(lambda: self.placeholder),
+    2:                 filter=display_placeholder,
+                   ),
+               ]
+       
+               # Create bottom toolbars.
+    4:         bottom_toolbar = ConditionalContainer(
+    4:             Window(
+    4:                 FormattedTextControl(
+    2:                     lambda: self.bottom_toolbar, style="class:bottom-toolbar.text"
+                       ),
+    2:                 style="class:bottom-toolbar",
+    2:                 dont_extend_height=True,
+    2:                 height=Dimension(min=1),
+                   ),
+   33:             filter=Condition(lambda: self.bottom_toolbar is not None)
+    2:             & ~is_done
+    2:             & renderer_height_is_known,
+               )
+       
+    4:         search_toolbar = SearchToolbar(
+    2:             search_buffer, ignore_case=dyncond("search_ignore_case")
+               )
+       
+    4:         search_buffer_control = SearchBufferControl(
+    2:             buffer=search_buffer,
+    2:             input_processors=[ReverseSearchProcessor()],
+    2:             ignore_case=dyncond("search_ignore_case"),
+               )
+       
+    4:         system_toolbar = SystemToolbar(
+    2:             enable_global_bindings=dyncond("enable_system_prompt")
+               )
+       
+    2:         def get_search_buffer_control() -> SearchBufferControl:
+                   "Return the UIControl to be focused when searching start."
+   89:             if is_true(self.multiline):
+   89:                 return search_toolbar.control
+                   else:
+                       return search_buffer_control
+       
+    4:         default_buffer_control = BufferControl(
+    2:             buffer=default_buffer,
+    2:             search_buffer_control=get_search_buffer_control,
+    2:             input_processors=all_input_processors,
+    2:             include_default_input_processors=False,
+   42:             lexer=DynamicLexer(lambda: self.lexer),
+    2:             preview_search=True,
+               )
+       
+    4:         default_buffer_window = Window(
+    2:             default_buffer_control,
+    2:             height=self._get_default_buffer_control_height,
+    4:             get_line_prefix=partial(
+    2:                 self._get_line_prefix, get_prompt_text_2=get_prompt_text_2
+                   ),
+    2:             wrap_lines=dyncond("wrap_lines"),
+               )
+       
+    4:         @Condition
+    4:         def multi_column_complete_style() -> bool:
+   54:             return self.complete_style == CompleteStyle.MULTI_COLUMN
+       
+               # Build the layout.
+       
+               # The main input, with completion menus floating on top of it.
+    4:         main_input_container = FloatContainer(
+    4:             HSplit(
+    2:                 [
+    4:                     ConditionalContainer(
+    4:                         Window(
+    2:                             FormattedTextControl(get_prompt_text_1),
+    2:                             dont_extend_height=True,
+                               ),
+    2:                         Condition(has_before_fragments),
+                           ),
+    4:                     ConditionalContainer(
+    2:                         default_buffer_window,
+    4:                         Condition(
+   74:                             lambda: get_app().layout.current_control
+   36:                             != search_buffer_control
+                               ),
+                           ),
+    4:                     ConditionalContainer(
+    2:                         Window(search_buffer_control),
+    4:                         Condition(
+   74:                             lambda: get_app().layout.current_control
+   36:                             == search_buffer_control
+                               ),
+                           ),
+                       ]
+                   ),
+    2:             [
+                       # Completion menus.
+                       # NOTE: Especially the multi-column menu needs to be
+                       #       transparent, because the shape is not always
+                       #       rectangular due to the meta-text below the menu.
+    4:                 Float(
+    2:                     xcursor=True,
+    2:                     ycursor=True,
+    2:                     transparent=True,
+    4:                     content=CompletionsMenu(
+    2:                         max_height=16,
+    2:                         scroll_offset=1,
+    4:                         extra_filter=has_focus(default_buffer)
+    2:                         & ~multi_column_complete_style,
+                           ),
+                       ),
+    4:                 Float(
+    2:                     xcursor=True,
+    2:                     ycursor=True,
+    2:                     transparent=True,
+    4:                     content=MultiColumnCompletionsMenu(
+    2:                         show_meta=True,
+    4:                         extra_filter=has_focus(default_buffer)
+    2:                         & multi_column_complete_style,
+                           ),
+                       ),
+                       # The right prompt.
+    4:                 Float(
+    2:                     right=0,
+    2:                     top=0,
+    2:                     hide_when_covering_content=True,
+   11:                     content=_RPrompt(lambda: self.rprompt),
+                       ),
+                   ],
+               )
+       
+    4:         layout = HSplit(
+    2:             [
+                       # Wrap the main input in a frame, if requested.
+    4:                 ConditionalContainer(
+    2:                     Frame(main_input_container),
+    2:                     filter=dyncond("show_frame"),
+    2:                     alternative_content=main_input_container,
+                       ),
+    2:                 ConditionalContainer(ValidationToolbar(), filter=~is_done),
+    4:                 ConditionalContainer(
+    2:                     system_toolbar, dyncond("enable_system_prompt") & ~is_done
+                       ),
+                       # In multiline mode, we use two toolbars for 'arg' and 'search'.
+    4:                 ConditionalContainer(
+    2:                     Window(FormattedTextControl(self._get_arg_text), height=1),
+    2:                     dyncond("multiline") & has_arg,
+                       ),
+    2:                 ConditionalContainer(search_toolbar, dyncond("multiline") & ~is_done),
+    2:                 bottom_toolbar,
+                   ]
+               )
+       
+    2:         return Layout(layout, default_buffer_window)
+       
+    1:     def _create_application(
+               self, editing_mode: EditingMode, erase_when_done: bool
+           ) -> Application[_T]:
+               """
+               Create the `Application` object.
+               """
+    2:         dyncond = self._dyncond
+       
+               # Default key bindings.
+    2:         auto_suggest_bindings = load_auto_suggest_bindings()
+    2:         open_in_editor_bindings = load_open_in_editor_bindings()
+    2:         prompt_bindings = self._create_prompt_bindings()
+       
+               # Create application
+    4:         application: Application[_T] = Application(
+    2:             layout=self.layout,
+   54:             style=DynamicStyle(lambda: self.style),
+    4:             style_transformation=merge_style_transformations(
+    2:                 [
+   50:                     DynamicStyleTransformation(lambda: self.style_transformation),
+    4:                     ConditionalStyleTransformation(
+    2:                         SwapLightAndDarkStyleTransformation(),
+    2:                         dyncond("swap_light_and_dark_colors"),
+                           ),
+                       ]
+                   ),
+    2:             include_default_pygments_style=dyncond("include_default_pygments_style"),
+    2:             clipboard=DynamicClipboard(lambda: self.clipboard),
+    4:             key_bindings=merge_key_bindings(
+    2:                 [
+    4:                     merge_key_bindings(
+    2:                         [
+    2:                             auto_suggest_bindings,
+    4:                             ConditionalKeyBindings(
+    2:                                 open_in_editor_bindings,
+    4:                                 dyncond("enable_open_in_editor")
+    2:                                 & has_focus(DEFAULT_BUFFER),
+                                   ),
+    2:                             prompt_bindings,
+                               ]
+                           ),
+   54:                     DynamicKeyBindings(lambda: self.key_bindings),
+                       ]
+                   ),
+    2:             mouse_support=dyncond("mouse_support"),
+    2:             editing_mode=editing_mode,
+    2:             erase_when_done=erase_when_done,
+    2:             reverse_vi_search_direction=True,
+   27:             color_depth=lambda: self.color_depth,
+   11:             cursor=DynamicCursorShapeConfig(lambda: self.cursor),
+    2:             refresh_interval=self.refresh_interval,
+    2:             input=self._input,
+    2:             output=self._output,
+               )
+       
+               # During render time, make sure that we focus the right search control
+               # (if we are searching). - This could be useful if people make the
+               # 'multiline' property dynamic.
+    2:         """
+               def on_render(app):
+                   multiline = is_true(self.multiline)
+                   current_control = app.layout.current_control
+       
+                   if multiline:
+                       if current_control == search_buffer_control:
+                           app.layout.current_control = search_toolbar.control
+                           app.invalidate()
+                   else:
+                       if current_control == search_toolbar.control:
+                           app.layout.current_control = search_buffer_control
+                           app.invalidate()
+       
+               app.on_render += on_render
+               """
+       
+    2:         return application
+       
+    1:     def _create_prompt_bindings(self) -> KeyBindings:
+               """
+               Create the KeyBindings for a prompt application.
+               """
+    2:         kb = KeyBindings()
+    2:         handle = kb.add
+    2:         default_focused = has_focus(DEFAULT_BUFFER)
+       
+    4:         @Condition
+    4:         def do_accept() -> bool:
+    3:             return not is_true(self.multiline) and self.app.layout.has_focus(
+                       DEFAULT_BUFFER
+                   )
+       
+    4:         @handle("enter", filter=do_accept & default_focused)
+    4:         def _accept_input(event: E) -> None:
+                   "Accept input when enter has been pressed."
+                   self.default_buffer.validate_and_handle()
+       
+    4:         @Condition
+    4:         def readline_complete_style() -> bool:
+                   return self.complete_style == CompleteStyle.READLINE_LIKE
+       
+    4:         @handle("tab", filter=readline_complete_style & default_focused)
+    4:         def _complete_like_readline(event: E) -> None:
+                   "Display completions (like Readline)."
+                   display_completions_like_readline(event)
+       
+    4:         @handle("c-c", filter=default_focused)
+    4:         @handle("<sigint>")
+    4:         def _keyboard_interrupt(event: E) -> None:
+                   "Abort when Control-C has been pressed."
+                   event.app.exit(exception=self.interrupt_exception(), style="class:aborting")
+       
+    4:         @Condition
+    4:         def ctrl_d_condition() -> bool:
+                   """Ctrl-D binding is only active when the default buffer is selected
+                   and empty."""
+                   app = get_app()
+                   return (
+                       app.current_buffer.name == DEFAULT_BUFFER
+                       and not app.current_buffer.text
+                   )
+       
+    4:         @handle("c-d", filter=ctrl_d_condition & default_focused)
+    4:         def _eof(event: E) -> None:
+                   "Exit when Control-D has been pressed."
+                   event.app.exit(exception=self.eof_exception(), style="class:exiting")
+       
+    2:         suspend_supported = Condition(suspend_to_background_supported)
+       
+    4:         @Condition
+    4:         def enable_suspend() -> bool:
+                   return to_filter(self.enable_suspend)()
+       
+    4:         @handle("c-z", filter=suspend_supported & enable_suspend)
+    4:         def _suspend(event: E) -> None:
+                   """
+                   Suspend process to background.
+                   """
+                   event.app.suspend_to_background()
+       
+    2:         return kb
+       
+   45:     def prompt(
+               self,
+               # When any of these arguments are passed, this value is overwritten
+               # in this PromptSession.
+               message: AnyFormattedText | None = None,
+               # `message` should go first, because people call it as
+               # positional argument.
+               *,
+    1:         editing_mode: EditingMode | None = None,
+    1:         refresh_interval: float | None = None,
+    1:         vi_mode: bool | None = None,
+    1:         lexer: Lexer | None = None,
+    1:         completer: Completer | None = None,
+    1:         complete_in_thread: bool | None = None,
+    1:         is_password: bool | None = None,
+    1:         key_bindings: KeyBindingsBase | None = None,
+    1:         bottom_toolbar: AnyFormattedText | None = None,
+    1:         style: BaseStyle | None = None,
+    1:         color_depth: ColorDepth | None = None,
+    1:         cursor: AnyCursorShapeConfig | None = None,
+    1:         include_default_pygments_style: FilterOrBool | None = None,
+    1:         style_transformation: StyleTransformation | None = None,
+    1:         swap_light_and_dark_colors: FilterOrBool | None = None,
+    1:         rprompt: AnyFormattedText | None = None,
+    1:         multiline: FilterOrBool | None = None,
+    1:         prompt_continuation: PromptContinuationText | None = None,
+    1:         wrap_lines: FilterOrBool | None = None,
+    1:         enable_history_search: FilterOrBool | None = None,
+    1:         search_ignore_case: FilterOrBool | None = None,
+    1:         complete_while_typing: FilterOrBool | None = None,
+    1:         validate_while_typing: FilterOrBool | None = None,
+    1:         complete_style: CompleteStyle | None = None,
+    1:         auto_suggest: AutoSuggest | None = None,
+    1:         validator: Validator | None = None,
+    1:         clipboard: Clipboard | None = None,
+    1:         mouse_support: FilterOrBool | None = None,
+    1:         input_processors: list[Processor] | None = None,
+    1:         placeholder: AnyFormattedText | None = None,
+    1:         reserve_space_for_menu: int | None = None,
+    1:         enable_system_prompt: FilterOrBool | None = None,
+    1:         enable_suspend: FilterOrBool | None = None,
+    1:         enable_open_in_editor: FilterOrBool | None = None,
+    1:         tempfile_suffix: str | Callable[[], str] | None = None,
+    1:         tempfile: str | Callable[[], str] | None = None,
+    1:         show_frame: FilterOrBool | None = None,
+               # Following arguments are specific to the current `prompt()` call.
+    1:         default: str | Document = "",
+    1:         accept_default: bool = False,
+    1:         pre_run: Callable[[], None] | None = None,
+    1:         set_exception_handler: bool = True,
+    1:         handle_sigint: bool = True,
+    1:         in_thread: bool = False,
+    1:         inputhook: InputHook | None = None,
+           ) -> _T:
+               """
+               Display the prompt.
+       
+               The first set of arguments is a subset of the :class:`~.PromptSession`
+               class itself. For these, passing in ``None`` will keep the current
+               values that are active in the session. Passing in a value will set the
+               attribute for the session, which means that it applies to the current,
+               but also to the next prompts.
+       
+               Note that in order to erase a ``Completer``, ``Validator`` or
+               ``AutoSuggest``, you can't use ``None``. Instead pass in a
+               ``DummyCompleter``, ``DummyValidator`` or ``DummyAutoSuggest`` instance
+               respectively. For a ``Lexer`` you can pass in an empty ``SimpleLexer``.
+       
+               Additional arguments, specific for this prompt:
+       
+               :param default: The default input text to be shown. (This can be edited
+                   by the user).
+               :param accept_default: When `True`, automatically accept the default
+                   value without allowing the user to edit the input.
+               :param pre_run: Callable, called at the start of `Application.run`.
+               :param in_thread: Run the prompt in a background thread; block the
+                   current thread. This avoids interference with an event loop in the
+                   current thread. Like `Application.run(in_thread=True)`.
+       
+               This method will raise ``KeyboardInterrupt`` when control-c has been
+               pressed (for abort) and ``EOFError`` when control-d has been pressed
+               (for exit).
+               """
+               # NOTE: We used to create a backup of the PromptSession attributes and
+               #       restore them after exiting the prompt. This code has been
+               #       removed, because it was confusing and didn't really serve a use
+               #       case. (People were changing `Application.editing_mode`
+               #       dynamically and surprised that it was reset after every call.)
+       
+               # NOTE 2: YES, this is a lot of repeation below...
+               #         However, it is a very convenient for a user to accept all
+               #         these parameters in this `prompt` method as well. We could
+               #         use `locals()` and `setattr` to avoid the repetition, but
+               #         then we loose the advantage of mypy and pyflakes to be able
+               #         to verify the code.
+    3:         if message is not None:
+    3:             self.message = message
+    3:         if editing_mode is not None:
+                   self.editing_mode = editing_mode
+    3:         if refresh_interval is not None:
+                   self.refresh_interval = refresh_interval
+    3:         if vi_mode:
+                   self.editing_mode = EditingMode.VI
+    3:         if lexer is not None:
+                   self.lexer = lexer
+    3:         if completer is not None:
+                   self.completer = completer
+    3:         if complete_in_thread is not None:
+                   self.complete_in_thread = complete_in_thread
+    3:         if is_password is not None:
+                   self.is_password = is_password
+    3:         if key_bindings is not None:
+                   self.key_bindings = key_bindings
+    3:         if bottom_toolbar is not None:
+                   self.bottom_toolbar = bottom_toolbar
+    3:         if style is not None:
+                   self.style = style
+    3:         if color_depth is not None:
+                   self.color_depth = color_depth
+    3:         if cursor is not None:
+                   self.cursor = cursor
+    3:         if include_default_pygments_style is not None:
+                   self.include_default_pygments_style = include_default_pygments_style
+    3:         if style_transformation is not None:
+                   self.style_transformation = style_transformation
+    3:         if swap_light_and_dark_colors is not None:
+                   self.swap_light_and_dark_colors = swap_light_and_dark_colors
+    3:         if rprompt is not None:
+                   self.rprompt = rprompt
+    3:         if multiline is not None:
+                   self.multiline = multiline
+    3:         if prompt_continuation is not None:
+                   self.prompt_continuation = prompt_continuation
+    3:         if wrap_lines is not None:
+                   self.wrap_lines = wrap_lines
+    3:         if enable_history_search is not None:
+                   self.enable_history_search = enable_history_search
+    3:         if search_ignore_case is not None:
+                   self.search_ignore_case = search_ignore_case
+    3:         if complete_while_typing is not None:
+                   self.complete_while_typing = complete_while_typing
+    3:         if validate_while_typing is not None:
+                   self.validate_while_typing = validate_while_typing
+    3:         if complete_style is not None:
+                   self.complete_style = complete_style
+    3:         if auto_suggest is not None:
+                   self.auto_suggest = auto_suggest
+    3:         if validator is not None:
+                   self.validator = validator
+    3:         if clipboard is not None:
+                   self.clipboard = clipboard
+    3:         if mouse_support is not None:
+                   self.mouse_support = mouse_support
+    3:         if input_processors is not None:
+                   self.input_processors = input_processors
+    3:         if placeholder is not None:
+                   self.placeholder = placeholder
+    3:         if reserve_space_for_menu is not None:
+                   self.reserve_space_for_menu = reserve_space_for_menu
+    3:         if enable_system_prompt is not None:
+                   self.enable_system_prompt = enable_system_prompt
+    3:         if enable_suspend is not None:
+                   self.enable_suspend = enable_suspend
+    3:         if enable_open_in_editor is not None:
+                   self.enable_open_in_editor = enable_open_in_editor
+    3:         if tempfile_suffix is not None:
+                   self.tempfile_suffix = tempfile_suffix
+    3:         if tempfile is not None:
+                   self.tempfile = tempfile
+    3:         if show_frame is not None:
+                   self.show_frame = show_frame
+       
+    3:         self._add_pre_run_callables(pre_run, accept_default)
+    6:         self.default_buffer.reset(
+    3:             default if isinstance(default, Document) else Document(default)
+               )
+    3:         self.app.refresh_interval = self.refresh_interval  # This is not reactive.
+       
+               # If we are using the default output, and have a dumb terminal. Use the
+               # dumb prompt.
+    3:         if self._output is None and is_dumb_terminal():
+                   with self._dumb_prompt(self.message) as dump_app:
+                       return dump_app.run(in_thread=in_thread, handle_sigint=handle_sigint)
+       
+    6:         return self.app.run(
+    3:             set_exception_handler=set_exception_handler,
+    3:             in_thread=in_thread,
+    3:             handle_sigint=handle_sigint,
+    3:             inputhook=inputhook,
+               )
+       
+    2:     @contextmanager
+    2:     def _dumb_prompt(self, message: AnyFormattedText = "") -> Iterator[Application[_T]]:
+               """
+               Create prompt `Application` for prompt function for dumb terminals.
+       
+               Dumb terminals have minimum rendering capabilities. We can only print
+               text to the screen. We can't use colors, and we can't do cursor
+               movements. The Emacs inferior shell is an example of a dumb terminal.
+       
+               We will show the prompt, and wait for the input. We still handle arrow
+               keys, and all custom key bindings, but we don't really render the
+               cursor movements. Instead we only print the typed character that's
+               right before the cursor.
+               """
+               # Send prompt to output.
+               self.output.write(fragment_list_to_text(to_formatted_text(self.message)))
+               self.output.flush()
+       
+               # Key bindings for the dumb prompt: mostly the same as the full prompt.
+               key_bindings: KeyBindingsBase = self._create_prompt_bindings()
+               if self.key_bindings:
+                   key_bindings = merge_key_bindings([self.key_bindings, key_bindings])
+       
+               # Create and run application.
+               application = cast(
+                   Application[_T],
+                   Application(
+                       input=self.input,
+                       output=DummyOutput(),
+                       layout=self.layout,
+                       key_bindings=key_bindings,
+                   ),
+               )
+       
+               def on_text_changed(_: object) -> None:
+                   self.output.write(self.default_buffer.document.text_before_cursor[-1:])
+                   self.output.flush()
+       
+               self.default_buffer.on_text_changed += on_text_changed
+       
+               try:
+                   yield application
+               finally:
+                   # Render line ending.
+                   self.output.write("\r\n")
+                   self.output.flush()
+       
+                   self.default_buffer.on_text_changed -= on_text_changed
+       
+   43:     async def prompt_async(
+               self,
+               # When any of these arguments are passed, this value is overwritten
+               # in this PromptSession.
+               message: AnyFormattedText | None = None,
+               # `message` should go first, because people call it as
+               # positional argument.
+               *,
+    1:         editing_mode: EditingMode | None = None,
+    1:         refresh_interval: float | None = None,
+    1:         vi_mode: bool | None = None,
+    1:         lexer: Lexer | None = None,
+    1:         completer: Completer | None = None,
+    1:         complete_in_thread: bool | None = None,
+    1:         is_password: bool | None = None,
+    1:         key_bindings: KeyBindingsBase | None = None,
+    1:         bottom_toolbar: AnyFormattedText | None = None,
+    1:         style: BaseStyle | None = None,
+    1:         color_depth: ColorDepth | None = None,
+    1:         cursor: CursorShapeConfig | None = None,
+    1:         include_default_pygments_style: FilterOrBool | None = None,
+    1:         style_transformation: StyleTransformation | None = None,
+    1:         swap_light_and_dark_colors: FilterOrBool | None = None,
+    1:         rprompt: AnyFormattedText | None = None,
+    1:         multiline: FilterOrBool | None = None,
+    1:         prompt_continuation: PromptContinuationText | None = None,
+    1:         wrap_lines: FilterOrBool | None = None,
+    1:         enable_history_search: FilterOrBool | None = None,
+    1:         search_ignore_case: FilterOrBool | None = None,
+    1:         complete_while_typing: FilterOrBool | None = None,
+    1:         validate_while_typing: FilterOrBool | None = None,
+    1:         complete_style: CompleteStyle | None = None,
+    1:         auto_suggest: AutoSuggest | None = None,
+    1:         validator: Validator | None = None,
+    1:         clipboard: Clipboard | None = None,
+    1:         mouse_support: FilterOrBool | None = None,
+    1:         input_processors: list[Processor] | None = None,
+    1:         placeholder: AnyFormattedText | None = None,
+    1:         reserve_space_for_menu: int | None = None,
+    1:         enable_system_prompt: FilterOrBool | None = None,
+    1:         enable_suspend: FilterOrBool | None = None,
+    1:         enable_open_in_editor: FilterOrBool | None = None,
+    1:         tempfile_suffix: str | Callable[[], str] | None = None,
+    1:         tempfile: str | Callable[[], str] | None = None,
+    1:         show_frame: FilterOrBool = False,
+               # Following arguments are specific to the current `prompt()` call.
+    1:         default: str | Document = "",
+    1:         accept_default: bool = False,
+    1:         pre_run: Callable[[], None] | None = None,
+    1:         set_exception_handler: bool = True,
+    1:         handle_sigint: bool = True,
+           ) -> _T:
+               if message is not None:
+                   self.message = message
+               if editing_mode is not None:
+                   self.editing_mode = editing_mode
+               if refresh_interval is not None:
+                   self.refresh_interval = refresh_interval
+               if vi_mode:
+                   self.editing_mode = EditingMode.VI
+               if lexer is not None:
+                   self.lexer = lexer
+               if completer is not None:
+                   self.completer = completer
+               if complete_in_thread is not None:
+                   self.complete_in_thread = complete_in_thread
+               if is_password is not None:
+                   self.is_password = is_password
+               if key_bindings is not None:
+                   self.key_bindings = key_bindings
+               if bottom_toolbar is not None:
+                   self.bottom_toolbar = bottom_toolbar
+               if style is not None:
+                   self.style = style
+               if color_depth is not None:
+                   self.color_depth = color_depth
+               if cursor is not None:
+                   self.cursor = cursor
+               if include_default_pygments_style is not None:
+                   self.include_default_pygments_style = include_default_pygments_style
+               if style_transformation is not None:
+                   self.style_transformation = style_transformation
+               if swap_light_and_dark_colors is not None:
+                   self.swap_light_and_dark_colors = swap_light_and_dark_colors
+               if rprompt is not None:
+                   self.rprompt = rprompt
+               if multiline is not None:
+                   self.multiline = multiline
+               if prompt_continuation is not None:
+                   self.prompt_continuation = prompt_continuation
+               if wrap_lines is not None:
+                   self.wrap_lines = wrap_lines
+               if enable_history_search is not None:
+                   self.enable_history_search = enable_history_search
+               if search_ignore_case is not None:
+                   self.search_ignore_case = search_ignore_case
+               if complete_while_typing is not None:
+                   self.complete_while_typing = complete_while_typing
+               if validate_while_typing is not None:
+                   self.validate_while_typing = validate_while_typing
+               if complete_style is not None:
+                   self.complete_style = complete_style
+               if auto_suggest is not None:
+                   self.auto_suggest = auto_suggest
+               if validator is not None:
+                   self.validator = validator
+               if clipboard is not None:
+                   self.clipboard = clipboard
+               if mouse_support is not None:
+                   self.mouse_support = mouse_support
+               if input_processors is not None:
+                   self.input_processors = input_processors
+               if placeholder is not None:
+                   self.placeholder = placeholder
+               if reserve_space_for_menu is not None:
+                   self.reserve_space_for_menu = reserve_space_for_menu
+               if enable_system_prompt is not None:
+                   self.enable_system_prompt = enable_system_prompt
+               if enable_suspend is not None:
+                   self.enable_suspend = enable_suspend
+               if enable_open_in_editor is not None:
+                   self.enable_open_in_editor = enable_open_in_editor
+               if tempfile_suffix is not None:
+                   self.tempfile_suffix = tempfile_suffix
+               if tempfile is not None:
+                   self.tempfile = tempfile
+               if show_frame is not None:
+                   self.show_frame = show_frame
+       
+               self._add_pre_run_callables(pre_run, accept_default)
+               self.default_buffer.reset(
+                   default if isinstance(default, Document) else Document(default)
+               )
+               self.app.refresh_interval = self.refresh_interval  # This is not reactive.
+       
+               # If we are using the default output, and have a dumb terminal. Use the
+               # dumb prompt.
+               if self._output is None and is_dumb_terminal():
+                   with self._dumb_prompt(self.message) as dump_app:
+                       return await dump_app.run_async(handle_sigint=handle_sigint)
+       
+               return await self.app.run_async(
+                   set_exception_handler=set_exception_handler, handle_sigint=handle_sigint
+               )
+       
+    1:     def _add_pre_run_callables(
+               self, pre_run: Callable[[], None] | None, accept_default: bool
+           ) -> None:
+    3:         def pre_run2() -> None:
+    3:             if pre_run:
+    2:                 pre_run()
+       
+    3:             if accept_default:
+                       # Validate and handle input. We use `call_from_executor` in
+                       # order to run it "soon" (during the next iteration of the
+                       # event loop), instead of right now. Otherwise, it won't
+                       # display the default value.
+                       get_running_loop().call_soon(self.default_buffer.validate_and_handle)
+       
+    3:         self.app.pre_run_callables.append(pre_run2)
+       
+    2:     @property
+    2:     def editing_mode(self) -> EditingMode:
+               return self.app.editing_mode
+       
+    2:     @editing_mode.setter
+    2:     def editing_mode(self, value: EditingMode) -> None:
+               self.app.editing_mode = value
+       
+    1:     def _get_default_buffer_control_height(self) -> Dimension:
+               # If there is an autocompletion menu to be shown, make sure that our
+               # layout has at least a minimal height in order to display it.
+               if (
+   27:             self.completer is not None
+                   and self.complete_style != CompleteStyle.READLINE_LIKE
+               ):
+                   space = self.reserve_space_for_menu
+               else:
+   27:             space = 0
+       
+   27:         if space and not get_app().is_done:
+                   buff = self.default_buffer
+       
+                   # Reserve the space, either when there are completions, or when
+                   # `complete_while_typing` is true and we expect completions very
+                   # soon.
+                   if buff.complete_while_typing() or buff.complete_state is not None:
+                       return Dimension(min=space)
+       
+   27:         return Dimension()
+       
+    1:     def _get_prompt(self) -> StyleAndTextTuples:
+   97:         return to_formatted_text(self.message, style="class:prompt")
+       
+    1:     def _get_continuation(
+               self, width: int, line_number: int, wrap_count: int
+           ) -> StyleAndTextTuples:
+               """
+               Insert the prompt continuation.
+       
+               :param width: The width that was used for the prompt. (more or less can
+                   be used.)
+               :param line_number:
+               :param wrap_count: Amount of times that the line has been wrapped.
+               """
+   23:         prompt_continuation = self.prompt_continuation
+       
+   23:         if callable(prompt_continuation):
+   46:             continuation: AnyFormattedText = prompt_continuation(
+   23:                 width, line_number, wrap_count
+                   )
+               else:
+                   continuation = prompt_continuation
+       
+               # When the continuation prompt is not given, choose the same width as
+               # the actual prompt.
+   23:         if continuation is None and is_true(self.multiline):
+                   continuation = " " * width
+       
+   23:         return to_formatted_text(continuation, style="class:prompt-continuation")
+       
+    1:     def _get_line_prefix(
+               self,
+               line_number: int,
+               wrap_count: int,
+               get_prompt_text_2: _StyleAndTextTuplesCallable,
+           ) -> StyleAndTextTuples:
+               """
+               Return whatever needs to be inserted before every line.
+               (the prompt, or a line continuation.)
+               """
+               # First line: display the "arg" or the prompt.
+   61:         if line_number == 0 and wrap_count == 0:
+   38:             if not is_true(self.multiline) and get_app().key_processor.arg is not None:
+                       return self._inline_arg()
+                   else:
+   38:                 return get_prompt_text_2()
+       
+               # For the next lines, display the appropriate continuation.
+   23:         prompt_width = get_cwidth(fragment_list_to_text(get_prompt_text_2()))
+   23:         return self._get_continuation(prompt_width, line_number, wrap_count)
+       
+    1:     def _get_arg_text(self) -> StyleAndTextTuples:
+               "'arg' toolbar, for in multiline mode."
+               arg = self.app.key_processor.arg
+               if arg is None:
+                   # Should not happen because of the `has_arg` filter in the layout.
+                   return []
+       
+               if arg == "-":
+                   arg = "-1"
+       
+               return [("class:arg-toolbar", "Repeat: "), ("class:arg-toolbar.text", arg)]
+       
+    1:     def _inline_arg(self) -> StyleAndTextTuples:
+               "'arg' prefix, for in single line mode."
+               app = get_app()
+               if app.key_processor.arg is None:
+                   return []
+               else:
+                   arg = app.key_processor.arg
+       
+                   return [
+                       ("class:prompt.arg", "(arg: "),
+                       ("class:prompt.arg.text", str(arg)),
+                       ("class:prompt.arg", ") "),
+                   ]
+       
+           # Expose the Input and Output objects as attributes, mainly for
+           # backward-compatibility.
+       
+    2:     @property
+    2:     def input(self) -> Input:
+               return self.app.input
+       
+    2:     @property
+    2:     def output(self) -> Output:
+               return self.app.output
+       
+       
+   46: def prompt(
+           message: AnyFormattedText | None = None,
+           *,
+    1:     history: History | None = None,
+    1:     editing_mode: EditingMode | None = None,
+    1:     refresh_interval: float | None = None,
+    1:     vi_mode: bool | None = None,
+    1:     lexer: Lexer | None = None,
+    1:     completer: Completer | None = None,
+    1:     complete_in_thread: bool | None = None,
+    1:     is_password: bool | None = None,
+    1:     key_bindings: KeyBindingsBase | None = None,
+    1:     bottom_toolbar: AnyFormattedText | None = None,
+    1:     style: BaseStyle | None = None,
+    1:     color_depth: ColorDepth | None = None,
+    1:     cursor: AnyCursorShapeConfig = None,
+    1:     include_default_pygments_style: FilterOrBool | None = None,
+    1:     style_transformation: StyleTransformation | None = None,
+    1:     swap_light_and_dark_colors: FilterOrBool | None = None,
+    1:     rprompt: AnyFormattedText | None = None,
+    1:     multiline: FilterOrBool | None = None,
+    1:     prompt_continuation: PromptContinuationText | None = None,
+    1:     wrap_lines: FilterOrBool | None = None,
+    1:     enable_history_search: FilterOrBool | None = None,
+    1:     search_ignore_case: FilterOrBool | None = None,
+    1:     complete_while_typing: FilterOrBool | None = None,
+    1:     validate_while_typing: FilterOrBool | None = None,
+    1:     complete_style: CompleteStyle | None = None,
+    1:     auto_suggest: AutoSuggest | None = None,
+    1:     validator: Validator | None = None,
+    1:     clipboard: Clipboard | None = None,
+    1:     mouse_support: FilterOrBool | None = None,
+    1:     input_processors: list[Processor] | None = None,
+    1:     placeholder: AnyFormattedText | None = None,
+    1:     reserve_space_for_menu: int | None = None,
+    1:     enable_system_prompt: FilterOrBool | None = None,
+    1:     enable_suspend: FilterOrBool | None = None,
+    1:     enable_open_in_editor: FilterOrBool | None = None,
+    1:     tempfile_suffix: str | Callable[[], str] | None = None,
+    1:     tempfile: str | Callable[[], str] | None = None,
+    1:     show_frame: FilterOrBool | None = None,
+           # Following arguments are specific to the current `prompt()` call.
+    1:     default: str = "",
+    1:     accept_default: bool = False,
+    1:     pre_run: Callable[[], None] | None = None,
+    1:     set_exception_handler: bool = True,
+    1:     handle_sigint: bool = True,
+    1:     in_thread: bool = False,
+    1:     inputhook: InputHook | None = None,
+       ) -> str:
+           """
+           The global `prompt` function. This will create a new `PromptSession`
+           instance for every call.
+           """
+           # The history is the only attribute that has to be passed to the
+           # `PromptSession`, it can't be passed into the `prompt()` method.
+           session: PromptSession[str] = PromptSession(history=history)
+       
+           return session.prompt(
+               message,
+               editing_mode=editing_mode,
+               refresh_interval=refresh_interval,
+               vi_mode=vi_mode,
+               lexer=lexer,
+               completer=completer,
+               complete_in_thread=complete_in_thread,
+               is_password=is_password,
+               key_bindings=key_bindings,
+               bottom_toolbar=bottom_toolbar,
+               style=style,
+               color_depth=color_depth,
+               cursor=cursor,
+               include_default_pygments_style=include_default_pygments_style,
+               style_transformation=style_transformation,
+               swap_light_and_dark_colors=swap_light_and_dark_colors,
+               rprompt=rprompt,
+               multiline=multiline,
+               prompt_continuation=prompt_continuation,
+               wrap_lines=wrap_lines,
+               enable_history_search=enable_history_search,
+               search_ignore_case=search_ignore_case,
+               complete_while_typing=complete_while_typing,
+               validate_while_typing=validate_while_typing,
+               complete_style=complete_style,
+               auto_suggest=auto_suggest,
+               validator=validator,
+               clipboard=clipboard,
+               mouse_support=mouse_support,
+               input_processors=input_processors,
+               placeholder=placeholder,
+               reserve_space_for_menu=reserve_space_for_menu,
+               enable_system_prompt=enable_system_prompt,
+               enable_suspend=enable_suspend,
+               enable_open_in_editor=enable_open_in_editor,
+               tempfile_suffix=tempfile_suffix,
+               tempfile=tempfile,
+               show_frame=show_frame,
+               default=default,
+               accept_default=accept_default,
+               pre_run=pre_run,
+               set_exception_handler=set_exception_handler,
+               handle_sigint=handle_sigint,
+               in_thread=in_thread,
+               inputhook=inputhook,
+           )
+       
+       
+    1: prompt.__doc__ = PromptSession.prompt.__doc__
+       
+       
+    1: def create_confirm_session(
+           message: AnyFormattedText, suffix: str = " (y/n) "
+       ) -> PromptSession[bool]:
+           """
+           Create a `PromptSession` object for the 'confirm' function.
+           """
+           bindings = KeyBindings()
+       
+           @bindings.add("y")
+           @bindings.add("Y")
+           def yes(event: E) -> None:
+               session.default_buffer.text = "y"
+               event.app.exit(result=True)
+       
+           @bindings.add("n")
+           @bindings.add("N")
+           def no(event: E) -> None:
+               session.default_buffer.text = "n"
+               event.app.exit(result=False)
+       
+           @bindings.add(Keys.Any)
+           def _(event: E) -> None:
+               "Disallow inserting other text."
+               pass
+       
+           complete_message = merge_formatted_text([message, suffix])
+           session: PromptSession[bool] = PromptSession(
+               complete_message, key_bindings=bindings
+           )
+           return session
+       
+       
+    1: def confirm(message: AnyFormattedText = "Confirm?", suffix: str = " (y/n) ") -> bool:
+           """
+           Display a confirmation prompt that returns True/False.
+           """
+           session = create_confirm_session(message, suffix)
+           return session.prompt()

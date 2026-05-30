@@ -1,0 +1,412 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from models import ExecResult, ReplConfig
+from transport import TransportError
+
+
+def load_main_module():
+    module_path = Path(__file__).with_name("__main__.py")
+    spec = importlib.util.spec_from_file_location("mpyrepl_entry", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+mpyrepl_main = load_main_module()
+
+
+class FakeLoop:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def call_soon_threadsafe(self, callback) -> None:
+        self.callbacks.append(callback)
+
+
+class FakeGate:
+    def __init__(self) -> None:
+        self.operations = []
+
+    async def run(self, operation, func, *args):
+        self.operations.append(operation)
+        return None
+
+
+class FakeSymbols:
+    def __init__(self) -> None:
+        self.clear_calls = 0
+
+    def clear(self) -> None:
+        self.clear_calls += 1
+
+
+class FakeCompleter:
+    def __init__(self) -> None:
+        self.clear_runtime_cache_calls = 0
+
+    def clear_runtime_cache(self) -> None:
+        self.clear_runtime_cache_calls += 1
+
+
+class FakeContextTransport:
+    instances = []
+
+    def __init__(self, config) -> None:
+        self.config = config
+        self.enter_raw_repl_calls = []
+        self.exit_raw_repl_calls = 0
+        self.soft_reset_calls = 0
+        FakeContextTransport.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    def enter_raw_repl(self, soft_reset: bool) -> None:
+        self.enter_raw_repl_calls.append(soft_reset)
+
+    def exit_raw_repl(self) -> None:
+        self.exit_raw_repl_calls += 1
+
+    def soft_reset(self, output_consumer=None) -> None:
+        self.soft_reset_calls += 1
+        if output_consumer is not None:
+            payload = "中OK".encode("utf-8")
+            output_consumer(payload[:1])
+            output_consumer(payload[1:])
+
+
+class MainHelperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeContextTransport.instances.clear()
+
+    def test_serial_operation_gate_tracks_current_operation(self) -> None:
+        gate = mpyrepl_main.SerialOperationGate()
+
+        def work(value):
+            self.assertTrue(gate.busy)
+            self.assertEqual(gate.current_operation, "demo")
+            return value + 1
+
+        self.assertEqual(gate.run_blocking("demo", work, 4), 5)
+        self.assertFalse(gate.busy)
+        self.assertEqual(gate.current_operation, "")
+
+    def test_try_run_blocking_returns_none_when_busy(self) -> None:
+        gate = mpyrepl_main.SerialOperationGate()
+        gate._lock.acquire()
+        try:
+            self.assertIsNone(gate.try_run_blocking("demo", lambda: 1))
+        finally:
+            gate._lock.release()
+
+    def test_repl_input_buffer_remembers_document_and_consumes_trimmed_source(self) -> None:
+        input_buffer = mpyrepl_main.ReplInputBuffer()
+        self.assertEqual(input_buffer.prompt_text(), ">>> ")
+        self.assertFalse(input_buffer.has_pending_input())
+        self.assertEqual(input_buffer.prompt_default(), "")
+
+        input_buffer.remember("print(1)\n")
+        document = input_buffer.prompt_default()
+        self.assertEqual(document.text, "print(1)\n")
+        self.assertEqual(document.cursor_position, len("print(1)\n"))
+        self.assertTrue(input_buffer.has_pending_input())
+        self.assertEqual(input_buffer.consume_source("print(1)\n\n"), "print(1)")
+        self.assertFalse(input_buffer.has_pending_input())
+
+    def test_request_prompt_exit_exits_running_prompt(self) -> None:
+        loop = FakeLoop()
+        app = SimpleNamespace(is_running=True, loop=loop)
+        session = SimpleNamespace(app=app)
+        app.exit = mock.Mock()
+
+        mpyrepl_main.request_prompt_exit(session)
+        self.assertEqual(len(loop.callbacks), 1)
+        loop.callbacks[0]()
+        app.exit.assert_called_once_with(result=mpyrepl_main.PROMPT_CONTROL_EXIT)
+
+        idle_session = SimpleNamespace(app=SimpleNamespace(is_running=False, loop=None))
+        mpyrepl_main.request_prompt_exit(idle_session)
+
+    def test_ensure_python_version_rejects_older_runtime(self) -> None:
+        with mock.patch.object(mpyrepl_main.sys, "version_info", (3, 8, 0)):
+            with self.assertRaises(RuntimeError):
+                mpyrepl_main.ensure_python_version()
+
+    def test_ensure_helper_loaded_validates_stderr(self) -> None:
+        transport = mock.Mock()
+        transport.exec_raw.return_value = ExecResult(stdout=b"", stderr=b"")
+
+        with mock.patch.object(mpyrepl_main, "build_helper_source", return_value="helper"):
+            mpyrepl_main.ensure_helper_loaded(transport, 1.5)
+        transport.exec_raw.assert_called_once_with("helper", timeout=1.5)
+
+        broken_transport = mock.Mock()
+        broken_transport.exec_raw.return_value = ExecResult(stdout=b"", stderr=b"boom")
+        with self.assertRaises(TransportError):
+            mpyrepl_main.ensure_helper_loaded(broken_transport, 1.5)
+
+    def test_execute_once_instruments_source_and_streams_output(self) -> None:
+        transport = mock.Mock()
+        transport.exec_raw.side_effect = lambda command, timeout, stdout_consumer, stderr_consumer: (
+            stdout_consumer("ok".encode("utf-8")),
+            stderr_consumer("!".encode("utf-8")),
+            ExecResult(stdout=b"ok", stderr=b"!"),
+        )[-1]
+
+        stdout_stream = io.StringIO()
+        stderr_stream = io.StringIO()
+        with mock.patch.object(mpyrepl_main, "instrument_source", return_value="wrapped"):
+            with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                    result = mpyrepl_main.execute_once(
+                        transport,
+                        "print(1)",
+                        2.0,
+                        mpyrepl_main.Utf8StreamDecoder(),
+                        mpyrepl_main.Utf8StreamDecoder(),
+                    )
+
+        self.assertEqual(result, ExecResult(stdout=b"ok", stderr=b"!"))
+        self.assertEqual(stdout_stream.getvalue(), "ok")
+        self.assertEqual(stderr_stream.getvalue(), "!")
+
+    def test_run_prompt_once_handles_exit_soft_reset_and_exec(self) -> None:
+        config = ReplConfig(port="COM4")
+        session = mock.Mock()
+        session.default_buffer = mock.Mock()
+
+        with mock.patch.object(mpyrepl_main, "build_prompt_session", return_value=session):
+            session.prompt.return_value = mpyrepl_main.PROMPT_EXIT
+            self.assertEqual(mpyrepl_main.run_prompt_once(config, 1.0), 0)
+
+            session.prompt.return_value = mpyrepl_main.PROMPT_SOFT_RESET
+            with mock.patch.object(mpyrepl_main, "run_soft_reset", return_value=11) as run_soft_reset:
+                self.assertEqual(mpyrepl_main.run_prompt_once(config, 1.0), 11)
+                run_soft_reset.assert_called_once_with(config)
+
+            session.prompt.return_value = "print(1)"
+            with mock.patch.object(mpyrepl_main, "run_exec", return_value=12) as run_exec:
+                self.assertEqual(mpyrepl_main.run_prompt_once(config, 1.0), 12)
+                run_exec.assert_called_once_with(config, "print(1)", 1.0)
+
+    def test_run_exec_uses_transport_context_and_returns_status(self) -> None:
+        config = ReplConfig(port="COM4", soft_reset_on_connect=True)
+        restore_sigint = mock.Mock()
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "ensure_helper_loaded") as ensure_helper_loaded:
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "install_sigint_forwarder",
+                    return_value=restore_sigint,
+                ):
+                    with mock.patch.object(
+                        mpyrepl_main,
+                        "execute_once",
+                        return_value=ExecResult(stdout=b"", stderr=b""),
+                    ):
+                        self.assertEqual(mpyrepl_main.run_exec(config, "print(1)", 1.5), 0)
+
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.enter_raw_repl_calls, [True])
+        self.assertEqual(transport.exit_raw_repl_calls, 1)
+        ensure_helper_loaded.assert_called_once_with(transport, 1.5)
+        restore_sigint.assert_called_once_with()
+
+    def test_run_soft_reset_streams_boot_output(self) -> None:
+        config = ReplConfig(port="COM4")
+        stdout_stream = io.StringIO()
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                self.assertEqual(mpyrepl_main.run_soft_reset(config), 0)
+
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.enter_raw_repl_calls, [False])
+        self.assertEqual(transport.soft_reset_calls, 1)
+        self.assertEqual(transport.exit_raw_repl_calls, 1)
+        self.assertEqual(stdout_stream.getvalue(), "中OK")
+
+    def test_run_session_probe_returns_error_when_any_block_fails(self) -> None:
+        config = ReplConfig(port="COM4")
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "execute_once",
+                    side_effect=[
+                        ExecResult(stdout=b"", stderr=b""),
+                        ExecResult(stdout=b"", stderr=b"boom"),
+                    ],
+                ):
+                    self.assertEqual(
+                        mpyrepl_main.run_session_probe(config, "a = 1", "a", 1.0),
+                        1,
+                    )
+
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.enter_raw_repl_calls, [False])
+        self.assertEqual(transport.exit_raw_repl_calls, 1)
+
+    def test_main_dispatches_exec_and_maps_errors_to_exit_codes(self) -> None:
+        args = SimpleNamespace(
+            command="exec",
+            port="COM4",
+            baudrate=115200,
+            read_timeout=0.1,
+            operation_timeout=10.0,
+            soft_reset_on_connect=False,
+            code="print(1)",
+            follow_timeout=1.5,
+        )
+
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with mock.patch.object(mpyrepl_main, "run_exec", return_value=7) as run_exec:
+                    self.assertEqual(mpyrepl_main.main(), 7)
+
+        config = run_exec.call_args.args[0]
+        self.assertEqual(config.port, "COM4")
+        self.assertEqual(config.baudrate, 115200)
+        self.assertFalse(config.soft_reset_on_connect)
+        self.assertEqual(run_exec.call_args.args[1:], ("print(1)", 1.5))
+
+        stderr_stream = io.StringIO()
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "run_exec",
+                    side_effect=TransportError("transport boom"),
+                ):
+                    with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                        self.assertEqual(mpyrepl_main.main(), 2)
+        self.assertIn("transport boom", stderr_stream.getvalue())
+
+        stderr_stream = io.StringIO()
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "run_exec",
+                    side_effect=RuntimeError("runtime boom"),
+                ):
+                    with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                        self.assertEqual(mpyrepl_main.main(), 3)
+        self.assertIn("runtime boom", stderr_stream.getvalue())
+
+
+class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_apply_pending_action_handles_exit_and_soft_reset(self) -> None:
+        gate = FakeGate()
+        state = mpyrepl_main.AsyncReplState()
+        state.pending_action = "exit"
+        self.assertTrue(
+            await mpyrepl_main.apply_pending_action(
+                transport=mock.Mock(),
+                gate=gate,
+                state=state,
+                session_symbols=FakeSymbols(),
+                completer=FakeCompleter(),
+                follow_timeout=1.0,
+            )
+        )
+        self.assertEqual(state.pending_action, "")
+
+        gate = FakeGate()
+        state = mpyrepl_main.AsyncReplState()
+        state.pending_action = "soft-reset"
+        session_symbols = FakeSymbols()
+        completer = FakeCompleter()
+        transport = mock.Mock()
+
+        with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+            self.assertFalse(
+                await mpyrepl_main.apply_pending_action(
+                    transport=transport,
+                    gate=gate,
+                    state=state,
+                    session_symbols=session_symbols,
+                    completer=completer,
+                    follow_timeout=1.0,
+                )
+            )
+
+        self.assertEqual(gate.operations, ["soft-reset", "helper-load"])
+        self.assertEqual(session_symbols.clear_calls, 1)
+        self.assertEqual(completer.clear_runtime_cache_calls, 1)
+        self.assertEqual(state.pending_action, "")
+
+    async def test_apply_pending_action_rejects_unknown_command(self) -> None:
+        state = mpyrepl_main.AsyncReplState()
+        state.pending_action = "bad-command"
+
+        with self.assertRaises(RuntimeError):
+            await mpyrepl_main.apply_pending_action(
+                transport=mock.Mock(),
+                gate=FakeGate(),
+                state=state,
+                session_symbols=FakeSymbols(),
+                completer=FakeCompleter(),
+                follow_timeout=1.0,
+            )
+
+    async def test_watch_control_channel_handles_all_supported_commands(self) -> None:
+        requests = iter(
+            [
+                SimpleNamespace(command="interrupt"),
+                SimpleNamespace(command="soft-reset"),
+                SimpleNamespace(command="interrupt-reset"),
+                SimpleNamespace(command="exit"),
+            ]
+        )
+
+        class FakeChannel:
+            def read_next(self):
+                try:
+                    return next(requests)
+                except StopIteration as exc:
+                    raise RuntimeError("stop") from exc
+
+        async def fake_to_thread(func, *args):
+            return func(*args)
+
+        async def fake_sleep(_delay):
+            return None
+
+        state = mpyrepl_main.AsyncReplState()
+        state.executing = True
+        state.prompt_active = True
+        transport = mock.Mock()
+
+        with mock.patch.object(mpyrepl_main.asyncio, "to_thread", side_effect=fake_to_thread):
+            with mock.patch.object(mpyrepl_main.asyncio, "sleep", side_effect=fake_sleep):
+                with mock.patch.object(mpyrepl_main, "request_prompt_exit") as request_prompt_exit:
+                    with self.assertRaisesRegex(RuntimeError, "stop"):
+                        await mpyrepl_main.watch_control_channel(
+                            FakeChannel(),
+                            state,
+                            session=mock.Mock(),
+                            transport=transport,
+                        )
+
+        self.assertEqual(transport.interrupt.call_count, 5)
+        self.assertEqual(request_prompt_exit.call_count, 4)
+        self.assertEqual(state.pending_action, "exit")
+
+
+if __name__ == "__main__":
+    unittest.main()

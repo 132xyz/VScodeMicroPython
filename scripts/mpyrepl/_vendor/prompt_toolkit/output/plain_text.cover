@@ -1,0 +1,143 @@
+    1: from __future__ import annotations
+       
+    1: from typing import TextIO
+       
+    1: from prompt_toolkit.cursor_shapes import CursorShape
+    1: from prompt_toolkit.data_structures import Size
+    1: from prompt_toolkit.styles import Attrs
+       
+    1: from .base import Output
+    1: from .color_depth import ColorDepth
+    1: from .flush_stdout import flush_stdout
+       
+    1: __all__ = ["PlainTextOutput"]
+       
+       
+    2: class PlainTextOutput(Output):
+    1:     """
+           Output that won't include any ANSI escape sequences.
+       
+           Useful when stdout is not a terminal. Maybe stdout is redirected to a file.
+           In this case, if `print_formatted_text` is used, for instance, we don't
+           want to include formatting.
+       
+           (The code is mostly identical to `Vt100_Output`, but without the
+           formatting.)
+           """
+       
+    1:     def __init__(self, stdout: TextIO) -> None:
+               assert all(hasattr(stdout, a) for a in ("write", "flush"))
+       
+               self.stdout: TextIO = stdout
+               self._buffer: list[str] = []
+       
+    1:     def fileno(self) -> int:
+               "There is no sensible default for fileno()."
+               return self.stdout.fileno()
+       
+    1:     def encoding(self) -> str:
+               return "utf-8"
+       
+    1:     def write(self, data: str) -> None:
+               self._buffer.append(data)
+       
+    1:     def write_raw(self, data: str) -> None:
+               self._buffer.append(data)
+       
+    1:     def set_title(self, title: str) -> None:
+               pass
+       
+    1:     def clear_title(self) -> None:
+               pass
+       
+    1:     def flush(self) -> None:
+               if not self._buffer:
+                   return
+       
+               data = "".join(self._buffer)
+               self._buffer = []
+               flush_stdout(self.stdout, data)
+       
+    1:     def erase_screen(self) -> None:
+               pass
+       
+    1:     def enter_alternate_screen(self) -> None:
+               pass
+       
+    1:     def quit_alternate_screen(self) -> None:
+               pass
+       
+    1:     def enable_mouse_support(self) -> None:
+               pass
+       
+    1:     def disable_mouse_support(self) -> None:
+               pass
+       
+    1:     def erase_end_of_line(self) -> None:
+               pass
+       
+    1:     def erase_down(self) -> None:
+               pass
+       
+    1:     def reset_attributes(self) -> None:
+               pass
+       
+    1:     def set_attributes(self, attrs: Attrs, color_depth: ColorDepth) -> None:
+               pass
+       
+    1:     def disable_autowrap(self) -> None:
+               pass
+       
+    1:     def enable_autowrap(self) -> None:
+               pass
+       
+    1:     def cursor_goto(self, row: int = 0, column: int = 0) -> None:
+               pass
+       
+    1:     def cursor_up(self, amount: int) -> None:
+               pass
+       
+    1:     def cursor_down(self, amount: int) -> None:
+               self._buffer.append("\n")
+       
+    1:     def cursor_forward(self, amount: int) -> None:
+               self._buffer.append(" " * amount)
+       
+    1:     def cursor_backward(self, amount: int) -> None:
+               pass
+       
+    1:     def hide_cursor(self) -> None:
+               pass
+       
+    1:     def show_cursor(self) -> None:
+               pass
+       
+    1:     def set_cursor_shape(self, cursor_shape: CursorShape) -> None:
+               pass
+       
+    1:     def reset_cursor_shape(self) -> None:
+               pass
+       
+    1:     def ask_for_cpr(self) -> None:
+               pass
+       
+    1:     def bell(self) -> None:
+               pass
+       
+    1:     def enable_bracketed_paste(self) -> None:
+               pass
+       
+    1:     def disable_bracketed_paste(self) -> None:
+               pass
+       
+    1:     def scroll_buffer_to_prompt(self) -> None:
+               pass
+       
+    1:     def get_size(self) -> Size:
+               return Size(rows=40, columns=80)
+       
+    1:     def get_rows_below_cursor_position(self) -> int:
+               return 8
+       
+    1:     def get_default_color_depth(self) -> ColorDepth:
+               return ColorDepth.DEPTH_1_BIT

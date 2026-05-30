@@ -1,0 +1,64 @@
+    1: from __future__ import annotations
+       
+    1: import os
+    1: from enum import Enum
+       
+    1: __all__ = [
+    1:     "ColorDepth",
+       ]
+       
+       
+    2: class ColorDepth(str, Enum):
+    1:     """
+           Possible color depth values for the output.
+           """
+       
+    1:     value: str
+       
+           #: One color only.
+    1:     DEPTH_1_BIT = "DEPTH_1_BIT"
+       
+           #: ANSI Colors.
+    1:     DEPTH_4_BIT = "DEPTH_4_BIT"
+       
+           #: The default.
+    1:     DEPTH_8_BIT = "DEPTH_8_BIT"
+       
+           #: 24 bit True color.
+    1:     DEPTH_24_BIT = "DEPTH_24_BIT"
+       
+           # Aliases.
+    1:     MONOCHROME = DEPTH_1_BIT
+    1:     ANSI_COLORS_ONLY = DEPTH_4_BIT
+    1:     DEFAULT = DEPTH_8_BIT
+    1:     TRUE_COLOR = DEPTH_24_BIT
+       
+    2:     @classmethod
+    2:     def from_env(cls) -> ColorDepth | None:
+               """
+               Return the color depth if the $PROMPT_TOOLKIT_COLOR_DEPTH environment
+               variable has been set.
+       
+               This is a way to enforce a certain color depth in all prompt_toolkit
+               applications.
+               """
+               # Disable color if a `NO_COLOR` environment variable is set.
+               # See: https://no-color.org/
+               if os.environ.get("NO_COLOR"):
+                   return cls.DEPTH_1_BIT
+       
+               # Check the `PROMPT_TOOLKIT_COLOR_DEPTH` environment variable.
+               all_values = [i.value for i in ColorDepth]
+               if os.environ.get("PROMPT_TOOLKIT_COLOR_DEPTH") in all_values:
+                   return cls(os.environ["PROMPT_TOOLKIT_COLOR_DEPTH"])
+       
+               return None
+       
+    2:     @classmethod
+    2:     def default(cls) -> ColorDepth:
+               """
+               Return the default color depth for the default output.
+               """
+               from .defaults import create_output
+       
+               return create_output().get_default_color_depth()

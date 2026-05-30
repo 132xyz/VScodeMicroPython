@@ -29,7 +29,6 @@ import {
   stop,
   softReset,
   runActiveFile,
-  getReplTerminal,
   isReplOpen,
   closeReplTerminal,
   openReplTerminal,
@@ -302,6 +301,11 @@ export async function activate(context: vscode.ExtensionContext) {
     console.error('[Extension] View not contributed: microPythonWorkBenchFsView');
   }
   const actionsTree = new ActionsTree();
+  const refreshActionsTree = () => {
+    try {
+      actionsTree.refreshTree();
+    } catch {}
+  };
   let actionsView: vscode.TreeView<any> | undefined = undefined;
   if (isViewContributed("microPythonWorkBenchActionsView")) {
     actionsView = vscode.window.createTreeView("microPythonWorkBenchActionsView", { treeDataProvider: actionsTree });
@@ -423,12 +427,19 @@ export async function activate(context: vscode.ExtensionContext) {
   // Initialize status bar on activation
   refreshAutoSyncUi();
   cancelTasksStatus.show();
+  isReplOpen();
 
   // On startup, check whether mpremote is available in the selected Python
   // environment and prompt the user to install if missing. Run non-blocking
-  // so activation isn't delayed.
-  PythonInterpreterManager.checkMpremoteAvailability().catch(err => {
-    console.debug('[Extension] mpremote availability check failed (non-fatal):', err);
+  // so activation isn't delayed. Delay the check to avoid false prompts while
+  // the Python extension is still starting up.
+  const mpremoteAvailabilityTimer = setTimeout(() => {
+    PythonInterpreterManager.checkMpremoteAvailability().catch(err => {
+      console.debug('[Extension] mpremote availability check failed (non-fatal):', err);
+    });
+  }, 10000);
+  context.subscriptions.push({
+    dispose: () => clearTimeout(mpremoteAvailabilityTimer)
   });
 
   // Ensure sensible ignore files exist or are upgraded from old stub
@@ -535,6 +546,11 @@ export async function activate(context: vscode.ExtensionContext) {
       console.warn('[Extension] _cachePopulated handler failed', e);
     }
   }));
+  const initialConnect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+  if (initialConnect && initialConnect !== "auto") {
+    try { mp.refreshFileTreeCache().catch(() => {}); } catch {}
+    tree.refreshTree();
+  }
   if (view) context.subscriptions.push(view);
   if (actionsView) context.subscriptions.push(actionsView);
   if (syncView) context.subscriptions.push(syncView);
@@ -591,7 +607,13 @@ export async function activate(context: vscode.ExtensionContext) {
     // 已移除外部 mpremote 安装与状态检查命令
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", boardCommands.pickPort),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),
-    vscode.commands.registerCommand("microPythonWorkBench.stop", replCommands.stop),
+    vscode.commands.registerCommand("microPythonWorkBench.stop", async () => {
+      try {
+        await replCommands.stop();
+      } finally {
+        refreshActionsTree();
+      }
+    }),
     vscode.commands.registerCommand("microPythonWorkBench.softReset", replCommands.softReset),
     vscode.commands.registerCommand("microPythonWorkBench.newFileBoardAndLocal", fileCommands.newFileBoardAndLocal),
     vscode.commands.registerCommand("microPythonWorkBench.openFileFromLocal", fileCommands.openFileFromLocal),
@@ -605,14 +627,29 @@ export async function activate(context: vscode.ExtensionContext) {
 
 
 
-    vscode.commands.registerCommand("microPythonWorkBench.openSerial", openReplTerminal),
+    vscode.commands.registerCommand("microPythonWorkBench.openSerial", async () => {
+      try {
+        await openReplTerminal();
+      } finally {
+        refreshActionsTree();
+      }
+    }),
     vscode.commands.registerCommand("microPythonWorkBench.openRepl", async () => {
-      const term = await getReplTerminal(context);
-      term.show(true);
+      try {
+        await openReplTerminal();
+      } catch (error: any) {
+        Localization.showError("messages.boardCommandFailed", error?.message ?? String(error));
+      } finally {
+        refreshActionsTree();
+      }
     }),
     vscode.commands.registerCommand("microPythonWorkBench.stopSerial", async () => {
-      await closeReplTerminal(true);
-      Localization.showInfo("messages.replClosed");
+      try {
+        await closeReplTerminal(true);
+        Localization.showInfo("messages.replClosed");
+      } finally {
+        refreshActionsTree();
+      }
     }),
 
     vscode.commands.registerCommand("microPythonWorkBench.autoSuspendLs", async (pathArg: string) => {
@@ -751,6 +788,7 @@ export async function activate(context: vscode.ExtensionContext) {
       try {
         const { handleTerminalClose } = require("../board/mpremoteCommands");
         handleTerminalClose(terminal);
+        refreshActionsTree();
       } catch (e) {
         console.error("[DEBUG] handleTerminalClose failed:", e);
       }

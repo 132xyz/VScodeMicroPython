@@ -2,10 +2,12 @@ import * as vscode from "vscode";
 import { exec } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as mp from "./mpremote";
 import { runMpremote } from "./mpremote";
 import { MpRemoteManager } from './MpRemoteManager';
 import { showInfo, showError, showWarning } from "../core/localization";
+import { codeCompletionManager } from '../completion/codeCompletion';
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
@@ -13,6 +15,9 @@ let userClosedRepl = false;
 let runTerminalInitialized = false;
 // Track if REPL was open before Run started, so we can restore it when Run finishes
 let replWasOpenBeforeRun = false;
+let replUsesCustomClient = false;
+let replControlFile: string | undefined;
+let replControlSequence = 0;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Debug logging helper. Controlled by the `microPythonWorkBench.debug` setting (default: false).
@@ -38,6 +43,104 @@ function getInternalPythonRoot(): string | null {
     }
   } catch {}
   return null;
+}
+
+function useExperimentalCustomRepl(): boolean {
+  return vscode.workspace.getConfiguration().get<boolean>(
+    "microPythonWorkBench.experimentalCustomRepl",
+    false,
+  );
+}
+
+function getExtensionRoot(): string | null {
+  try {
+    const ext = vscode.extensions.getExtension('WebForks.mpy')
+      || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith('.mpy'))
+      || null;
+    return ext?.extensionPath || null;
+  } catch {}
+  return null;
+}
+
+function getCustomReplScriptPath(): string | null {
+  try {
+    const extensionRoot = getExtensionRoot();
+    if (!extensionRoot) return null;
+    const candidate = path.join(extensionRoot, 'scripts', 'mpyrepl', '__main__.py');
+    return fs.existsSync(candidate) ? candidate : null;
+  } catch {}
+  return null;
+}
+
+function quoteShellArg(value: string): string {
+  return value.includes(' ') ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+function sanitizeForFileName(value: string): string {
+  return value.replace(/[^a-z0-9._-]+/gi, '_');
+}
+
+function getCustomReplControlFile(device: string): string {
+  return path.join(os.tmpdir(), 'vscodemicropython', `mpyrepl-${sanitizeForFileName(device)}.json`);
+}
+
+async function buildCustomReplCommand(device: string): Promise<{ command: string; controlFile: string }> {
+  const pythonPath = await MpRemoteManager.detectPythonPath();
+  if (!pythonPath) throw new Error('Python interpreter not found');
+
+  const scriptPath = getCustomReplScriptPath();
+  if (!scriptPath) {
+    throw new Error('Experimental mpyrepl script not found in extension package');
+  }
+
+  const controlFile = getCustomReplControlFile(device);
+  const stubRoot = codeCompletionManager.getActiveStubPath();
+  const baudRate = vscode.workspace.getConfiguration('microPythonWorkBench').get<number>('baudRate', 115200);
+  const args = [
+    quoteShellArg(scriptPath),
+    '--port',
+    quoteShellArg(device),
+    '--baudrate',
+    String(baudRate),
+    'async-repl',
+    '--control-file',
+    quoteShellArg(controlFile),
+  ];
+
+  if (stubRoot) {
+    args.push('--stub-root', quoteShellArg(stubRoot));
+  }
+
+  const base = `"${pythonPath}" ${args.join(' ')}`;
+  const command = process.platform === 'win32' ? `& ${base}` : base;
+  return { command, controlFile };
+}
+
+async function sendCustomReplControl(command: 'interrupt' | 'soft-reset' | 'interrupt-reset' | 'exit'): Promise<void> {
+  if (!replUsesCustomClient || !replControlFile) {
+    throw new Error('Experimental REPL control channel is not active');
+  }
+
+  await fs.promises.mkdir(path.dirname(replControlFile), { recursive: true });
+  replControlSequence += 1;
+  await fs.promises.writeFile(
+    replControlFile,
+    JSON.stringify({ sequence: replControlSequence, command }),
+    'utf8',
+  );
+}
+
+async function clearCustomReplControlFile(): Promise<void> {
+  if (!replControlFile) return;
+  try {
+    await fs.promises.unlink(replControlFile);
+  } catch {}
+}
+
+function resetCustomReplState(): void {
+  replUsesCustomClient = false;
+  replControlFile = undefined;
+  replControlSequence = 0;
 }
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
@@ -75,6 +178,11 @@ export type AutoSuspendSnapshot = {
 export async function disconnectReplTerminal() {
   if (replTerminal) {
     try {
+      if (replUsesCustomClient) {
+        await sendCustomReplControl('exit');
+        await new Promise(r => setTimeout(r, 200));
+        return;
+      }
       // For mpremote, send Ctrl-X to exit cleanly
       replTerminal.sendText("\x18", false); // Ctrl-X
       await new Promise(r => setTimeout(r, 200));
@@ -103,7 +211,16 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
     }
 
     // Reuse the existing terminal: send connect again
-    const cmd = await buildShellCommand(["connect", device]);
+    let cmd: string;
+    if (useExperimentalCustomRepl()) {
+      const custom = await buildCustomReplCommand(device);
+      replUsesCustomClient = true;
+      replControlFile = custom.controlFile;
+      cmd = custom.command;
+    } else {
+      resetCustomReplState();
+      cmd = await buildShellCommand(["connect", device]);
+    }
     logAutoSuspend("Reusing REPL terminal; sending reconnect command:", cmd);
     replTerminal.sendText(cmd, true);
     await sleep(200);
@@ -225,6 +342,11 @@ export async function checkMpremoteAvailability(): Promise<void> {
 }
 
 export async function serialSendCtrlC(): Promise<void> {
+  if (isReplOpen() && replUsesCustomClient) {
+    await sendCustomReplControl('interrupt');
+    showInfo("messages.interruptSentViaRepl");
+    return;
+  }
   // Use robust interrupt method
   try {
     await robustInterrupt();
@@ -235,6 +357,11 @@ export async function serialSendCtrlC(): Promise<void> {
 }
 
 export async function stop(): Promise<void> {
+  if (isReplOpen() && replUsesCustomClient) {
+    await sendCustomReplControl('interrupt-reset');
+    showInfo("messages.interruptAndSoftResetSentViaRepl");
+    return;
+  }
   // Use the robust interrupt and reset function
   try {
     await robustInterruptAndReset();
@@ -248,6 +375,11 @@ export async function softReset(): Promise<void> {
   // If REPL terminal is open, prefer sending through it to avoid port conflicts
   if (isReplOpen()) {
     try {
+      if (replUsesCustomClient) {
+        await sendCustomReplControl('soft-reset');
+        showInfo("messages.softResetSentViaRepl");
+        return;
+      }
       const term = await getReplTerminal();
       term.sendText("\x03", false); // Ctrl-C
       await new Promise(r => setTimeout(r, 60));
@@ -407,9 +539,19 @@ export async function getReplTerminal(
     "microPythonWorkBench.interruptOnConnect",
     true
   );
+  const useCustomClient = useExperimentalCustomRepl();
 
   // Build the mpremote connect command
-  const cmd = await buildShellCommand(["connect", device]);
+  let cmd: string;
+  if (useCustomClient) {
+    const custom = await buildCustomReplCommand(device);
+    replUsesCustomClient = true;
+    replControlFile = custom.controlFile;
+    cmd = custom.command;
+  } else {
+    resetCustomReplState();
+    cmd = await buildShellCommand(["connect", device]);
+  }
 
   // Create a persistent terminal and send the connect command to it. Using
   // shellArgs to run the command at shell startup causes the underlying
@@ -471,6 +613,8 @@ export async function closeReplTerminal(userInitiated: boolean = false) {
     replTerminal = undefined;
     await new Promise(r => setTimeout(r, 300));
   }
+  await clearCustomReplControlFile();
+  resetCustomReplState();
   userClosedRepl = userInitiated || userClosedRepl;
   setReplContext(false);
 }
@@ -757,6 +901,8 @@ export function handleTerminalClose(closedTerminal: vscode.Terminal): void {
   // Check if the closed terminal is our REPL terminal
   if (replTerminal && closedTerminal === replTerminal) {
     replTerminal = undefined;
+    clearCustomReplControlFile().catch(() => undefined);
+    resetCustomReplState();
     userClosedRepl = true; // Mark as user-closed since they closed the terminal
     setReplContext(false);
   }

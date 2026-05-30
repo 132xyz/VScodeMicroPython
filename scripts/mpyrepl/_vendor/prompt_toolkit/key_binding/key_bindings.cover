@@ -1,0 +1,672 @@
+    1: """
+       Key bindings registry.
+       
+       A `KeyBindings` object is a container that holds a list of key bindings. It has a
+       very efficient internal data structure for checking which key bindings apply
+       for a pressed key.
+       
+       Typical usage::
+       
+           kb = KeyBindings()
+       
+           @kb.add(Keys.ControlX, Keys.ControlC, filter=INSERT)
+           def handler(event):
+               # Handle ControlX-ControlC key sequence.
+               pass
+       
+       It is also possible to combine multiple KeyBindings objects. We do this in the
+       default key bindings. There are some KeyBindings objects that contain the Emacs
+       bindings, while others contain the Vi bindings. They are merged together using
+       `merge_key_bindings`.
+       
+       We also have a `ConditionalKeyBindings` object that can enable/disable a group of
+       key bindings at once.
+       
+       
+       It is also possible to add a filter to a function, before a key binding has
+       been assigned, through the `key_binding` decorator.::
+       
+           # First define a key handler with the `filter`.
+           @key_binding(filter=condition)
+           def my_key_binding(event):
+               ...
+       
+           # Later, add it to the key bindings.
+           kb.add(Keys.A, my_key_binding)
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from abc import ABCMeta, abstractmethod
+    1: from inspect import isawaitable
+    1: from typing import (
+           TYPE_CHECKING,
+           Any,
+           Callable,
+           Coroutine,
+           Hashable,
+           Sequence,
+           Tuple,
+           TypeVar,
+           Union,
+           cast,
+       )
+       
+    1: from prompt_toolkit.cache import SimpleCache
+    1: from prompt_toolkit.filters import FilterOrBool, Never, to_filter
+    1: from prompt_toolkit.keys import KEY_ALIASES, Keys
+       
+    1: if TYPE_CHECKING:
+           # Avoid circular imports.
+           from .key_processor import KeyPressEvent
+       
+           # The only two return values for a mouse handler (and key bindings) are
+           # `None` and `NotImplemented`. For the type checker it's best to annotate
+           # this as `object`. (The consumer never expects a more specific instance:
+           # checking for NotImplemented can be done using `is NotImplemented`.)
+           NotImplementedOrNone = object
+           # Other non-working options are:
+           # * Optional[Literal[NotImplemented]]
+           #      --> Doesn't work, Literal can't take an Any.
+           # * None
+           #      --> Doesn't work. We can't assign the result of a function that
+           #          returns `None` to a variable.
+           # * Any
+           #      --> Works, but too broad.
+       
+       
+    1: __all__ = [
+           "NotImplementedOrNone",
+           "Binding",
+           "KeyBindingsBase",
+           "KeyBindings",
+           "ConditionalKeyBindings",
+           "merge_key_bindings",
+           "DynamicKeyBindings",
+           "GlobalOnlyKeyBindings",
+       ]
+       
+       # Key bindings can be regular functions or coroutines.
+       # In both cases, if they return `NotImplemented`, the UI won't be invalidated.
+       # This is mainly used in case of mouse move events, to prevent excessive
+       # repainting during mouse move events.
+    2: KeyHandlerCallable = Callable[
+    2:     ["KeyPressEvent"],
+    1:     Union["NotImplementedOrNone", Coroutine[Any, Any, "NotImplementedOrNone"]],
+       ]
+       
+       
+    2: class Binding:
+    1:     """
+           Key binding: (key sequence + handler + filter).
+           (Immutable binding class.)
+       
+           :param record_in_macro: When True, don't record this key binding when a
+               macro is recorded.
+           """
+       
+    1:     def __init__(
+               self,
+               keys: tuple[Keys | str, ...],
+               handler: KeyHandlerCallable,
+    1:         filter: FilterOrBool = True,
+    1:         eager: FilterOrBool = False,
+    1:         is_global: FilterOrBool = False,
+    1:         save_before: Callable[[KeyPressEvent], bool] = (lambda e: True),
+    1:         record_in_macro: FilterOrBool = True,
+           ) -> None:
+ 3476:         self.keys = keys
+ 3476:         self.handler = handler
+ 3476:         self.filter = to_filter(filter)
+ 3476:         self.eager = to_filter(eager)
+ 3476:         self.is_global = to_filter(is_global)
+ 3476:         self.save_before = save_before
+ 3476:         self.record_in_macro = to_filter(record_in_macro)
+       
+    1:     def call(self, event: KeyPressEvent) -> None:
+   23:         result = self.handler(event)
+       
+               # If the handler is a coroutine, create an asyncio task.
+   23:         if isawaitable(result):
+                   awaitable = cast(Coroutine[Any, Any, "NotImplementedOrNone"], result)
+       
+                   async def bg_task() -> None:
+                       result = await awaitable
+                       if result != NotImplemented:
+                           event.app.invalidate()
+       
+                   event.app.create_background_task(bg_task())
+       
+   23:         elif result != NotImplemented:
+   23:             event.app.invalidate()
+       
+    1:     def __repr__(self) -> str:
+               return (
+                   f"{self.__class__.__name__}(keys={self.keys!r}, handler={self.handler!r})"
+               )
+       
+       
+       # Sequence of keys presses.
+    1: KeysTuple = Tuple[Union[Keys, str], ...]
+       
+       
+    2: class KeyBindingsBase(metaclass=ABCMeta):
+    1:     """
+           Interface for a KeyBindings.
+           """
+       
+    2:     @property
+    2:     @abstractmethod
+    2:     def _version(self) -> Hashable:
+               """
+               For cache invalidation. - This should increase every time that
+               something changes.
+               """
+               return 0
+       
+    2:     @abstractmethod
+    2:     def get_bindings_for_keys(self, keys: KeysTuple) -> list[Binding]:
+               """
+               Return a list of key bindings that can handle these keys.
+               (This return also inactive bindings, so the `filter` still has to be
+               called, for checking it.)
+       
+               :param keys: tuple of keys.
+               """
+               return []
+       
+    2:     @abstractmethod
+    2:     def get_bindings_starting_with_keys(self, keys: KeysTuple) -> list[Binding]:
+               """
+               Return a list of key bindings that handle a key sequence starting with
+               `keys`. (It does only return bindings for which the sequences are
+               longer than `keys`. And like `get_bindings_for_keys`, it also includes
+               inactive bindings.)
+       
+               :param keys: tuple of keys.
+               """
+               return []
+       
+    2:     @property
+    2:     @abstractmethod
+    2:     def bindings(self) -> list[Binding]:
+               """
+               List of `Binding` objects.
+               (These need to be exposed, so that `KeyBindings` objects can be merged
+               together.)
+               """
+               return []
+       
+           # `add` and `remove` don't have to be part of this interface.
+       
+       
+    1: T = TypeVar("T", bound=Union[KeyHandlerCallable, Binding])
+       
+       
+    2: class KeyBindings(KeyBindingsBase):
+    1:     """
+           A container for a set of key bindings.
+       
+           Example usage::
+       
+               kb = KeyBindings()
+       
+               @kb.add('c-t')
+               def _(event):
+                   print('Control-T pressed')
+       
+               @kb.add('c-a', 'c-b')
+               def _(event):
+                   print('Control-A pressed, followed by Control-B')
+       
+               @kb.add('c-x', filter=is_searching)
+               def _(event):
+                   print('Control-X pressed')  # Works only if we are searching.
+       
+           """
+       
+    1:     def __init__(self) -> None:
+  142:         self._bindings: list[Binding] = []
+  142:         self._get_bindings_for_keys_cache: SimpleCache[KeysTuple, list[Binding]] = (
+  142:             SimpleCache(maxsize=10000)
+               )
+  142:         self._get_bindings_starting_with_keys_cache: SimpleCache[
+                   KeysTuple, list[Binding]
+  142:         ] = SimpleCache(maxsize=1000)
+  142:         self.__version = 0  # For cache invalidation.
+       
+    1:     def _clear_cache(self) -> None:
+ 1254:         self.__version += 1
+ 1254:         self._get_bindings_for_keys_cache.clear()
+ 1254:         self._get_bindings_starting_with_keys_cache.clear()
+       
+    2:     @property
+    2:     def bindings(self) -> list[Binding]:
+ 3608:         return self._bindings
+       
+    2:     @property
+    2:     def _version(self) -> Hashable:
+ 1076:         return self.__version
+       
+    6:     def add(
+               self,
+               *keys: Keys | str,
+    1:         filter: FilterOrBool = True,
+    1:         eager: FilterOrBool = False,
+    1:         is_global: FilterOrBool = False,
+    8:         save_before: Callable[[KeyPressEvent], bool] = (lambda e: True),
+    1:         record_in_macro: FilterOrBool = True,
+           ) -> Callable[[T], T]:
+               """
+               Decorator for adding a key bindings.
+       
+               :param filter: :class:`~prompt_toolkit.filters.Filter` to determine
+                   when this key binding is active.
+               :param eager: :class:`~prompt_toolkit.filters.Filter` or `bool`.
+                   When True, ignore potential longer matches when this key binding is
+                   hit. E.g. when there is an active eager key binding for Ctrl-X,
+                   execute the handler immediately and ignore the key binding for
+                   Ctrl-X Ctrl-E of which it is a prefix.
+               :param is_global: When this key bindings is added to a `Container` or
+                   `Control`, make it a global (always active) binding.
+               :param save_before: Callable that takes an `Event` and returns True if
+                   we should save the current buffer, before handling the event.
+                   (That's the default.)
+               :param record_in_macro: Record these key bindings when a macro is
+                   being recorded. (True by default.)
+               """
+ 1254:         assert keys
+       
+ 5836:         keys = tuple(_parse_key(k) for k in keys)
+       
+ 1254:         if isinstance(filter, Never):
+                   # When a filter is Never, it will always stay disabled, so in that
+                   # case don't bother putting it in the key bindings. It will slow
+                   # down every key press otherwise.
+                   def decorator(func: T) -> T:
+                       return func
+       
+               else:
+       
+ 1254:             def decorator(func: T) -> T:
+ 1254:                 if isinstance(func, Binding):
+                           # We're adding an existing Binding object.
+  348:                     self.bindings.append(
+  348:                         Binding(
+  174:                             keys,
+  174:                             func.handler,
+  174:                             filter=func.filter & to_filter(filter),
+  174:                             eager=to_filter(eager) | func.eager,
+  174:                             is_global=to_filter(is_global) | func.is_global,
+  174:                             save_before=func.save_before,
+  174:                             record_in_macro=func.record_in_macro,
+                               )
+                           )
+                       else:
+ 2160:                     self.bindings.append(
+ 2160:                         Binding(
+ 1080:                             keys,
+ 1080:                             cast(KeyHandlerCallable, func),
+ 1080:                             filter=filter,
+ 1080:                             eager=eager,
+ 1080:                             is_global=is_global,
+ 1080:                             save_before=save_before,
+ 1080:                             record_in_macro=record_in_macro,
+                               )
+                           )
+ 1254:                 self._clear_cache()
+       
+ 1254:                 return func
+       
+ 1254:         return decorator
+       
+    1:     def remove(self, *args: Keys | str | KeyHandlerCallable) -> None:
+               """
+               Remove a key binding.
+       
+               This expects either a function that was given to `add` method as
+               parameter or a sequence of key bindings.
+       
+               Raises `ValueError` when no bindings was found.
+       
+               Usage::
+       
+                   remove(handler)  # Pass handler.
+                   remove('c-x', 'c-a')  # Or pass the key bindings.
+               """
+               found = False
+       
+               if callable(args[0]):
+                   assert len(args) == 1
+                   function = args[0]
+       
+                   # Remove the given function.
+                   for b in self.bindings:
+                       if b.handler == function:
+                           self.bindings.remove(b)
+                           found = True
+       
+               else:
+                   assert len(args) > 0
+                   args = cast(Tuple[Union[Keys, str]], args)
+       
+                   # Remove this sequence of key bindings.
+                   keys = tuple(_parse_key(k) for k in args)
+       
+                   for b in self.bindings:
+                       if b.keys == keys:
+                           self.bindings.remove(b)
+                           found = True
+       
+               if found:
+                   self._clear_cache()
+               else:
+                   # No key binding found for this function. Raise ValueError.
+                   raise ValueError(f"Binding not found: {function!r}")
+       
+           # For backwards-compatibility.
+    1:     add_binding = add
+    1:     remove_binding = remove
+       
+    1:     def get_bindings_for_keys(self, keys: KeysTuple) -> list[Binding]:
+               """
+               Return a list of key bindings that can handle this key.
+               (This return also inactive bindings, so the `filter` still has to be
+               called, for checking it.)
+       
+               :param keys: tuple of keys.
+               """
+       
+   25:         def get() -> list[Binding]:
+   17:             result: list[tuple[int, Binding]] = []
+       
+10557:             for b in self.bindings:
+10540:                 if len(keys) == len(b.keys):
+ 7293:                     match = True
+ 7293:                     any_count = 0
+       
+ 7493:                     for i, j in zip(b.keys, keys):
+ 7293:                         if i != j and i != Keys.Any:
+ 7093:                             match = False
+ 7093:                             break
+       
+  200:                         if i == Keys.Any:
+  153:                             any_count += 1
+       
+ 7293:                     if match:
+  200:                         result.append((any_count, b))
+       
+                   # Place bindings that have more 'Any' occurrences in them at the end.
+  217:             result = sorted(result, key=lambda item: -item[0])
+       
+  217:             return [item[1] for item in result]
+       
+   25:         return self._get_bindings_for_keys_cache.get(keys, get)
+       
+    1:     def get_bindings_starting_with_keys(self, keys: KeysTuple) -> list[Binding]:
+               """
+               Return a list of key bindings that handle a key sequence starting with
+               `keys`. (It does only return bindings for which the sequences are
+               longer than `keys`. And like `get_bindings_for_keys`, it also includes
+               inactive bindings.)
+       
+               :param keys: tuple of keys.
+               """
+       
+   23:         def get() -> list[Binding]:
+   17:             result = []
+10557:             for b in self.bindings:
+10540:                 if len(keys) < len(b.keys):
+ 3247:                     match = True
+ 3274:                     for i, j in zip(b.keys, keys):
+ 3247:                         if i != j and i != Keys.Any:
+ 3220:                             match = False
+ 3220:                             break
+ 3247:                     if match:
+   27:                         result.append(b)
+   17:             return result
+       
+   23:         return self._get_bindings_starting_with_keys_cache.get(keys, get)
+       
+       
+    1: def _parse_key(key: Keys | str) -> str | Keys:
+           """
+           Replace key by alias and verify whether it's a valid one.
+           """
+           # Already a parse key? -> Return it.
+ 1664:     if isinstance(key, Keys):
+   82:         return key
+       
+           # Lookup aliases.
+ 1582:     key = KEY_ALIASES.get(key, key)
+       
+           # Replace 'space' by ' '
+ 1582:     if key == "space":
+               key = " "
+       
+           # Return as `Key` object when it's a special key.
+ 1582:     try:
+ 1582:         return Keys(key)
+  934:     except ValueError:
+  934:         pass
+       
+           # Final validation.
+  934:     if len(key) != 1:
+               raise ValueError(f"Invalid key: {key}")
+       
+  934:     return key
+       
+       
+    1: def key_binding(
+    1:     filter: FilterOrBool = True,
+    1:     eager: FilterOrBool = False,
+    1:     is_global: FilterOrBool = False,
+   17:     save_before: Callable[[KeyPressEvent], bool] = (lambda event: True),
+    1:     record_in_macro: FilterOrBool = True,
+       ) -> Callable[[KeyHandlerCallable], Binding]:
+           """
+           Decorator that turn a function into a `Binding` object. This can be added
+           to a `KeyBindings` object when a key binding is assigned.
+           """
+   56:     assert save_before is None or callable(save_before)
+       
+   56:     filter = to_filter(filter)
+   56:     eager = to_filter(eager)
+   56:     is_global = to_filter(is_global)
+   56:     save_before = save_before
+   56:     record_in_macro = to_filter(record_in_macro)
+   56:     keys = ()
+       
+   56:     def decorator(function: KeyHandlerCallable) -> Binding:
+  112:         return Binding(
+   56:             keys,
+   56:             function,
+   56:             filter=filter,
+   56:             eager=eager,
+   56:             is_global=is_global,
+   56:             save_before=save_before,
+   56:             record_in_macro=record_in_macro,
+               )
+       
+   56:     return decorator
+       
+       
+    2: class _Proxy(KeyBindingsBase):
+    1:     """
+           Common part for ConditionalKeyBindings and _MergedKeyBindings.
+           """
+       
+    1:     def __init__(self) -> None:
+               # `KeyBindings` to be synchronized with all the others.
+   50:         self._bindings2: KeyBindingsBase = KeyBindings()
+   50:         self._last_version: Hashable = ()
+       
+    1:     def _update_cache(self) -> None:
+               """
+               If `self._last_version` is outdated, then this should update
+               the version and `self._bindings2`.
+               """
+               raise NotImplementedError
+       
+           # Proxy methods to self._bindings2.
+       
+    2:     @property
+    2:     def bindings(self) -> list[Binding]:
+   50:         self._update_cache()
+   50:         return self._bindings2.bindings
+       
+    2:     @property
+    2:     def _version(self) -> Hashable:
+ 1282:         self._update_cache()
+ 1282:         return self._last_version
+       
+    1:     def get_bindings_for_keys(self, keys: KeysTuple) -> list[Binding]:
+   25:         self._update_cache()
+   25:         return self._bindings2.get_bindings_for_keys(keys)
+       
+    1:     def get_bindings_starting_with_keys(self, keys: KeysTuple) -> list[Binding]:
+   23:         self._update_cache()
+   23:         return self._bindings2.get_bindings_starting_with_keys(keys)
+       
+       
+    2: class ConditionalKeyBindings(_Proxy):
+    1:     """
+           Wraps around a `KeyBindings`. Disable/enable all the key bindings according to
+           the given (additional) filter.::
+       
+               @Condition
+               def setting_is_true():
+                   return True  # or False
+       
+               registry = ConditionalKeyBindings(key_bindings, setting_is_true)
+       
+           When new key bindings are added to this object. They are also
+           enable/disabled according to the given `filter`.
+       
+           :param registries: List of :class:`.KeyBindings` objects.
+           :param filter: :class:`~prompt_toolkit.filters.Filter` object.
+           """
+       
+    1:     def __init__(
+               self, key_bindings: KeyBindingsBase, filter: FilterOrBool = True
+           ) -> None:
+   28:         _Proxy.__init__(self)
+       
+   28:         self.key_bindings = key_bindings
+   28:         self.filter = to_filter(filter)
+       
+    1:     def _update_cache(self) -> None:
+               "If the original key bindings was changed. Update our copy version."
+  762:         expected_version = self.key_bindings._version
+       
+  762:         if self._last_version != expected_version:
+   28:             bindings2 = KeyBindings()
+       
+                   # Copy all bindings from `self.key_bindings`, adding our condition.
+ 2194:             for b in self.key_bindings.bindings:
+ 4332:                 bindings2.bindings.append(
+ 4332:                     Binding(
+ 2166:                         keys=b.keys,
+ 2166:                         handler=b.handler,
+ 2166:                         filter=self.filter & b.filter,
+ 2166:                         eager=b.eager,
+ 2166:                         is_global=b.is_global,
+ 2166:                         save_before=b.save_before,
+ 2166:                         record_in_macro=b.record_in_macro,
+                           )
+                       )
+       
+   28:             self._bindings2 = bindings2
+   28:             self._last_version = expected_version
+       
+       
+    2: class _MergedKeyBindings(_Proxy):
+    1:     """
+           Merge multiple registries of key bindings into one.
+       
+           This class acts as a proxy to multiple :class:`.KeyBindings` objects, but
+           behaves as if this is just one bigger :class:`.KeyBindings`.
+       
+           :param registries: List of :class:`.KeyBindings` objects.
+           """
+       
+    1:     def __init__(self, registries: Sequence[KeyBindingsBase]) -> None:
+   16:         _Proxy.__init__(self)
+   16:         self.registries = registries
+       
+    1:     def _update_cache(self) -> None:
+               """
+               If one of the original registries was changed. Update our merged
+               version.
+               """
+ 3620:         expected_version = tuple(r._version for r in self.registries)
+       
+  416:         if self._last_version != expected_version:
+   16:             bindings2 = KeyBindings()
+       
+   70:             for reg in self.registries:
+   54:                 bindings2.bindings.extend(reg.bindings)
+       
+   16:             self._bindings2 = bindings2
+   16:             self._last_version = expected_version
+       
+       
+    1: def merge_key_bindings(bindings: Sequence[KeyBindingsBase]) -> _MergedKeyBindings:
+           """
+           Merge multiple :class:`.Keybinding` objects together.
+       
+           Usage::
+       
+               bindings = merge_key_bindings([bindings1, bindings2, ...])
+           """
+   16:     return _MergedKeyBindings(bindings)
+       
+       
+    2: class DynamicKeyBindings(_Proxy):
+    1:     """
+           KeyBindings class that can dynamically returns any KeyBindings.
+       
+           :param get_key_bindings: Callable that returns a :class:`.KeyBindings` instance.
+           """
+       
+    1:     def __init__(self, get_key_bindings: Callable[[], KeyBindingsBase | None]) -> None:
+    2:         self.get_key_bindings = get_key_bindings
+    2:         self.__version = 0
+    2:         self._last_child_version = None
+    2:         self._dummy = KeyBindings()  # Empty key bindings.
+       
+    1:     def _update_cache(self) -> None:
+   52:         key_bindings = self.get_key_bindings() or self._dummy
+   52:         assert isinstance(key_bindings, KeyBindingsBase)
+   52:         version = id(key_bindings), key_bindings._version
+       
+   52:         self._bindings2 = key_bindings
+   52:         self._last_version = version
+       
+       
+    2: class GlobalOnlyKeyBindings(_Proxy):
+    1:     """
+           Wrapper around a :class:`.KeyBindings` object that only exposes the global
+           key bindings.
+           """
+       
+    1:     def __init__(self, key_bindings: KeyBindingsBase) -> None:
+    6:         _Proxy.__init__(self)
+    6:         self.key_bindings = key_bindings
+       
+    1:     def _update_cache(self) -> None:
+               """
+               If one of the original registries was changed. Update our merged
+               version.
+               """
+  150:         expected_version = self.key_bindings._version
+       
+  150:         if self._last_version != expected_version:
+    6:             bindings2 = KeyBindings()
+       
+   32:             for b in self.key_bindings.bindings:
+   26:                 if b.is_global():
+   12:                     bindings2.bindings.append(b)
+       
+    6:             self._bindings2 = bindings2
+    6:             self._last_version = expected_version

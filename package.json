@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.64",
+  "version": "0.3.75",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -38,6 +38,7 @@
     "watch": "tsc -watch -p ./",
     "package": "npx @vscode/vsce package",
     "test": "jest",
+    "test:py": "python scripts/mpyrepl/run_python_tests_with_coverage.py",
     "test:watch": "jest --watch"
   },
   "devDependencies": {
@@ -467,6 +468,11 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.strictConnect.description%"
+        },
+        "microPythonWorkBench.experimentalCustomRepl": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.experimentalCustomRepl.description%"
         },
         "microPythonWorkBench.preListDelayMs": {
           "type": "number",

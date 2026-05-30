@@ -1,0 +1,36 @@
+    1: from __future__ import annotations
+       
+    1: from .key_processor import KeyPress
+       
+    1: __all__ = [
+    1:     "EmacsState",
+       ]
+       
+       
+    2: class EmacsState:
+    1:     """
+           Mutable class to hold Emacs specific state.
+           """
+       
+    1:     def __init__(self) -> None:
+               # Simple macro recording. (Like Readline does.)
+               # (For Emacs mode.)
+    2:         self.macro: list[KeyPress] | None = []
+    2:         self.current_recording: list[KeyPress] | None = None
+       
+    1:     def reset(self) -> None:
+    5:         self.current_recording = None
+       
+    2:     @property
+    2:     def is_recording(self) -> bool:
+               "Tell whether we are recording a macro."
+   46:         return self.current_recording is not None
+       
+    1:     def start_macro(self) -> None:
+               "Start recording macro."
+               self.current_recording = []
+       
+    1:     def end_macro(self) -> None:
+               "End recording macro."
+               self.macro = self.current_recording
+               self.current_recording = None

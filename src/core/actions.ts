@@ -57,7 +57,7 @@ export class ActionsTree implements vscode.TreeDataProvider<ActionNode> {
     const nodes: ActionNode[] = [];
     nodes.push({ id: "runActive", label: "Run Active File", command: "microPythonWorkBench.runActiveFile" });
     if (replOpen) {
-      nodes.push({ id: "stop", label: "Stop", command: "microPythonWorkBench.stop" });
+      nodes.push({ id: "stop", label: "Close Serial", command: "microPythonWorkBench.stop" });
     } else {
       nodes.push({ id: "openRepl", label: "Open Repl", command: "microPythonWorkBench.openRepl" });
     }

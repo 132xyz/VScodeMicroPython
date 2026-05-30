@@ -1,0 +1,63 @@
+    1: """
+       Default key bindings.::
+       
+           key_bindings = load_key_bindings()
+           app = Application(key_bindings=key_bindings)
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from prompt_toolkit.filters import buffer_has_focus
+    1: from prompt_toolkit.key_binding.bindings.basic import load_basic_bindings
+    1: from prompt_toolkit.key_binding.bindings.cpr import load_cpr_bindings
+    1: from prompt_toolkit.key_binding.bindings.emacs import (
+           load_emacs_bindings,
+           load_emacs_search_bindings,
+           load_emacs_shift_selection_bindings,
+       )
+    1: from prompt_toolkit.key_binding.bindings.mouse import load_mouse_bindings
+    1: from prompt_toolkit.key_binding.bindings.vi import (
+           load_vi_bindings,
+           load_vi_search_bindings,
+       )
+    1: from prompt_toolkit.key_binding.key_bindings import (
+           ConditionalKeyBindings,
+           KeyBindingsBase,
+           merge_key_bindings,
+       )
+       
+    1: __all__ = [
+    1:     "load_key_bindings",
+       ]
+       
+       
+    1: def load_key_bindings() -> KeyBindingsBase:
+           """
+           Create a KeyBindings object that contains the default key bindings.
+           """
+    4:     all_bindings = merge_key_bindings(
+    2:         [
+                   # Load basic bindings.
+    2:             load_basic_bindings(),
+                   # Load emacs bindings.
+    2:             load_emacs_bindings(),
+    2:             load_emacs_search_bindings(),
+    2:             load_emacs_shift_selection_bindings(),
+                   # Load Vi bindings.
+    2:             load_vi_bindings(),
+    2:             load_vi_search_bindings(),
+               ]
+           )
+       
+    4:     return merge_key_bindings(
+    2:         [
+                   # Make sure that the above key bindings are only active if the
+                   # currently focused control is a `BufferControl`. For other controls, we
+                   # don't want these key bindings to intervene. (This would break "ptterm"
+                   # for instance, which handles 'Keys.Any' in the user control itself.)
+    2:             ConditionalKeyBindings(all_bindings, buffer_has_focus),
+                   # Active, even when no buffer has been focused.
+    2:             load_mouse_bindings(),
+    2:             load_cpr_bindings(),
+               ]
+           )

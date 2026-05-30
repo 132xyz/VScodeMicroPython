@@ -1,0 +1,52 @@
+    1: """
+       Open in editor key bindings.
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from prompt_toolkit.filters import emacs_mode, has_selection, vi_navigation_mode
+       
+    1: from ..key_bindings import KeyBindings, KeyBindingsBase, merge_key_bindings
+    1: from .named_commands import get_by_name
+       
+    1: __all__ = [
+           "load_open_in_editor_bindings",
+           "load_emacs_open_in_editor_bindings",
+           "load_vi_open_in_editor_bindings",
+       ]
+       
+       
+    1: def load_open_in_editor_bindings() -> KeyBindingsBase:
+           """
+           Load both the Vi and emacs key bindings for handling edit-and-execute-command.
+           """
+    4:     return merge_key_bindings(
+    2:         [
+    2:             load_emacs_open_in_editor_bindings(),
+    2:             load_vi_open_in_editor_bindings(),
+               ]
+           )
+       
+       
+    1: def load_emacs_open_in_editor_bindings() -> KeyBindings:
+           """
+           Pressing C-X C-E will open the buffer in an external editor.
+           """
+    2:     key_bindings = KeyBindings()
+       
+    4:     key_bindings.add("c-x", "c-e", filter=emacs_mode & ~has_selection)(
+    2:         get_by_name("edit-and-execute-command")
+           )
+       
+    2:     return key_bindings
+       
+       
+    1: def load_vi_open_in_editor_bindings() -> KeyBindings:
+           """
+           Pressing 'v' in navigation mode will open the buffer in an external editor.
+           """
+    2:     key_bindings = KeyBindings()
+    4:     key_bindings.add("v", filter=vi_navigation_mode)(
+    2:         get_by_name("edit-and-execute-command")
+           )
+    2:     return key_bindings

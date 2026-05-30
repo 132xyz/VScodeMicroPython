@@ -1,0 +1,68 @@
+    1: """Unit tests for transport diagnostics.
+       
+       :return: None
+       """
+       
+    1: from __future__ import annotations
+       
+    1: import os
+    1: import sys
+    1: import unittest
+       
+       
+    1: CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    1: if CURRENT_DIR not in sys.path:
+           sys.path.insert(0, CURRENT_DIR)
+       
+    1: import bootstrap
+       
+    1: bootstrap.configure_import_path()
+       
+    1: from models import ReplConfig
+    1: from transport import SerialReplTransport, TransportError
+       
+       
+    2: class _FakeSerial:
+    1:     """Minimal serial stub used for transport error tests.
+       
+           :return: None
+           """
+       
+    1:     def __init__(self) -> None:
+               """Initialize captured writes.
+       
+               :return: None
+               """
+    1:         self.writes: list[bytes] = []
+       
+    1:     def write(self, data: bytes) -> None:
+               """Record written bytes.
+       
+               :param data: Outgoing bytes.
+               :return: None
+               """
+    2:         self.writes.append(data)
+       
+       
+    2: class TransportBehaviorTests(unittest.TestCase):
+    1:     """Cover transport diagnostics for raw REPL entry failures.
+       
+           :return: None
+           """
+       
+    1:     def test_enter_raw_repl_error_includes_observed_bytes(self) -> None:
+               """Raw REPL entry errors should surface captured device bytes.
+       
+               :return: None
+               """
+    1:         transport = SerialReplTransport(ReplConfig(port="COM4"))
+    1:         transport._serial = _FakeSerial()
+    2:         transport.drain_input = lambda: None
+    2:         transport.read_until = lambda *args, **kwargs: b"garbage prompt"
+       
+    2:         with self.assertRaisesRegex(TransportError, r"observed=b'garbage prompt'"):
+    1:             transport.enter_raw_repl(soft_reset=False)
+       
+       
+    1: if __name__ == "__main__":
+           unittest.main()

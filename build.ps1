@@ -6,6 +6,23 @@ param(
     [switch]$S
 )
 
+function Invoke-PythonTests {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        & $pythonCommand.Source scripts/mpyrepl/run_python_tests_with_coverage.py
+        return
+    }
+
+    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyLauncher) {
+        & $pyLauncher.Source -3 scripts/mpyrepl/run_python_tests_with_coverage.py
+        return
+    }
+
+    Write-Host "Error: Python was not found. Install Python or ensure python/py is on PATH." -ForegroundColor Red
+    exit 1
+}
+
 # 先编译，只有编译成功才会考虑增加版本号和打包
 Write-Host "Compiling..." -ForegroundColor Green
 npm run compile
@@ -13,6 +30,22 @@ npm run compile
 # 检查编译结果，失败则退出（不增加版本号、不打包）
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: compilation failed. Aborting version bump and packaging." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+Write-Host "Running JavaScript tests..." -ForegroundColor Green
+npm test
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Error: JavaScript tests failed. Aborting version bump and packaging." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+Write-Host "Running Python tests..." -ForegroundColor Green
+Invoke-PythonTests
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Error: Python tests failed. Aborting version bump and packaging." -ForegroundColor Red
     exit $LASTEXITCODE
 }
 

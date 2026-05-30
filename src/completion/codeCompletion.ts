@@ -48,6 +48,14 @@ export class CodeCompletionManager {
     return CodeCompletionManager.instance;
   }
 
+  public getActiveStubPath(): string | undefined {
+    return this.lastStubPath;
+  }
+
+  public getActiveWorkspaceRoot(): string | undefined {
+    return this.getWorkspaceRoot();
+  }
+
   /**
    * 初始化代码补全管理器
    */

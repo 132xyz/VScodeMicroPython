@@ -1,0 +1,109 @@
+    1: """
+       Clipboard for command line interface.
+       """
+       
+    1: from __future__ import annotations
+       
+    1: from abc import ABCMeta, abstractmethod
+    1: from typing import Callable
+       
+    1: from prompt_toolkit.selection import SelectionType
+       
+    1: __all__ = [
+           "Clipboard",
+           "ClipboardData",
+           "DummyClipboard",
+           "DynamicClipboard",
+       ]
+       
+       
+    2: class ClipboardData:
+    1:     """
+           Text on the clipboard.
+       
+           :param text: string
+           :param type: :class:`~prompt_toolkit.selection.SelectionType`
+           """
+       
+    1:     def __init__(
+    1:         self, text: str = "", type: SelectionType = SelectionType.CHARACTERS
+           ) -> None:
+               self.text = text
+               self.type = type
+       
+       
+    2: class Clipboard(metaclass=ABCMeta):
+    1:     """
+           Abstract baseclass for clipboards.
+           (An implementation can be in memory, it can share the X11 or Windows
+           keyboard, or can be persistent.)
+           """
+       
+    2:     @abstractmethod
+    2:     def set_data(self, data: ClipboardData) -> None:
+               """
+               Set data to the clipboard.
+       
+               :param data: :class:`~.ClipboardData` instance.
+               """
+       
+    1:     def set_text(self, text: str) -> None:  # Not abstract.
+               """
+               Shortcut for setting plain text on clipboard.
+               """
+               self.set_data(ClipboardData(text))
+       
+    1:     def rotate(self) -> None:
+               """
+               For Emacs mode, rotate the kill ring.
+               """
+       
+    2:     @abstractmethod
+    2:     def get_data(self) -> ClipboardData:
+               """
+               Return clipboard data.
+               """
+       
+       
+    2: class DummyClipboard(Clipboard):
+    1:     """
+           Clipboard implementation that doesn't remember anything.
+           """
+       
+    1:     def set_data(self, data: ClipboardData) -> None:
+               pass
+       
+    1:     def set_text(self, text: str) -> None:
+               pass
+       
+    1:     def rotate(self) -> None:
+               pass
+       
+    1:     def get_data(self) -> ClipboardData:
+               return ClipboardData()
+       
+       
+    2: class DynamicClipboard(Clipboard):
+    1:     """
+           Clipboard class that can dynamically returns any Clipboard.
+       
+           :param get_clipboard: Callable that returns a :class:`.Clipboard` instance.
+           """
+       
+    1:     def __init__(self, get_clipboard: Callable[[], Clipboard | None]) -> None:
+    2:         self.get_clipboard = get_clipboard
+       
+    1:     def _clipboard(self) -> Clipboard:
+               return self.get_clipboard() or DummyClipboard()
+       
+    1:     def set_data(self, data: ClipboardData) -> None:
+               self._clipboard().set_data(data)
+       
+    1:     def set_text(self, text: str) -> None:
+               self._clipboard().set_text(text)
+       
+    1:     def rotate(self) -> None:
+               self._clipboard().rotate()
+       
+    1:     def get_data(self) -> ClipboardData:
+               return self._clipboard().get_data()
