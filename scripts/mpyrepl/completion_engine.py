@@ -86,6 +86,68 @@ def builtin_candidates() -> set[str]:
     }
 
 
+def has_unterminated_string_or_comment(line_before_cursor: str) -> bool:
+    """Return whether a lightweight scan sees an open string or comment.
+
+    :param line_before_cursor: Current line text before the cursor.
+    :return: True when the cursor appears to be inside a string or comment.
+    """
+    quote_char: str | None = None
+    triple_quote = False
+    escaped = False
+    index = 0
+    length = len(line_before_cursor)
+
+    while index < length:
+        char = line_before_cursor[index]
+
+        if quote_char is None:
+            if char == "#":
+                return True
+
+            if line_before_cursor.startswith("'''", index) or line_before_cursor.startswith('"""', index):
+                quote_char = char
+                triple_quote = True
+                index += 3
+                continue
+
+            if char in ("'", '"'):
+                quote_char = char
+                triple_quote = False
+                escaped = False
+                index += 1
+                continue
+
+            index += 1
+            continue
+
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+
+        if triple_quote:
+            if line_before_cursor.startswith(quote_char * 3, index):
+                quote_char = None
+                triple_quote = False
+                index += 3
+                continue
+            index += 1
+            continue
+
+        if char == quote_char:
+            quote_char = None
+
+        index += 1
+
+    return quote_char is not None
+
+
 def cursor_in_string_or_comment(line_before_cursor: str) -> bool:
     """Return whether the cursor is currently inside a string or comment.
 
@@ -101,9 +163,12 @@ def cursor_in_string_or_comment(line_before_cursor: str) -> bool:
         return True
 
     if not tokens:
-        return False
+        return has_unterminated_string_or_comment(line_before_cursor)
 
-    return tokens[-1].type in (tokenize.STRING, tokenize.COMMENT)
+    if tokens[-1].type in (tokenize.STRING, tokenize.COMMENT):
+        return True
+
+    return has_unterminated_string_or_comment(line_before_cursor)
 
 
 def parse_completion_request(document: Document) -> CompletionRequest | None:
