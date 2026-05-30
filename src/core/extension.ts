@@ -595,6 +595,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.softReset", replCommands.softReset),
     vscode.commands.registerCommand("microPythonWorkBench.newFileBoardAndLocal", fileCommands.newFileBoardAndLocal),
     vscode.commands.registerCommand("microPythonWorkBench.openFileFromLocal", fileCommands.openFileFromLocal),
+    vscode.commands.registerCommand("microPythonWorkBench.syncActiveFileLocalToBoard", fileCommands.syncActiveFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileLocalToBoard", fileCommands.syncFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
     vscode.commands.registerCommand("microPythonWorkBench.setPort", boardCommands.setPort),

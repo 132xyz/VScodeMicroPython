@@ -4,8 +4,10 @@ import * as fs from "node:fs/promises";
 import * as mp from "../board/mpremote";
 import { Esp32Tree } from "../board/esp32Fs";
 import { Esp32Node } from "../core/types";
+import { Localization } from "../core/localization";
 import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync/sync";
 import { toLocalRelative, toDevicePath } from "../board/mpremoteCommands";
+import { ActiveFileSyncError, syncActiveEditorToBoard } from "../sync/activeFileSync";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 
 // Helper function to get workspace folder
@@ -19,6 +21,12 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder {
 function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
   // Placeholder - implement based on extension logic
   return fn();
+}
+
+async function refreshBoardTree(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("microPythonWorkBench.refresh");
+  } catch {}
 }
 
 // Helper to ensure workbench directory exists
@@ -39,6 +47,43 @@ async function ensureWorkbenchIgnoreFile(wsPath: string): Promise<void> {
 
 // File commands implementation
 export const fileCommands = {
+  syncActiveFileLocalToBoard: async () => {
+    try {
+      const target = await syncActiveEditorToBoard();
+      try {
+        await vscode.commands.executeCommand("microPythonWorkBench.refresh");
+      } catch {}
+      Localization.showInfo("messages.syncedLocalToBoard", target.relativePath);
+    } catch (error) {
+      if (error instanceof ActiveFileSyncError) {
+        switch (error.code) {
+          case "NO_ACTIVE_EDITOR":
+            Localization.showError("messages.noActiveEditor");
+            return;
+          case "INVALID_DOCUMENT":
+          case "SAVE_FAILED":
+            Localization.showWarning("messages.activeFileSyncNeedsSavedFile");
+            return;
+          case "NO_WORKSPACE":
+            Localization.showWarning("messages.activeFileSyncOutsideWorkspace");
+            return;
+          case "OUTSIDE_SYNC_ROOT":
+            Localization.showWarning("messages.activeFileSyncOutsideRoot", error.detail ?? "");
+            return;
+          case "IGNORED_FILE":
+            Localization.showInfo("messages.activeFileSyncIgnored", error.detail ?? "");
+            return;
+          case "LOCAL_ROOT_NOT_CONFIGURED":
+            vscode.window.showErrorMessage('Local sync root not configured. Create a "mpy" folder in the workspace or set "microPythonWorkBench.syncLocalRoot".');
+            return;
+        }
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to sync active file: ${message}`);
+    }
+  },
+
   newFileBoardAndLocal: async () => {
     const ws = vscode.workspace.workspaceFolders?.[0];
     if (!ws) {
@@ -223,6 +268,7 @@ export const fileCommands = {
     }
     const okBoard = await vscode.window.showWarningMessage(`Delete ${node.path} from board?`, { modal: true }, "Delete");
     if (okBoard !== "Delete") return;
+    let deletedOnBoard = false;
 
     // Mostrar progreso con animación
     await vscode.window.withProgress({
@@ -236,6 +282,7 @@ export const fileCommands = {
         const isDir = node.kind === "dir";
         progress.report({ increment: 60, message: isDir ? "Removing directory..." : "Removing file..." });
         await withAutoSuspend(() => mp.deleteAny(node.path));
+        deletedOnBoard = true;
         progress.report({ increment: 100, message: "Deletion complete!" });
         vscode.window.showInformationMessage(`Successfully deleted ${node.path} from board`);
         // tree.removeNode(node.path);
@@ -244,6 +291,10 @@ export const fileCommands = {
         vscode.window.showErrorMessage(`Failed to delete ${node.path} from board: ${err?.message ?? String(err)}`);
       }
     });
+
+    if (deletedOnBoard) {
+      await refreshBoardTree();
+    }
   },
 
   deleteBoardAndLocal: async (node: Esp32Node) => {
@@ -253,6 +304,7 @@ export const fileCommands = {
     }
     const okBoardLocal = await vscode.window.showWarningMessage(`Delete ${node.path} from board AND local workspace?`, { modal: true }, "Delete");
     if (okBoardLocal !== "Delete") return;
+    let deletedOnBoard = false;
 
     // Mostrar progreso con animación
     await vscode.window.withProgress({
@@ -267,6 +319,7 @@ export const fileCommands = {
         const isDir = node.kind === "dir";
         progress.report({ increment: 50, message: isDir ? "Removing directory from board..." : "Removing file from board..." });
         await withAutoSuspend(() => mp.deleteAny(node.path));
+        deletedOnBoard = true;
         progress.report({ increment: 70, message: "Board deletion complete!" });
         vscode.window.showInformationMessage(`Successfully deleted ${node.path} from board`);
         // tree.removeNode(node.path);
@@ -300,6 +353,10 @@ export const fileCommands = {
         }
       }
     }
+
+    if (deletedOnBoard) {
+      await refreshBoardTree();
+    }
     // tree.removeNode(node.path);
   },
 
@@ -311,6 +368,7 @@ export const fileCommands = {
       "Delete All"
     );
     if (warn !== "Delete All") return;
+    let deletedOnBoard = false;
 
     // Mostrar progreso con animación detallada
     await vscode.window.withProgress({
@@ -335,6 +393,7 @@ export const fileCommands = {
 
         // Usar nuestra nueva función para eliminar todo
         const result = await withAutoSuspend(() => mp.deleteAllInPath(rootPath));
+        deletedOnBoard = true;
 
         progress.report({ increment: 80, message: "Verifying deletion..." });
 
@@ -368,6 +427,10 @@ export const fileCommands = {
         vscode.window.showErrorMessage(`Failed to delete files from board: ${error?.message ?? String(error)}`);
       }
     });
+
+    if (deletedOnBoard) {
+      await refreshBoardTree();
+    }
     // Update tree without relisting: leave root directory empty in cache
     // tree.resetDir(rootPath);
   },

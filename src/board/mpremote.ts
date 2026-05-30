@@ -428,6 +428,15 @@ let globalFileTreeCache: TreeNode | null = null;
 let lastTreeUpdate: number = 0;
 const TREE_CACHE_DURATION = 30000; // 30 seconds
 
+function getTreePathsCacheFile(): string | null {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return null;
+  }
+
+  return path.join(workspaceFolder.uri.fsPath, '.mpy-workbench', 'tree-paths.json');
+}
+
 // Populate the global cache with complete file tree
 async function populateFileTreeCache(): Promise<void> {
   try {
@@ -435,9 +444,9 @@ async function populateFileTreeCache(): Promise<void> {
 
     // First, try to load from existing tree-paths.json file
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      const workbenchDir = path.join(workspaceFolder.uri.fsPath, '.mpy-workbench');
-      const filePath = path.join(workbenchDir, 'tree-paths.json');
+    const filePath = getTreePathsCacheFile();
+    if (workspaceFolder && filePath) {
+      const workbenchDir = path.dirname(filePath);
 
       try {
         if (fs.existsSync(filePath)) {
@@ -457,6 +466,9 @@ async function populateFileTreeCache(): Promise<void> {
             lastTreeUpdate = Date.now();
 
             debugLog(`populateFileTreeCache: Cache populated from file with ${cachedData.length} items`);
+            try {
+              await vscode.commands.executeCommand('microPythonWorkBench._cachePopulated');
+            } catch {}
             return;
           } else {
             debugLog(`populateFileTreeCache: Cached file too old (${fileAge}ms), refreshing...`);
@@ -589,6 +601,16 @@ function getEntriesFromCache(targetPath: string): { name: string; isDir: boolean
 export function clearFileTreeCache(): void {
   globalFileTreeCache = null;
   lastTreeUpdate = 0;
+  const persistedCacheFile = getTreePathsCacheFile();
+  if (persistedCacheFile) {
+    try {
+      if (fs.existsSync(persistedCacheFile)) {
+        fs.unlinkSync(persistedCacheFile);
+      }
+    } catch (error) {
+      console.warn(`[DEBUG] clearFileTreeCache: Failed to remove persisted cache file`, error);
+    }
+  }
   console.log(`[DEBUG] clearFileTreeCache: Cache cleared`);
 }
 
@@ -1525,6 +1547,7 @@ export async function deleteAny(p: string): Promise<void> {
 
   // Get connection info for optimization
   const connection = connectionManager.getConnection(connect);
+  const pathArg = p && p !== "/" ? p : "/";
 
   try {
     // Check if the path is a directory to determine if we need recursive deletion
@@ -1532,7 +1555,6 @@ export async function deleteAny(p: string): Promise<void> {
     const isDirectory = fileInfo?.isDir || false;
 
     // Use mpremote fs rm command with -r flag for directories, without for files
-    const pathArg = p && p !== "/" ? p : "/";
     const args = ["connect", connect, "fs", "rm"];
 
     // Add -r flag for directories to handle non-empty folders
@@ -1548,12 +1570,27 @@ export async function deleteAny(p: string): Promise<void> {
   } catch (error: any) {
     const errorMessage = String(error?.message || error).toLowerCase();
 
-    // Check if it's OSError: 39 (Directory not empty)
-    if (errorMessage.includes("oserror: 39") || errorMessage.includes("directory not empty")) {
-      console.log(`[DEBUG] deleteAny: Directory not empty, attempting recursive delete for ${p}`);
+    // Fallback when directory detection failed or the directory is not empty.
+    if (
+      errorMessage.includes("is a directory") ||
+      errorMessage.includes("oserror: 39") ||
+      errorMessage.includes("directory not empty")
+    ) {
+      console.log(`[DEBUG] deleteAny: Retrying delete as directory for ${p}`);
 
       try {
-        // Fallback: Use manual recursive deletion for non-empty directories
+        await runMpremote(["connect", connect, "fs", "rm", "-r", pathArg], { retryOnFailure: true });
+        console.log(`[DEBUG] deleteAny: Successfully deleted directory with rm -r: ${p}`);
+
+        // Invalidate cache since filesystem changed
+        clearFileTreeCache();
+        return;
+      } catch (recursiveRmError: any) {
+        console.warn(`[DEBUG] deleteAny: rm -r fallback failed for ${p}:`, recursiveRmError);
+      }
+
+      try {
+        // Final fallback: Use manual recursive deletion for boards that reject rm -r in some cases.
         await deleteDirectoryRecursive(p, connect);
         console.log(`[DEBUG] deleteAny: Successfully deleted directory recursively: ${p}`);
 
@@ -1695,27 +1732,47 @@ export async function deleteAllInPath(rootPath: string): Promise<{deleted: strin
   const errors: string[] = [];
 
   try {
-    // If caller passed rootPath as "/", treat it as the workspace's configured device root
-    // to avoid destructive deletion of the device root directory. Resolve a safe deviceRoot
-    // (e.g. /mpy_<random>) from the workspace .mpy-workbench/config.json or create one.
-    let targetPath = rootPath;
     if (rootPath === "/") {
+      clearFileTreeCache();
+
       try {
-        const deviceRoot = getEffectiveDeviceRootSync();
-        targetPath = deviceRoot;
-        console.log(`[DEBUG] deleteAllInPath: Resolved '/' to device root ${deviceRoot}`);
-      } catch (err) {
-        console.warn('[DEBUG] deleteAllInPath: Failed to resolve device root; aborting to avoid root deletion', err);
-        return { deleted: [], errors: ['Refusing to delete device root "/"'], deleted_count: 0, error_count: 1 };
+        const entries = await lsTyped("/");
+
+        for (const entry of entries) {
+          const targetPath = `/${entry.name.replace(/^\/+/, '')}`;
+          try {
+            await deleteAny(targetPath);
+            deleted.push(targetPath);
+          } catch (error: any) {
+            errors.push(`Failed to delete ${targetPath}: ${error?.message || error}`);
+            connectionManager.markUnhealthy(connect);
+          }
+        }
+      } catch (error: any) {
+        connectionManager.markUnhealthy(connect);
+        return {
+          deleted: [],
+          errors: [String(error?.message || error)],
+          deleted_count: 0,
+          error_count: 1
+        };
       }
+
+      clearFileTreeCache();
+      return {
+        deleted,
+        errors,
+        deleted_count: deleted.length,
+        error_count: errors.length
+      };
     }
 
-    // For non-root (now targetPath), delete the directory itself
+    // For non-root paths, delete the directory or file directly.
     try {
-      await runMpremote(["connect", connect, "fs", "rm", "-r", targetPath], { retryOnFailure: true });
-      deleted.push(targetPath);
+      await runMpremote(["connect", connect, "fs", "rm", "-r", rootPath], { retryOnFailure: true });
+      deleted.push(rootPath);
     } catch (error: any) {
-      errors.push(`Failed to delete ${targetPath}: ${error?.message || error}`);
+      errors.push(`Failed to delete ${rootPath}: ${error?.message || error}`);
       connectionManager.markUnhealthy(connect);
     }
 

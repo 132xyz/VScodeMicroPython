@@ -28,6 +28,7 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
     } else {
       item.command = { command: "microPythonWorkBench.runFromView", title: element.label, arguments: [element.command] };
       if (element.id === "baseline") item.iconPath = new vscode.ThemeIcon("cloud-upload");
+      if (element.id === "syncActiveFileLocalToBoard") item.iconPath = new vscode.ThemeIcon("repo-push");
       if (element.id === "baselineFromBoard") item.iconPath = new vscode.ThemeIcon("cloud-download");
       if (element.id === "checkDiffs") item.iconPath = new vscode.ThemeIcon("diff");
       if (element.id === "syncDiffsLocalToBoard") item.iconPath = new vscode.ThemeIcon("cloud-upload");
@@ -68,6 +69,7 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
     return [
       { id: "toggleAutoSync", label: autoSyncLabel, command: "microPythonWorkBench.toggleWorkspaceAutoSync" },
       { id: "baseline", label: "Upload all files (Local → Board)", command: "microPythonWorkBench.syncBaseline" },
+      { id: "syncActiveFileLocalToBoard", label: "Upload active file (Local → Board)", command: "microPythonWorkBench.syncActiveFileLocalToBoard" },
       { id: "baselineFromBoard", label: "Download all files (Board → Local)", command: "microPythonWorkBench.syncBaselineFromBoard" },
       { id: "checkDiffs", label: "Check for differences (local vs board)", command: "microPythonWorkBench.checkDiffs" },
       { id: "syncDiffsLocalToBoard", label: "Sync changed Files Local → Board", command: "microPythonWorkBench.syncDiffsLocalToBoard" },

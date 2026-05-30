@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.60",
+  "version": "0.3.64",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -205,6 +205,11 @@
         "command": "microPythonWorkBench.syncFileLocalToBoard",
         "title": "%commands.syncFileLocalToBoard.title%",
         "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "microPythonWorkBench.syncActiveFileLocalToBoard",
+        "title": "%commands.syncActiveFileLocalToBoard.title%",
+        "icon": "$(repo-push)"
       },
       {
         "command": "microPythonWorkBench.syncFileBoardToLocal",
