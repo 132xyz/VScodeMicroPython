@@ -118,6 +118,20 @@ class FakeContextTransport:
             output_consumer(payload[1:])
 
 
+class FailingEncodingStream:
+    def __init__(self) -> None:
+        self.buffer = io.BytesIO()
+        self.encoding = "cp1252"
+        self.flush_calls = 0
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        return len(text)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+
 class MainHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeContextTransport.instances.clear()
@@ -156,6 +170,15 @@ class MainHelperTests(unittest.TestCase):
         self.assertTrue(input_buffer.has_pending_input())
         self.assertEqual(input_buffer.consume_source("print(1)\n\n"), "print(1)")
         self.assertFalse(input_buffer.has_pending_input())
+
+    def test_write_stream_chunk_falls_back_when_stream_encoding_cannot_encode_unicode(self) -> None:
+        stream = FailingEncodingStream()
+        decoder = mpyrepl_main.Utf8StreamDecoder()
+
+        mpyrepl_main.write_stream_chunk(stream, decoder, "中OK".encode("utf-8"))
+
+        self.assertEqual(stream.buffer.getvalue(), "中OK".encode("utf-8"))
+        self.assertEqual(stream.flush_calls, 1)
 
     def test_request_prompt_exit_exits_running_prompt(self) -> None:
         loop = FakeLoop()
@@ -519,18 +542,19 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                                         "patch_stdout",
                                         return_value=contextlib.nullcontext(),
                                     ):
-                                        with mock.patch.object(
-                                            mpyrepl_main.asyncio,
-                                            "to_thread",
-                                            side_effect=fake_to_thread,
-                                        ):
-                                            result = await mpyrepl_main.run_async_repl(
-                                                config,
-                                                1.0,
-                                                "",
-                                                "",
-                                                2.0,
-                                            )
+                                        with mock.patch.object(mpyrepl_main.sys, "stdout", io.StringIO()):
+                                            with mock.patch.object(
+                                                mpyrepl_main.asyncio,
+                                                "to_thread",
+                                                side_effect=fake_to_thread,
+                                            ):
+                                                result = await mpyrepl_main.run_async_repl(
+                                                    config,
+                                                    1.0,
+                                                    "",
+                                                    "",
+                                                    2.0,
+                                                )
 
         self.assertEqual(result, 0)
         self.assertEqual(symbols.clear_calls, 1)

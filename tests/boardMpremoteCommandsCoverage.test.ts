@@ -113,7 +113,7 @@ describe('board mpremoteCommands coverage', () => {
     (vscode.commands as any).executeCommand = jest.fn().mockResolvedValue(undefined);
 
     mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValue(true);
-    mpRemoteManager.MpRemoteManager.detectPythonPath.mockResolvedValue('/python.exe');
+    mpRemoteManager.MpRemoteManager.detectPythonPath.mockResolvedValue('python3');
     childProcess.exec.mockImplementation((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       callback(null, '', '');
     });

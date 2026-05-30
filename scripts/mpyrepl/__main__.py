@@ -217,8 +217,27 @@ def write_stream_chunk(stream, decoder: Utf8StreamDecoder, chunk: bytes) -> None
     """
     text = decoder.feed(chunk)
     if text:
+        write_text(stream, text)
+
+
+def write_text(stream, text: str) -> None:
+    """Write decoded text to a host stream with a Unicode-safe fallback.
+
+    :param stream: Output stream.
+    :param text: Decoded text to forward.
+    :return: None
+    """
+    try:
         stream.write(text)
-        stream.flush()
+    except UnicodeEncodeError:
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:
+            buffer.write(text.encode("utf-8", errors="replace"))
+        else:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            stream.write(safe_text)
+    stream.flush()
 
 
 def flush_decoder(stream, decoder: Utf8StreamDecoder) -> None:
@@ -230,8 +249,7 @@ def flush_decoder(stream, decoder: Utf8StreamDecoder) -> None:
     """
     text = decoder.flush()
     if text:
-        stream.write(text)
-        stream.flush()
+        write_text(stream, text)
 
 
 def install_sigint_forwarder(transport: SerialReplTransport) -> Callable[[], None]:
