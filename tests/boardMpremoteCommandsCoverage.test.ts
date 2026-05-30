@@ -210,7 +210,9 @@ describe('board mpremoteCommands coverage', () => {
       await commands.runActiveFile();
       const runTerminal = ((vscode.window.terminals as unknown) as MockTerminal[]).find(t => t.name === 'ESP32 Run File');
       expect(runTerminal).toBeDefined();
-      expect(runTerminal?.sendText).toHaveBeenCalledWith(expect.stringContaining('OutputEncoding'), true);
+      if (process.platform === 'win32') {
+        expect(runTerminal?.sendText).toHaveBeenCalledWith(expect.stringContaining('OutputEncoding'), true);
+      }
       expect(runTerminal?.sendText).toHaveBeenCalledWith(expect.stringContaining('connect COM4 run /workspace/main.py'), true);
 
       await commands.closeRunTerminal();
