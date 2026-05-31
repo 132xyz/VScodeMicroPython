@@ -1,139 +1,149 @@
-# VS Code MicroPython 扩展 - 单元测试
+# VS Code MicroPython 扩展测试说明
 
-本文档描述了为 VS Code MicroPython 扩展建立的单元测试基础设施和测试内容。
+本文档描述当前仓库的测试体系、常用命令、覆盖范围与维护建议。它反映的是当前代码状态，而不是早期测试起步阶段的规划文档。
 
-## 测试基础设施
+## 当前测试体系
 
-### 已安装的依赖
-- **Jest**: 测试框架
-- **@types/jest**: Jest 的 TypeScript 类型定义
-- **ts-jest**: Jest 的 TypeScript 预设
+仓库现在维护两套测试：
 
-### 配置
-- `jest.config.js`: Jest 配置文件
-- `tsconfig.json`: 添加了 Jest 类型支持
-- `package.json`: 添加了 `test` 和 `test:watch` 脚本
+- JavaScript / TypeScript 扩展测试
+	- 框架：Jest + ts-jest
+	- 目录：`tests/`
+	- 目标：覆盖扩展配置、同步逻辑、开发板操作、代码补全和 VS Code 交互层
+- Python `mpyrepl` 测试
+	- 框架：标准库 `unittest` + `trace`
+	- 目录：`scripts/mpyrepl/test_*.py`
+	- 目标：覆盖实验性自定义 Python REPL 的 transport、session、completion、控制通道和入口逻辑
 
-### Mock 设置
-- `tests/__mocks__/vscode.ts`: VS Code API 的模拟
-- `tests/setup.ts`: Jest 设置文件，包含必要的 mocks
+## 常用命令
 
-## 测试内容
+### 运行全部 JS / TS 测试
 
-### 高优先级测试 - 已实施
-
-#### 1. `mpremoteCommands.isVersionCompatible()` 函数
-
-**测试文件**: `tests/mpremoteCommands.test.ts`
-
-**测试覆盖**:
-- ✅ 接受版本 1.20.0 及以上
-- ✅ 拒绝版本低于 1.20.0
-- ✅ 处理不完整的版本号
-- ✅ 处理无效的版本字符串
-- ✅ 正确处理边界情况
-
-**测试用例**:
-```typescript
-// 接受的版本
-'1.20.0', '1.20.1', '1.21.0', '2.0.0', '2.1.5'
-
-// 拒绝的版本
-'1.19.9', '1.19.0', '1.10.0', '0.9.0'
-
-// 不完整的版本号
-'1.20' (接受), '2.0' (接受), '1' (拒绝), '2' (拒绝), '' (拒绝)
-
-// 无效的版本字符串
-'invalid', '1.invalid.0', 'a.b.c'
-```
-
-#### 2. `stubSupport` 代码补全辅助逻辑
-
-**测试文件**: `tests/stubSupport.test.ts`
-
-**测试覆盖**:
-- ✅ 识别直接的 hybrid stub 根目录
-- ✅ 识别安装目录下的嵌套 stub 根目录
-- ✅ 根据板子信息生成推荐的 pyi 包名
-- ✅ 识别 `pyrightconfig.json` 覆盖
-- ✅ 识别 `pyproject.toml` 中的 `[tool.pyright]`
-
-#### 3. `stubIndex` stub 索引与匹配逻辑
-
-**测试文件**: `tests/stubIndex.test.ts`
-
-**测试覆盖**:
-- ✅ 解析带 `dist-info` 的已安装 stub 目录
-- ✅ 解析无 `dist-info` 时的目录名回退规则
-- ✅ 根据版本、端口、板子选择最佳匹配 stub
-- ✅ 在提示缺失时回退到最高版本
-
-## 运行测试
-
-### 运行所有测试
 ```bash
 npm test
 ```
 
-当前 CI 与本地 Jest 只执行符合 `*.test.ts` / `*.spec.ts` 约定的 TypeScript 测试文件。旧的手工 `.js` 脚本和编译产物已移除，避免与当前测试体系和代码补全实现产生混淆。
+### 运行 JS / TS 测试并生成覆盖率
 
-### 运行 JS 测试并生成覆盖率报告
 ```bash
 npm run test:js:coverage
 ```
 
-### 运行 Python REPL 测试并显示本地源码覆盖率
-
-Python REPL 测试依赖 `pyserial`：
+### 运行 Python `mpyrepl` 测试并输出本地源码覆盖率
 
 ```bash
 python -m pip install -r scripts/mpyrepl/requirements-test.txt
 npm run test:py
 ```
 
-### 一次性显示 JS 和 Python 覆盖率
+### 一次性运行 JS 与 Python 覆盖率命令
 
 ```bash
 npm run test:coverage
 ```
 
-### 监听模式运行测试
+### 监听模式运行 Jest
+
 ```bash
 npm run test:watch
 ```
 
-## 测试覆盖率目标
+## 当前测试文件面
 
-根据项目分析，以下是测试覆盖率目标：
+### JS / TS 测试
 
-- **sync.ts**: 95%+ (核心业务逻辑)
-- **路径转换函数**: 100% (简单但关键)
-- **pythonInterpreter.ts**: 80%+ (工具函数)
-- **mpremoteCommands.ts**: 70%+ (安装逻辑)
+当前 `tests/` 下已覆盖的主要方向包括：
 
-## 后续扩展
+- 同步与文件路径：
+	- `activeFileSync.test.ts`
+	- `pathMapping.test.ts`
+	- `syncCommandsCoverage.test.ts`
+	- `syncLocalizationCoverage.test.ts`
+	- `syncView.test.ts`
+- 开发板与串口路径：
+	- `boardOperationsCoverage.test.ts`
+	- `boardMpremoteCommandsCoverage.test.ts`
+	- `esp32FsCoverage.test.ts`
+	- `MpRemoteManagerCoverage.test.ts`
+	- `mpremoteCommands.test.ts`
+	- `pythonInterpreterCoverage.test.ts`
+	- `fileCommandsCoverage.test.ts`
+	- `decorationsCoverage.test.ts`
+- 代码补全与 stub 管理：
+	- `codeCompletionCoverage.test.ts`
+	- `completionPythonConfig.test.ts`
+	- `stubSupport.test.ts`
+	- `stubIndex.test.ts`
+	- `stubOverlay.test.ts`
+- 基础能力与回归保护：
+	- `coreUtilityCoverage.test.ts`
+	- `extensionSmoke.test.ts`
 
-### 中优先级测试内容
-- `pythonInterpreter.ts` 中的 `getFallbackPythonPaths()` 和 `validatePythonPath()` 函数
-- `mpremoteCommands.ts` 中的其他纯函数
+### Python `mpyrepl` 测试
 
-### 低优先级测试内容
-- 类型和接口验证
-- 配置和常量验证
+当前 `scripts/mpyrepl/` 下已覆盖的主要方向包括：
 
-## 测试策略
+- `test_transport_behavior.py`
+	- raw REPL transport、超时、soft reset、协议边界
+- `test_session_behavior.py`
+	- prompt 会话、多行输入、缩进、按键行为、补全触发
+- `test_support_modules.py`
+	- CLI 参数解析、补全模块、控制模块等辅助组件
+- `test_main_helpers.py`
+	- `__main__.py` 入口、异步 REPL 主循环、控制通道、Unicode 输出回退、soft reset 路径
 
-1. **纯函数优先**: 优先测试不依赖外部状态的纯函数
-2. **Mock 外部依赖**: 对 VS Code API、文件系统、子进程等进行适当 mock
-3. **边界情况覆盖**: 确保测试覆盖正常情况、边界情况和错误情况
-4. **可维护性**: 测试代码应该清晰、易于理解和维护
+## 当前验证快照
 
-## 贡献
+以下数字是本次文档刷新时的本地验证快照，不代表长期冻结指标：
 
-添加新测试时，请遵循以下原则：
+- JS / TS
+	- 20 个 test suites
+	- 74 个 tests
+	- statements: 42.65%
+	- branches: 28.79%
+	- functions: 43.60%
+	- lines: 44.57%
+- Python `mpyrepl`
+	- 53 个 tests
+	- 本地 `scripts/mpyrepl` 源码覆盖率：81.0%
 
-1. 为每个测试用例提供清晰的描述
-2. 使用有意义的断言
-3. 保持测试独立性
-4. 更新此文档以反映新的测试内容
+## 测试基础设施与约定
+
+### JS / TS 侧
+
+- `jest.config.js`：Jest 配置入口
+- `tests/__mocks__/vscode.ts`：VS Code API mock
+- `tests/setup.ts`：全局测试初始化与常用 mock
+- `package.json`：统一暴露测试与覆盖率脚本
+
+### Python 侧
+
+- `scripts/mpyrepl/run_python_tests_with_coverage.py`
+	- 使用 `trace` 统计 `scripts/mpyrepl/` 本地源码覆盖率
+- `scripts/mpyrepl/requirements-test.txt`
+	- 当前测试依赖 `pyserial`
+
+## 当前测试策略
+
+仓库当前更偏向以下策略：
+
+- 优先增加可局部验证、可复审的小型测试
+- 尽量通过外部环境模拟与 mock 提升覆盖率，而不是为了测试去大规模重构生产代码
+- 对错误分支、降级路径和平台差异做有针对性的覆盖
+- 在测试内部抑制预期内的 console 噪音，避免 CI 日志被误导性错误信息淹没
+- 硬件相关行为优先验证“控制流”和“命令构造”，真实设备行为仍需上板补充验证
+
+## 新增测试时的建议
+
+1. 先选局部可验证的控制路径，不要一开始就从重 I/O 或重终端耦合路径下手。
+2. 对 VS Code API、文件系统、子进程、串口等边界依赖使用窄 mock，而不是写过度复杂的全集成测试。
+3. 新增覆盖率测试时，优先覆盖错误分支、平台分支、恢复逻辑和回退逻辑。
+4. 如果测试会触发预期中的 warning / error 输出，在测试里显式接管 console，避免污染日志。
+5. 修改测试结构或入口命令后，同步更新本文档。
+
+## 仍值得继续补强的区域
+
+- `src/board/` 下仍有部分真实运行时路径依赖硬件或终端状态，覆盖率仍低于纯逻辑模块
+- 自定义 REPL 与默认 `mpremote` REPL 的切换边界仍应继续补充回归测试
+- Windows / macOS 平台差异路径需要持续防回归
+- 与真实开发板强耦合的行为，仍应通过手工硬件验证补充信心

@@ -1,193 +1,196 @@
-# MicroPython 工作台 — VS Code 的 MicroPython 文件管理器
+# MicroPython 工作台 for VS Code
 
 [English](README.md)
 
-受 Thonny 简洁性的启发，此扩展简化了在多个开发板上的 MicroPython 开发。它在 VS Code 中提供远程文件管理、集成的 REPL 和自动双向同步，从而实现更流畅的工作流程。
+MicroPython 工作台是一个面向 ESP32 类开发板及类似设备的 VS Code 扩展，聚合了开发板文件浏览、双向差异同步、运行与 REPL 终端，以及工作区级别的 MicroPython stub 管理能力。
 
-该扩展使用 **mpremote** 处理所有开发板交互，包括文件传输、REPL 连接和命令执行。
+当前开发板文件相关操作仍然通过 `mpremote` 完成。REPL 终端则可以按需切换到内置的实验性 Python 客户端 `scripts/mpyrepl`，以获得更强的主机侧编辑、补全和 Unicode 处理能力。
 
 ## 主要功能
 
-- 📂 设备远程文件资源管理器（打开、下载文件/文件夹、上传、重命名、删除）
-- 🔄 双向同步：比较本地文件与设备并同步已更改的文件
-- 📝 在文件视图中创建一个新文件并在首次保存时将其上传到开发板
-- 💻 集成的 MicroPython REPL 终端
-- ⏯️ 向开发板发送命令（停止、软重置等）
-- 🧭 文件视图显示检测到的开发板名称和状态栏显示上次自动同步时间
-- 🧠 **IntelliSense 代码补全** MicroPython 模块，支持自动检测和多语言
+- 连接开发板后的远程文件浏览、下载、上传、重命名、删除
+- 基于差异比较的本地 ↔ 开发板双向同步
+- 当前活动文件同步，以及可选的保存时自动同步
+- 集成 REPL 终端和独立的“运行活动文件”终端
+- 开发板操作命令：中断、软重置、重连等
+- 基于 stub 的 MicroPython 代码补全、安装、自动选择与 Pylance 集成
+- 可选的实验性自定义 Python REPL，支持多行编辑、补全和控制通道中断/重置
 
-**⚡ 连接到开发板并运行文件**
+**连接开发板并运行文件**
 ![运行文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
 
-**🔄 自动同步本地文件夹内容**
+**自动同步本地文件夹内容**
 ![同步文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/sync%20new%20files.gif?raw=true)
-
-## 同步工具
-
-这些命令在本地工作区和连接的 MicroPython 开发板之间执行完整或增量同步：
-
-- **检查差异：** 列出本地和开发板之间新的、已更改或已删除的文件。
-- **同步本地 → 开发板：** 仅上传本地文件，这些文件是新的或已修改的。
-- **同步开发板 → 本地：** 仅下载开发板文件，这些文件是新的或已修改的。
-- **上传所有本地 → 开发板：** 将所有非忽略的本地文件上传到设备。
-- **下载所有开发板 → 本地：** 下载所有开发板文件，覆盖本地副本。
-- **删除开发板上的所有文件：** 从设备中移除所有文件。
-
-## 有用的命令（命令面板）
-
-- `MPY 工作台：刷新` — 刷新文件树
-- `MPY 工作台：检查文件差异` — 显示差异和本地独有文件
-- `MPY 工作台：同步已更改文件（本地 → 开发板）` — 上传已更改的本地文件
-- `MPY 工作台：同步已更改文件（开发板 → 本地）` — 下载已更改的开发板文件
-- `MPY 工作台：同步所有文件` — 完整上传或下载
-- `MPY 工作台：选择串口` — 选择设备串口
-- `MPY 工作台：打开 REPL 终端` — 打开 MicroPython REPL
-- `MPY 工作台：切换工作区保存时自动同步` — 启用/禁用工作区自动同步
-- `MPY 工作台：切换代码补全` — 启用/禁用 MicroPython 代码补全
-
-## 工作区配置
-
-该扩展在工作区根目录的 `.mpy-workbench` 文件夹中存储每个工作区的设置和清单。
-
-- 工作区覆盖文件：`.mpy-workbench/config.json`
-- 同步清单：`.mpy-workbench/esp32sync.json`
-
-使用命令 `MicroPython 工作台：切换工作区保存时自动同步` 来启用或禁用当前工作区的自动同步。该开关优先把工作区专属值保存在扩展的 workspaceState 中；如果没有保存值，扩展才会回退到 VS Code 设置 `microPythonWorkBench.autoSyncOnSave`，最后再回退到旧的 `.mpy-workbench/config.json`。
-
-### 本地同步根目录
-
-默认情况下，同步操作使用工作区根目录。您可以使用 `microPythonWorkBench.syncLocalRoot` 设置配置不同的本地根目录：
-
-- **空（默认）**：使用工作区根目录
-- **相对路径**：例如，`"mpy"`、`"src"` 或 `"micropython"` — 相对于工作区根目录
-- **绝对路径**：完整路径到工作区外部的目录
-
-许多用户会将单个子目录（例如 `mpy`）设置为本地同步根目录。扩展现在会将设备路径始终映射到配置的本地同步目录下：
-
-- 如果 `microPythonWorkBench.syncLocalRoot` 为 `mpy` 且设备文件为 `/mpy/t.py`，则映射到本地 `./mpy/mpy/t.py`（设备路径组件在本地同步目录下保留）。
-- 如果 `microPythonWorkBench.rootPath` 配置为 `/`，扩展会为该工作区生成一个 workspace-scoped 设备根（或使用 `MPY_DEVICE_ROOT` 环境覆盖），该设备根本身映射为本地同步根（空的相对路径），其子路径映射到该根下的相对路径。
-
-此行为保证了设备文件总是放在配置的同步目录之下。有关完整示例，请参阅 `example-workspace-settings.json`。
-
-## 代码补全
-
-该扩展使用 Python stub 文件为 MicroPython 模块提供智能代码补全。此功能与 VS Code 的 Pylance 语言服务器集成，提供 IntelliSense 支持。
-
-### 工作原理
-
-- 启用代码补全后，扩展会优先选择工作区中已安装的 MicroPython stub 包。
-- 如果选中的 stub 根目录同时包含 typeshed 风格目录树，扩展还会同步更新 Pylance 的标准库类型来源，以便更准确地解析 MicroPython 的内置符号和标准库模块。
-- 如果工作区中存在 `pyrightconfig.json`，或 `pyproject.toml` 中定义了 `[tool.pyright]`，这些配置可能会覆盖 VS Code 里的 `python.analysis.*` 设置。
-
-### 配置选项
-
-```json
-{
-  "microPythonWorkBench.enableCodeCompletion": true,
-  "microPythonWorkBench.stubInstallPath": ".mpy-workbench/pyi",
-  "microPythonWorkBench.codeCompletionExtraPaths": [],
-  "microPythonWorkBench.stubAutoSelect": true
-}
-```
-
-- `microPythonWorkBench.enableCodeCompletion`：
-  - `true`：为当前工作区启用 MicroPython 代码补全
-  - `false`：禁用扩展托管的 MicroPython 补全接入
-- `microPythonWorkBench.stubInstallPath`：工作区内用于保存已安装 stub 包的相对目录
-- `microPythonWorkBench.codeCompletionExtraPaths`：启用补全时合并到当前 MicroPython stub 根中的额外目录或 .pyi 文件路径
-- `microPythonWorkBench.stubAutoSelect`：在可能的情况下，自动为当前连接的板子选择并应用最合适的已安装 stub
-
-### 安装与切换 Stub
-
-从命令面板使用 `MPY 工作台：切换代码补全` 来手动启用/禁用当前工作区的代码补全。
-
-- 使用状态栏中的 `MPY: Stub` 项来管理当前工作区的 MicroPython stub。
-- Stub 选择器支持：从已安装项中选择、安装与当前设备匹配的推荐版本、安装指定包或指定版本、刷新已安装 stub 索引。
-- 已安装 stub 默认保存在 `.mpy-workbench/pyi` 目录下，便于同一工作区内并存多个版本。
-- 如果你手动用 pip 把 stub 安装到该目录，刷新索引后它也会出现在已安装 stub 列表中。
-- 某些 MicroPython stub 包是混合结构：既包含 typeshed 风格的标准库目录，也包含像 `machine`、`time` 这样的顶层纯 stub 模块。由于这些模块的真实运行时在板子上而不在本地解释器中，启用 MicroPython 代码补全时，扩展会自动压制这类 `reportMissingModuleSource` 告警。
-
-## 状态指示器
-
-- 状态栏显示 `MPY: 自动同步 开/关`、取消所有任务按钮，以及 `MPY: 上次同步 <时间>` 在每次自动同步运行后。
-- 文件视图标题在选择固定串口后显示检测到的开发板名称/ID。
 
 ## 快速开始
 
-1. 从 VS Code 市场安装扩展，或在本地构建并安装 `.vsix`：
+1. 从 VS Code Marketplace 安装扩展，或者本地构建 `.vsix`：
 
 ```bash
-# 构建包（需要 vsce）
 npm ci
 npm run compile
 npm run package
-# 然后在 VS Code 扩展中选择 "Install from VSIX" 安装生成的 .vsix
 ```
 
-2. 确保本机安装依赖：
+2. 在扩展将要使用的 Python 环境中安装 `mpremote`：
 
 ```bash
-# Python 3.8+（建议 >=3.10）
-# `mpremote` 是本扩展所需工具，请先安装到扩展将使用的 Python 环境中。
 python -m pip install --user mpremote
 ```
 
-3. 打开包含 MicroPython 项目的工作区，选择串口（`MPY 工作台：选择串口`），在文件视图中进行同步/上传操作。
+3. 打开工作区后，执行 `MicroPython 工作台：选择串口`，再通过文件视图或命令面板执行同步、浏览和 REPL 操作。
 
-## 开发与测试
-
-- 构建：`npm run compile`（TypeScript 编译到 `dist/`）。
-- 测试：`npm test`（Jest）。CI 配置位于 `.github/workflows/ci.yml`。
-- 打包：`npm run package`（需要 `vsce`）。
-
-## 配置项
-
-常用设置（可在扩展设置中查看）：
-
-- `microPythonWorkBench.syncLocalRoot`：用于同步的本地目录（默认：空，表示工作区根目录）。
-- `microPythonWorkBench.autoSyncOnSave`：保存时是否自动同步（默认：`false`）。
-- `microPythonWorkBench.pythonPath`：用于执行 `esptool`/辅助命令的 Python 可执行文件路径。
-
-完整配置项请参见 `package.json` 中的 `contributes.configuration`。
+4. 可选但推荐：
+   - 安装 Python 与 Pylance 扩展，以获得更好的补全体验。
+   - 开启 `microPythonWorkBench.enableCodeCompletion`，为当前工作区启用 MicroPython IntelliSense。
+   - 如果你想使用实验性的主机侧 REPL，开启 `microPythonWorkBench.experimentalCustomRepl`。
 
 ## 使用要求
 
-- **Python 3.8+** - 扩展使用 Python 运行 mpremote 及相关辅助命令
-- **mpremote** - 必需：请安装到扩展将使用的 Python 环境中，例如 `python -m pip install --user mpremote`
-- **手动固件烧录（可选）**：如果你要在扩展外手动烧录开发板，请在同一 Python 环境中安装 `esptool`
-- **代码补全（可选）**：[Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) 扩展提供增强的 IntelliSense 支持
-- 如需使用特定的 Python 解释器，可在扩展设置中调整 Python 路径。
+- 标准 `mpremote` 工作流需要 Python 3.8+
+- 启用 `microPythonWorkBench.experimentalCustomRepl` 时，建议 Python 3.9+
+- 扩展使用的 Python 环境中需要安装 `mpremote`
+- Python 扩展 `ms-python.python` 为必需依赖
+- 推荐安装 Pylance `ms-python.vscode-pylance`，以获得完整代码补全体验
 
-- 当前兼容性与现场验证主要集中在 ESP32 系列（ESP32-S3、ESP32-C3）。如需扩展到其他板子，请先做串口、文件同步和 REPL 的联调验证。
-- 仓库已配置 CI，会在多平台和 Node.js 版本上运行构建/测试，但单元测试覆盖尚不足——建议在本地运行 `npm test` 并为核心模块（`sync`、`board`、`completion`）补充测试用例。
+如需强制使用某个 Python 解释器，请设置 `microPythonWorkBench.pythonPath`。
 
-## 固件烧录（已移除）
+## 核心工作流
 
-- 自动使用 esptool 的固件烧录功能已从此扩展中移除。
-- 请使用 `esptool` 或厂商工具手动烧录开发板。示例：
+### 文件与同步
+
+- `MicroPython 工作台：刷新`：重新加载开发板文件树
+- `MicroPython 工作台：检查文件差异`：比较开发板文件与当前配置的本地同步根目录
+- `MicroPython 工作台：同步已更改文件 本地 → 开发板` 与 `MicroPython 工作台：同步已更改文件 开发板 → 本地`：只传输变更文件
+- `MicroPython 工作台：同步所有文件（本地 → 开发板）` 与 `MicroPython 工作台：同步所有文件（开发板 → 本地）`：执行完整基线同步
+- `MicroPython 工作台：同步活动文件 本地 → 开发板`：仅上传当前编辑器文件，但要求该文件位于配置的同步根目录内
+
+工作区级别的元数据保存在 `.mpy-workbench/` 下：
+
+- `.mpy-workbench/config.json`：旧版工作区覆盖配置
+- `.mpy-workbench/esp32sync.json`：同步清单
+- `.mpy-workbench/pyi/`：默认的 MicroPython stub 安装目录
+
+### REPL、运行与自动挂起
+
+- 默认 REPL 终端通过 `mpremote connect <port>` 打开。
+- `MicroPython 工作台：运行活动文件` 通过 `mpremote connect <port> run <file>` 执行当前本地文件。
+- 在 Windows 上，扩展会为 REPL 和 Run 终端注入更偏向 UTF-8 的环境变量与 PowerShell 输出编码设置。
+- `microPythonWorkBench.serialAutoSuspend` 会在同步前关闭 REPL / Run 终端，避免串口冲突，并在同步后恢复原来的串口会话状态。
+- `microPythonWorkBench.replRestoreBehavior` 用于控制自动恢复 REPL 后的行为：
+  - `runChanged`：尽量把刚同步的文件重新导入到 REPL 中
+  - `executeBootMain`：发送 `Ctrl-D`，让会在软重置后自动运行 `boot.py` / `main.py` 的设备重新启动
+  - `openReplEmpty`：只重新打开 REPL，不发送后续命令
+  - `none`：不自动重新打开 REPL
+
+### 代码补全
+
+- `microPythonWorkBench.enableCodeCompletion` 为当前工作区启用 MicroPython 补全接入。
+- 状态栏中的 `MPY: Stub` 用于管理已安装的 stub 包。
+- 当 `microPythonWorkBench.stubAutoSelect` 为开启状态时，扩展会尽量为当前连接的设备自动选择最佳 stub。
+- `microPythonWorkBench.codeCompletionExtraPaths` 可将额外目录或 `.pyi` 文件合并到当前激活的 MicroPython stub 根目录。
+- 如果选中的 stub 包包含 typeshed 风格的标准库布局，扩展还会同步更新 Pylance 的分析来源，以改善 MicroPython 内置符号和标准库模块的解析效果。
+
+### 实验性自定义 Python REPL
+
+- 开启 `microPythonWorkBench.experimentalCustomRepl` 后，REPL 终端会从默认的 `mpremote` 方式切换到内置的 `mpyrepl` Python 客户端。
+- 该设置只影响 REPL 终端。文件浏览、文件同步和“运行活动文件”仍然走 `mpremote`。
+- 当前这条路径主要用于改善以下体验：
+  - 主机侧多行编辑
+  - prompt_toolkit 补全
+  - 会话内符号跟踪
+  - 基于控制文件的中断、软重置和退出
+  - Windows 与混合编码主机下更稳妥的 Unicode 输出
+
+详见英文专题文档 [docs/custom-python-repl.md](docs/custom-python-repl.md) 和中文专题文档 [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)。
+
+## 常用配置项
+
+以下设置最值得优先关注：
+
+- `microPythonWorkBench.connect`：固定串口，例如 `COM3` 或 `/dev/ttyUSB0`
+- `microPythonWorkBench.syncLocalRoot`：本地同步根目录，可为工作区相对路径或绝对路径
+- `microPythonWorkBench.rootPath`：开发板侧根路径，例如 `/` 或 `/lib`
+- `microPythonWorkBench.autoSyncOnSave`：保存时自动上传
+- `microPythonWorkBench.serialAutoSuspend`：同步前后自动挂起并恢复串口会话
+- `microPythonWorkBench.replRestoreBehavior`：自动恢复 REPL 后的行为
+- `microPythonWorkBench.experimentalCustomRepl`：切换到实验性 Python REPL 客户端
+- `microPythonWorkBench.pythonPath`：为 `mpremote` 与辅助脚本指定解释器
+- `microPythonWorkBench.enableCodeCompletion`：启用工作区级别的 MicroPython 补全
+- `microPythonWorkBench.stubInstallPath`：工作区内 stub 安装目录
+- `microPythonWorkBench.stubAutoSelect`：自动选择最合适的已安装 stub
+- `microPythonWorkBench.codeCompletionExtraPaths`：向当前 stub 根目录合并额外 `.pyi` 路径
+- `microPythonWorkBench.usePyRawList`：改用 Python raw REPL 辅助脚本列目录
+
+完整配置项请查看 `package.json` 中的 `contributes.configuration`。
+
+## 常用命令
+
+- `MicroPython 工作台：选择串口`
+- `MicroPython 工作台：刷新`
+- `MicroPython 工作台：打开 REPL`
+- `MicroPython 工作台：打开串口监视器`
+- `MicroPython 工作台：运行活动文件`
+- `MicroPython 工作台：中断 (Ctrl-C, Ctrl-B)`
+- `MicroPython 工作台：软重置 (Ctrl-D)`
+- `MicroPython 工作台：检查文件差异`
+- `MicroPython 工作台：同步已更改文件 本地 → 开发板`
+- `MicroPython 工作台：同步已更改文件 开发板 → 本地`
+- `MicroPython 工作台：同步所有文件（本地 → 开发板）`
+- `MicroPython 工作台：同步所有文件（开发板 → 本地）`
+- `MicroPython 工作台：切换工作区保存时自动同步`
+- `MicroPython 工作台：切换代码补全`
+
+## 构建、测试与打包
 
 ```bash
-pip install esptool
-python -m esptool --chip esp32 --port COM3 write_flash -z --flash_mode qio --flash_freq 40m --flash_size detect 0x1000 firmware.bin
+npm run compile
+npm test
+npm run test:js:coverage
+npm run test:py
+npm run test:coverage
+npm run package
 ```
 
-根据您的开发板替换 `COM3` / 参数。
+当前仓库测试分为两条主线：
 
-## 后续步骤
+- JavaScript / TypeScript 扩展测试：基于 Jest + ts-jest，位于 `tests/`
+- Python 自定义 REPL 测试：位于 `scripts/mpyrepl/test_*.py`
 
-- ✅ 扩大开发板兼容性（目前仅在 ESP32-S3 和 ESP32-C3 上测试）
-- 🧪 补强 board、sync 与 REPL 运行时路径的自动化测试
-- 🪟 执行完整的 Windows 测试：验证 mpremote 与 COM 端口的兼容性，并确保文件操作和 REPL 在 Windows 环境中的一致行为
+CI 当前运行于 GitHub Actions，覆盖：
+
+- `ubuntu-latest`、`windows-latest`、`macos-latest`
+- Node.js 24 和 22
+- Python 3.11
+
+工作流当前使用 `actions/checkout@v6`、`actions/setup-node@v6`、`actions/setup-python@v6`。
+
+更多测试细节请参见 [docs/TEST_README.md](docs/TEST_README.md)。
+
+## 相关文档
+
+- [docs/custom-python-repl.md](docs/custom-python-repl.md)
+- [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)
+- [docs/TEST_README.md](docs/TEST_README.md)
+- [docs/mpremote-windows-utf8.md](docs/mpremote-windows-utf8.md)
+- [docs/repl_architecture_plan.md](docs/repl_architecture_plan.md)
+
+## 当前限制
+
+- 当前兼容性验证仍主要集中在 ESP32 系列，尤其是 ESP32-S3 与 ESP32-C3。
+- 实验性自定义 REPL 只替换 REPL 终端路径；同步、浏览与运行文件仍依赖 `mpremote`。
+- 部分贴近硬件的 board/runtime 路径覆盖率仍低于纯工具和配置逻辑，因此涉及真实开发板行为时仍建议上板验证。
+- 自动固件烧录已从扩展中移除，请在扩展外使用 `esptool` 或厂商工具完成烧录。
 
 ## 贡献
 
-欢迎问题和拉取请求。
+欢迎提交 issue 和 pull request。
 
 ## 许可证
 
-MIT — 请参阅此仓库中的 `LICENSE` 文件。
+MIT。详见 `LICENSE`。
 
 ## 致谢
 
-- 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — 该项目为本仓库的 MicroPython 代码补全支持提供了重要参考。
-- 感谢原始项目 `mpy-workbench`（Daniel Bustillos）提供了最初的设计与实现参考：https://github.com/DanielBustillos/mpy-workbench
+- 感谢 walkline 的 code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython
+- 感谢 Daniel Bustillos 的原始 `mpy-workbench` 项目：https://github.com/DanielBustillos/mpy-workbench

@@ -1,46 +1,103 @@
-# mpremote 在 Windows 下输出中文卡住的问题与临时解决方案
+# mpremote 在 Windows 下的 UTF-8 输出问题与当前仓库策略
 
-概述
-- 问题：在 Windows 的 PowerShell / 终端中，通过 `mpremote` 运行设备脚本时，包含中文或其它多字节 UTF-8 输出会导致输出“卡住”或 REPL 停滞。
-- 根因：`mpremote` 在将设备 stdout 字节流写入 Windows 控制台（TTY）时，未对可能被分割的 UTF-8 字节序列做增量解码与缓冲，导致部分序列被直接解码或写入，触发控制台阻塞或异常行为（详见 upstream PR/issue）。
+## 问题概述
 
-受影响场景
-- 在 Windows 下通过 VS Code 扩展、PowerShell 终端或直接在控制台运行 `python -m mpremote connect COMx run ...` 时发生；使用 VS Code 的 OutputChannel 捕获输出相比真实 TTY 也会有不同表现。
+在 Windows 的 PowerShell / 终端环境下，直接通过 `mpremote` 运行设备脚本或打开 REPL 时，多字节 UTF-8 输出有时会表现为乱码、截断、卡住，或者触发宿主控制台编码相关的问题。
 
-短期（临时）解决方案
-1) 在 PowerShell 中强制使用 UTF-8 输出编码，再运行 `mpremote`：
+这类问题通常与以下因素叠加有关：
+
+- 设备输出是按字节流到达的，UTF-8 字符可能被拆分
+- 宿主终端的输出编码不一定是 UTF-8
+- 终端 / TTY 行为和 VS Code OutputChannel 的行为并不完全一致
+- `mpremote` 及外部终端本身并不总能屏蔽这些编码差异
+
+## 当前仓库已经做了什么
+
+当前仓库不是单纯停留在“提示用户改编码”的阶段，而是已经采取了两类措施：
+
+### 1. 默认终端路径上的缓解
+
+- 在 Windows 上，扩展创建 REPL / Run 终端时会优先使用 PowerShell
+- 会向终端注入更偏向 UTF-8 的环境变量
+- 首次运行时会尝试设置 PowerShell 的输出编码为 UTF-8
+
+这能降低一部分 Windows 终端输出问题，但不能从根本上替代上游 `mpremote` 或宿主控制台的行为。
+
+### 2. 实验性自定义 Python REPL
+
+仓库现在提供了实验性的自定义 Python REPL：
+
+- 设置项：`microPythonWorkBench.experimentalCustomRepl`
+- 文档：`docs/custom-python-repl.md` / `docs/custom-python-repl_zh-CN.md`
+
+这条路径通过内置的 `scripts/mpyrepl` 客户端处理 REPL 输出，当前具备：
+
+- 增量 UTF-8 解码
+- 宿主流写入时的 Unicode 安全回退
+- 基于控制通道的中断 / 软重置 / 退出
+
+如果你在扩展内部 REPL 终端里主要遇到的是 Unicode 或 Windows 控制台相关问题，当前最值得优先尝试的方案就是启用这条自定义 REPL 路径。
+
+## 推荐处理顺序
+
+### 情况 1：问题发生在扩展内部 REPL 终端
+
+优先顺序：
+
+1. 开启 `microPythonWorkBench.experimentalCustomRepl`
+2. 确认 `microPythonWorkBench.pythonPath` 指向可用 Python
+3. 确认该 Python 环境具备 `pyserial`，并建议一并安装 `mpremote`
+4. 重新打开 REPL 终端验证
+
+### 情况 2：问题发生在扩展内部“运行活动文件”终端
+
+该路径当前仍然走 `mpremote connect <port> run <file>`，所以仍会受到宿主终端和 `mpremote` 路径影响。
+
+可以先尝试：
+
+1. 确保使用的是 PowerShell
+2. 确保 Python / 终端输出编码配置为 UTF-8
+3. 升级本地 `mpremote`
+4. 如果主要需求是交互调试，改用自定义 REPL 路径执行相关代码片段
+
+### 情况 3：问题发生在扩展外部的命令行
+
+例如你手动执行：
+
+```powershell
+python -m mpremote connect COM4 run script.py
+```
+
+这属于扩展之外的终端路径，自定义 REPL 无法直接修复它。此时应优先从上游 `mpremote`、Python 环境和终端编码配置入手。
+
+## PowerShell 下的最小缓解方式
+
+如果你仍需直接使用 `mpremote` 命令行，可先尝试：
 
 ```powershell
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-& "C:\path\to\python.exe" -m mpremote connect COM10 run C:\path\to\your_script.py
+& "C:\path\to\python.exe" -m mpremote connect COM4 run C:\path\to\script.py
 ```
 
-2) 应用仓库提供的本地修补（推荐用于无法等待 upstream 合并的用户）：
-- 仓库路径：`tools/mpremote-windows-fix/`（包含 `console.py`, `transport.py`, 以及 `install-mpremote-fix.ps1`）。
-- 使用 `install-mpremote-fix.ps1`，脚本会：检测常见虚拟环境、备份原始文件（生成 `.bak`），并将补丁复制到目标 `site-packages\\mpremote`。脚本提供 `--undo` 以恢复备份。
+这不是根治方案，但在一部分 Windows 终端环境中有帮助。
 
-示例（在仓库根目录）：
+## 当前文档边界说明
 
-```powershell
-# 以管理员或有权限的 PowerShell 运行
-.\tools\mpremote-windows-fix\install-mpremote-fix.ps1
-# 如需恢复：
-.\tools\mpremote-windows-fix\install-mpremote-fix.ps1 --undo
-```
+仓库里此前提到的本地 `mpremote` 补丁目录与安装脚本目前并不是当前实现的一部分，因此这里不再把“手工覆盖 site-packages”作为主推荐方案。
 
-3) 临时替代：在无法或不愿修改本地 Python 包时，建议使用 OutputChannel 捕获输出（有时能避免直接写入 TTY），或将脚本输出改为发送到文件以确认设备端行为。
+当前更符合仓库现状的推荐路径是：
 
-为什么仓库中带补丁是可接受的
-- 这是临时补救，源自 upstream 已有讨论与 PR（参考下方链接），目的是给无法立即升级到修复版本的用户提供可行路径。
+- 优先使用扩展内置的实验性自定义 REPL 改善 REPL 交互
+- 对仍走 `mpremote` 的路径，尽量使用 UTF-8 终端配置并跟进上游修复
 
-上游参考与跟踪
-- 主要 PR（修复建议）：https://github.com/micropython/micropython/pull/18670
+## 上游参考
+
 - 相关 issue：https://github.com/micropython/micropython/issues/18659
+- 相关 PR：https://github.com/micropython/micropython/pull/18670
 
-使用与注意事项
-- 应用补丁会直接修改用户 Python 虚拟环境中的 `mpremote` 包文件，请在运行前确保已备份并告知用户潜在风险。
-- 推荐长期策略是等待 upstream 合并并通过 `pip install --upgrade mpremote` 升级到正式版本。
-- 修改后请重启 VS Code 与相关终端，使更改生效。
+## 相关文档
 
-下一步
-- 我们可以继续（1）把补丁文件加入 `tools/mpremote-windows-fix/` 并实现 `install-mpremote-fix.ps1`，或（2）先把扩展内检测/提示逻辑加入，提示用户是否应用补丁。请指定优先项。
+- `docs/custom-python-repl.md`
+- `docs/custom-python-repl_zh-CN.md`
+- `README.md`
+- `README_zh-CN.md`

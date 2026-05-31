@@ -1,192 +1,186 @@
-# MicroPython Workbench — MicroPython file manager for VS Code
+# MicroPython Workbench for VS Code
 
 [中文](README_zh-CN.md)
 
-Inspired by Thonny’s simplicity, this extension streamlines MicroPython development across multiple boards. It provides remote file management, an integrated REPL, and automatic two-way synchronization, enabling a smoother workflow within VS Code.
+MicroPython Workbench is a VS Code extension for MicroPython development on ESP32-class boards and similar devices. It combines board file browsing, diff-based sync, run/REPL terminals, and workspace-scoped MicroPython stub management in one workflow.
 
-The extension leverages **mpremote** for all board interactions, including file transfer, REPL connectivity, and command execution.
+Board file operations still use `mpremote`. The REPL terminal can optionally switch to an experimental Python client (`scripts/mpyrepl`) that adds host-side editing, richer completion, and more robust Unicode handling.
 
 ## Main features
 
-- 📂 Remote file explorer for the device (open, download files/folders, upload, rename, delete)
-- 🔄 Two-way sync: compare local files with the device and sync changed files
-- 📝 Create a new file in the Files view and upload it to the board on first save
-- 💻 Integrated MicroPython REPL terminal
-- ⏯️ Send commands to the board (stop, soft reset, etc.)
-- 🧭 Files view shows the detected board name and status bar displays last auto-sync time
-- 🧠 **IntelliSense code completion** for MicroPython modules with auto-detection and multi-language support
+- Remote file explorer for the connected board: open, download, upload, rename, delete
+- Diff-based sync in both directions between workspace files and board files
+- Active-file sync and optional auto-sync on save
+- Integrated REPL terminal and separate Run Active File terminal
+- Board actions such as interrupt, soft reset, and reconnect
+- MicroPython code completion with stub installation, auto-selection, and Pylance integration
+- Optional experimental custom Python REPL with multiline editing, completion, and control-channel based interrupt/reset handling
 
-## Quick Start
+**Connect to the board and run a file**
+![Run file demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
 
-1. Install the extension from the VS Code Marketplace or build and install the `.vsix`:
+**Auto-sync local folder contents**
+![Sync files demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/sync%20new%20files.gif?raw=true)
+
+## Quick start
+
+1. Install the extension from the VS Code Marketplace, or build a `.vsix` locally:
 
 ```bash
-# build package (requires vsce)
 npm ci
 npm run compile
 npm run package
-# then install the generated .vsix in VS Code (Extensions > ... > Install from VSIX)
 ```
 
-2. Ensure dependencies are available on your machine:
+2. Install `mpremote` into the Python environment used by the extension:
 
 ```bash
-# Python 3.8+ (recommended >=3.10)
-# `mpremote` is required by this extension. Install it into the Python environment
-# you want the extension to use:
 python -m pip install --user mpremote
 ```
 
-## Configuration
+3. Open a workspace, run `MicroPython WorkBench: Select Serial Port`, then use the Files view or Command Palette to sync, browse, or open the REPL.
 
-Key settings (see extension settings in VS Code):
-
-- `microPythonWorkBench.syncLocalRoot`: local folder to sync (default: `""` meaning workspace root).
-- `microPythonWorkBench.autoSyncOnSave`: enable auto-sync on save (default: `false`).
-- `microPythonWorkBench.pythonPath`: Python executable to use when invoking `esptool`/helpers.
-
-For full list of configuration options see `package.json` -> `contributes.configuration`.
-
-## Current limitations and notes
-
-- Compatibility validation currently focuses on ESP32 variants (ESP32-S3, ESP32-C3). Before relying on other boards, verify serial, sync, and REPL behavior end to end.
-- The project includes a CI workflow that runs build/tests across multiple OS and Node.js versions; however unit test coverage is limited—please run `npm test` locally and extend tests for core modules (`sync`, `board`, `completion`).
-
-**⚡ Connect to board and run a file**
-![Run file demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
-
-**🔄 Autosync local folder contents**
-![Sync files demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/sync%20new%20files.gif?raw=true)
-
-## Sync utilities
-
-These commands perform full or incremental synchronization between your local workspace and the connected MicroPython board:
-
-- **Check for differences:** Lists new, changed, or deleted files between local and board.
-- **Sync Local → Board:** Uploads only local files that are new or modified.
-- **Sync Board → Local:** Downloads only board files that are new or modified.
-- **Upload all Local → Board:** Uploads all non-ignored local files to the device.
-- **Download all Board → Local:** Downloads all board files, overwriting local copies.
-- **Delete all files on board:** Removes all files on the device.
-
-## Useful commands (Command Palette)
-
-- `MPY Workbench: Refresh` — refresh the file tree
-- `MPY Workbench: Check files differences` — show diffs and local-only files
-- `MPY Workbench: Sync changed Files (Local → Board)` — upload changed local files
-- `MPY Workbench: Sync changed Files (Board → Local)` — download changed board files
-- `MPY Workbench: Sync all files` — full upload or download
-- `MPY Workbench: Select Serial Port` — pick device port
-- `MPY Workbench: Open REPL Terminal` — open MicroPython REPL
-- `MPY Workbench: Toggle workspace Auto-Sync on Save` — enable/disable workspace auto-sync
-- `MPY Workbench: Toggle Code Completion` — enable/disable MicroPython code completion
-
-## Workspace config
-
-The extension stores per-workspace settings and manifests inside a workspace folder named `.mpy-workbench` at your project root.
-
-- Workspace override file: `.mpy-workbench/config.json`
-- Sync manifest: `.mpy-workbench/esp32sync.json`
-
-Use the command `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` to enable or disable auto-sync for the current workspace. The toggle stores its workspace-specific value in the extension workspace state. If no stored value exists, the extension falls back to the VS Code setting `microPythonWorkBench.autoSyncOnSave`, and finally to the legacy `.mpy-workbench/config.json` value when present.
-
-### Local sync root directory
-
-By default, sync operations use the workspace root directory. You can configure a different local root directory using the `microPythonWorkBench.syncLocalRoot` setting:
-
-- **Empty (default)**: Uses the workspace root directory
-- **Relative path**: e.g., `"mpy"`, `"src"` or `"micropython"` — interpreted relative to workspace root
-- **Absolute path**: Full path to a directory outside the workspace
-
-For many users the practical workflow is to set a single project subfolder (for example `mpy`) as the local sync root. When mapping device paths to local files the extension now always maps device paths into the configured local sync root. Concretely:
-
-- If your `microPythonWorkBench.syncLocalRoot` is `mpy` and a device file is `/mpy/t.py`, it maps to `./mpy/mpy/t.py` (device path components are preserved under the local sync root).
-- If the device root is a workspace-scoped generated name (used when `microPythonWorkBench.rootPath` is `/`), that device root itself maps to the local sync root (empty relative path), and child paths map to their relative paths beneath it.
-
-This behavior ensures device files are always placed under the configured sync directory. See `example-workspace-settings.json` for a complete configuration example.
-
-## Code Completion
-
-The extension provides intelligent code completion for MicroPython modules using Python stub files. This feature integrates with VS Code's Pylance language server to provide IntelliSense support.
-
-### How It Works
-
-- Enabling code completion makes the extension pick a workspace-installed MicroPython stub package when possible.
-- If the selected stub root contains a typeshed-style tree, the extension also updates Pylance's standard-library source so MicroPython-specific builtins and stdlib modules can be resolved more accurately.
-- If your workspace contains `pyrightconfig.json` or a `pyproject.toml` with a `[tool.pyright]` section, those files can override VS Code `python.analysis.*` settings.
-
-### Configuration Options
-
-```json
-{
-  "microPythonWorkBench.enableCodeCompletion": true,
-  "microPythonWorkBench.stubInstallPath": ".mpy-workbench/pyi",
-  "microPythonWorkBench.codeCompletionExtraPaths": [],
-  "microPythonWorkBench.stubAutoSelect": true
-}
-```
-
-- `microPythonWorkBench.enableCodeCompletion`:
-  - `true`: Enable MicroPython code completion for the current workspace
-  - `false`: Disable the extension-managed MicroPython completion integration
-- `microPythonWorkBench.stubInstallPath`: Workspace-relative directory where installed stub packages are stored
-- `microPythonWorkBench.codeCompletionExtraPaths`: Extra directories or .pyi files merged into the active MicroPython stub root when completion is enabled
-- `microPythonWorkBench.stubAutoSelect`: Automatically pick and apply the best installed stub for the connected board when possible
-
-### Installing And Switching Stubs
-
-Use `MPY Workbench: Toggle Code Completion` from the Command Palette to manually enable/disable code completion for the current workspace.
-
-- Use the `MPY: Stub` status bar item to manage MicroPython stubs for the workspace.
-- The stub picker can choose from installed stubs, install the recommended version for the detected board, install a specific package/version, or refresh the installed stub index.
-- Installed stubs are stored under `.mpy-workbench/pyi` by default so multiple versions can coexist inside the workspace.
-- If you manually install a stub package with pip into that directory, it will appear in the installed stub picker after the index is refreshed.
-- Some MicroPython stub packages are hybrid trees that contain both a typeshed-style stdlib and top-level stub-only modules such as `machine` or `time`. When MicroPython code completion is enabled, the extension suppresses `reportMissingModuleSource` for this case because the device runtime exists on the board, not in the local Python interpreter.
-
-### Requirements
-
-- **Pylance extension** (recommended): `ms-python.vscode-pylance` for full IntelliSense support
-- Code completion works with any Python language server but provides enhanced experience with Pylance
-
-### Auto-suspend and REPL restore
-
-- `microPythonWorkBench.serialAutoSuspend` (default: `true`): closes REPL/Run terminals before file ops to avoid port conflicts, then restores what was open afterward (re-runs Run Active File, or reopens REPL).
-- `microPythonWorkBench.replRestoreBehavior` (default: `none`): what to do when REPL is restored after auto-suspend/auto-sync:
-  - `runChanged`: Auto run the changed/saved file in REPL after sync.
-  - `executeBootMain`: send Ctrl-D so boards that auto-run `main.py`/`boot.py` after reset will restart.
-  - `openReplEmpty`: reopen the REPL without sending anything.
-  - `none`: do not reopen the REPL.
-
-## Status indicators
-
-- Status bar shows `MPY: AutoSync ON/OFF`, a cancel-all-tasks button, and `MPY: LastSync <time>` after each auto-sync run.
-- Files view header displays the detected board name/ID once a fixed serial port is selected.
+4. Optional but recommended:
+   - Install the Python and Pylance VS Code extensions for the best completion experience.
+   - Enable `microPythonWorkBench.enableCodeCompletion` for workspace-scoped MicroPython IntelliSense.
+   - Enable `microPythonWorkBench.experimentalCustomRepl` if you want the experimental host-side REPL client.
 
 ## Requirements
 
-- **Python 3.8+** - The extension uses Python to run mpremote and related helpers
-- **mpremote** - Required in the Python environment the extension uses, for example `python -m pip install --user mpremote`
-- **Manual firmware flashing (optional):** If you want to flash boards outside the extension, install `esptool` in the same Python environment
-- **Code Completion (optional):** [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) extension for enhanced IntelliSense support
-- The Python path used by the extension can be adjusted in the extension settings if a specific interpreter needs to be selected.
+- Python 3.8+ for the extension's standard `mpremote`-based workflows
+- Python 3.9+ if you enable `microPythonWorkBench.experimentalCustomRepl`
+- `mpremote` installed in the Python environment selected by the extension
+- The Python extension (`ms-python.python`) is required
+- Pylance (`ms-python.vscode-pylance`) is recommended for the full code-completion workflow
 
-## Firmware flashing (removed)
+Use `microPythonWorkBench.pythonPath` if the extension should use a specific interpreter instead of the default VS Code Python environment.
 
-- Automatic esptool-based firmware flashing has been removed from this extension.
-- Please flash boards manually using `esptool` or vendor tools. Example:
+## Core workflows
+
+### Files and sync
+
+- `MicroPython WorkBench: Refresh` reloads the board file tree.
+- `MicroPython WorkBench: Check files differences` compares board files with the configured local sync root.
+- `MicroPython WorkBench: Sync changed Files Local → Board` and `MicroPython WorkBench: Sync changed Files Board → Local` only transfer changed files.
+- `MicroPython WorkBench: Sync all files (Local → Board)` and `MicroPython WorkBench: Sync all files (Board → Local)` perform full baseline sync operations.
+- `MicroPython WorkBench: Sync Active File Local → Board` uploads only the current editor file when it belongs to the configured sync root.
+
+Workspace-specific metadata is stored under `.mpy-workbench/`:
+
+- `.mpy-workbench/config.json`: legacy workspace override file
+- `.mpy-workbench/esp32sync.json`: sync manifest used by board sync workflows
+- `.mpy-workbench/pyi/`: default installation root for MicroPython stub packages
+
+### REPL, Run, and auto-suspend
+
+- The default REPL terminal opens `mpremote connect <port>` in a persistent VS Code terminal.
+- `MicroPython WorkBench: Run Active File` runs the current local file through `mpremote connect <port> run <file>`.
+- On Windows, the extension initializes REPL and Run terminals with UTF-8-oriented environment settings and PowerShell output encoding.
+- `microPythonWorkBench.serialAutoSuspend` closes REPL/Run terminals before sync operations to avoid serial-port conflicts, then restores the previous session state afterward.
+- `microPythonWorkBench.replRestoreBehavior` controls what happens after auto-suspend restores the REPL:
+  - `runChanged`: import the synced file back into REPL when possible
+  - `executeBootMain`: send `Ctrl-D` so boards that auto-run `boot.py` or `main.py` can restart
+  - `openReplEmpty`: reopen REPL without sending a follow-up command
+  - `none`: do not reopen REPL automatically
+
+### Code completion
+
+- `microPythonWorkBench.enableCodeCompletion` enables workspace-scoped MicroPython completion integration.
+- The `MPY: Stub` status bar item manages installed stub packages.
+- The extension can auto-select the best installed stub package for the connected board when `microPythonWorkBench.stubAutoSelect` is enabled.
+- `microPythonWorkBench.codeCompletionExtraPaths` lets you merge extra stub directories or `.pyi` files into the active MicroPython stub root.
+- If a selected stub package contains a typeshed-style standard library layout, the extension also updates the Pylance analysis source layout for better MicroPython symbol resolution.
+
+### Experimental custom Python REPL
+
+- Enable `microPythonWorkBench.experimentalCustomRepl` to replace the default `mpremote` REPL terminal with the bundled Python `mpyrepl` client.
+- This affects the REPL terminal only. File browsing, file sync, and Run Active File still use `mpremote`.
+- The custom REPL currently focuses on:
+  - host-side multiline editing
+  - prompt-toolkit based completion
+  - session-aware symbol tracking
+  - control-file based interrupt, soft reset, and exit
+  - safer Unicode output handling on Windows and mixed-encoding hosts
+
+See [docs/custom-python-repl.md](docs/custom-python-repl.md) for the English guide and [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md) for the Chinese guide.
+
+## Configuration highlights
+
+These are the settings most users will touch first:
+
+- `microPythonWorkBench.connect`: fixed serial device such as `COM3` or `/dev/ttyUSB0`
+- `microPythonWorkBench.syncLocalRoot`: workspace-relative or absolute local sync root
+- `microPythonWorkBench.rootPath`: board-side root path such as `/` or `/lib`
+- `microPythonWorkBench.autoSyncOnSave`: upload local saves automatically
+- `microPythonWorkBench.serialAutoSuspend`: suspend REPL/Run terminals around sync operations
+- `microPythonWorkBench.replRestoreBehavior`: control how REPL is restored after auto-suspend
+- `microPythonWorkBench.experimentalCustomRepl`: switch REPL terminal to the experimental Python client
+- `microPythonWorkBench.pythonPath`: interpreter override used for `mpremote` and helper scripts
+- `microPythonWorkBench.enableCodeCompletion`: enable workspace-scoped MicroPython completion
+- `microPythonWorkBench.stubInstallPath`: default stub installation directory inside the workspace
+- `microPythonWorkBench.stubAutoSelect`: automatically apply the best installed stub for the connected board
+- `microPythonWorkBench.codeCompletionExtraPaths`: merge extra `.pyi` paths into the active stub root
+- `microPythonWorkBench.usePyRawList`: use the Python raw-REPL directory listing helper instead of the default listing path
+
+See `package.json` under `contributes.configuration` for the full setting list.
+
+## Useful commands
+
+- `MicroPython WorkBench: Select Serial Port`
+- `MicroPython WorkBench: Refresh`
+- `MicroPython WorkBench: Open REPL`
+- `MicroPython WorkBench: Open Serial Monitor`
+- `MicroPython WorkBench: Run Active File`
+- `MicroPython WorkBench: Interrupt (Ctrl-C, Ctrl-B)`
+- `MicroPython WorkBench: Soft Reset (Ctrl-D)`
+- `MicroPython WorkBench: Check files differences`
+- `MicroPython WorkBench: Sync changed Files Local → Board`
+- `MicroPython WorkBench: Sync changed Files Board → Local`
+- `MicroPython WorkBench: Sync all files (Local → Board)`
+- `MicroPython WorkBench: Sync all files (Board → Local)`
+- `MicroPython WorkBench: Toggle workspace Auto-Sync on Save`
+- `MicroPython WorkBench: Toggle Code Completion`
+
+## Build, test, and package
 
 ```bash
-pip install esptool
-python -m esptool --chip esp32 --port COM3 write_flash -z --flash_mode qio --flash_freq 40m --flash_size detect 0x1000 firmware.bin
+npm run compile
+npm test
+npm run test:js:coverage
+npm run test:py
+npm run test:coverage
+npm run package
 ```
 
-Replace `COM3` / options as appropriate for your board.
+Current repository testing is split into two parts:
 
-## Next steps
+- JavaScript/TypeScript extension tests: Jest + ts-jest under `tests/`
+- Python custom-REPL tests: `scripts/mpyrepl/test_*.py`
 
-- ✅ Broaden board compatibility (currently tested only with ESP32-S3 and ESP32-C3)
-- 🧪 Extend automated coverage for board, sync, and REPL runtime paths
-- 🪟 Perform full Windows testing: validate mpremote compatibility with COM ports and ensure consistent behavior of file operations and REPL across Windows environments
+CI runs on GitHub Actions across:
+
+- `ubuntu-latest`, `windows-latest`, `macos-latest`
+- Node.js 24 and 22
+- Python 3.11
+
+The current workflow uses `actions/checkout@v6`, `actions/setup-node@v6`, and `actions/setup-python@v6`.
+
+For more detail, see [docs/TEST_README.md](docs/TEST_README.md).
+
+## Related docs
+
+- [docs/custom-python-repl.md](docs/custom-python-repl.md)
+- [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)
+- [docs/TEST_README.md](docs/TEST_README.md)
+- [docs/mpremote-windows-utf8.md](docs/mpremote-windows-utf8.md)
+- [docs/repl_architecture_plan.md](docs/repl_architecture_plan.md)
+
+## Current limitations
+
+- Compatibility validation is still concentrated on ESP32 variants, especially ESP32-S3 and ESP32-C3.
+- The experimental custom REPL only replaces the REPL terminal path. Sync, browsing, and Run Active File still depend on `mpremote`.
+- Some board/runtime paths remain less covered than pure utility and configuration code, so board-specific regressions should still be validated on hardware.
+- Automatic firmware flashing has been removed from this extension. Flash boards with `esptool` or vendor tooling outside the extension.
 
 ## Contributing
 
@@ -194,9 +188,9 @@ Issues and pull requests are welcome.
 
 ## License
 
-MIT — see the `LICENSE` file in this repository.
+MIT. See `LICENSE`.
 
 ## Acknowledgements
 
-- Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython — this project helped shape the MicroPython completion support used by this repository.
-- Thanks to the original `mpy-workbench` project by Daniel Bustillos for the initial design and implementation reference: https://github.com/DanielBustillos/mpy-workbench
+- Thanks to walkline's code-completion-for-micropython: https://gitee.com/walkline/code-completion-for-micropython
+- Thanks to the original `mpy-workbench` project by Daniel Bustillos: https://github.com/DanielBustillos/mpy-workbench
