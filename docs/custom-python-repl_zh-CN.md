@@ -33,6 +33,8 @@ MicroPython 工作台可以把默认的 `mpremote` REPL 终端替换为位于 `s
 - 所选 Python 解释器中需要可导入 `pyserial`
 - 在完整扩展工作流中仍建议安装 `mpremote`，因为同步、浏览和运行文件仍依赖它
 
+如果当前解释器缺少 `pyserial`，扩展现在会在启动自定义 REPL 前提示安装到所选 Python 环境中。
+
 推荐直接在统一的 Python 环境中安装：
 
 ```bash

@@ -23,6 +23,8 @@ jest.mock('../src/board/mpremote', () => ({
 jest.mock('../src/board/MpRemoteManager', () => ({
   MpRemoteManager: {
     isModuleAvailable: jest.fn(),
+    isPythonModuleAvailable: jest.fn(),
+    installPackages: jest.fn(),
     detectPythonPath: jest.fn(),
     run: jest.fn(),
   },
@@ -51,9 +53,14 @@ const mp = require('../src/board/mpremote') as {
 const mpRemoteManager = require('../src/board/MpRemoteManager') as {
   MpRemoteManager: {
     isModuleAvailable: jest.Mock;
+    isPythonModuleAvailable: jest.Mock;
+    installPackages: jest.Mock;
     detectPythonPath: jest.Mock;
     run: jest.Mock;
   };
+};
+const fs = require('node:fs') as {
+  existsSync: jest.Mock;
 };
 const localization = require('../src/core/localization') as {
   showInfo: jest.Mock;
@@ -108,12 +115,17 @@ describe('board mpremoteCommands coverage', () => {
     (vscode.window as any).showErrorMessage = jest.fn();
     (vscode.window as any).showInformationMessage = jest.fn();
     (vscode.window as any).showWarningMessage = jest.fn();
+    (vscode.window as any).withProgress = jest.fn(async (_options: unknown, task: () => Promise<unknown>) => task());
     (vscode.window as any).activeTextEditor = undefined;
+    (vscode.env as any).language = 'en';
 
     (vscode.commands as any).executeCommand = jest.fn().mockResolvedValue(undefined);
 
     mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValue(true);
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValue(true);
+    mpRemoteManager.MpRemoteManager.installPackages.mockResolvedValue(undefined);
     mpRemoteManager.MpRemoteManager.detectPythonPath.mockResolvedValue('python3');
+    fs.existsSync.mockImplementation((candidate: string) => !candidate.includes('scripts/mpyrepl/__main__.py'));
     childProcess.exec.mockImplementation((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       callback(null, '', '');
     });
@@ -170,6 +182,35 @@ describe('board mpremoteCommands coverage', () => {
     await closePromise;
     expect(replTerminal.dispose).toHaveBeenCalled();
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', false);
+  });
+
+  test('experimental custom repl prompts to install pyserial when serial module is missing', async () => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue: unknown) => {
+        if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
+        if (key === 'microPythonWorkBench.interruptOnConnect') return true;
+        if (key === 'microPythonWorkBench.strictConnect') return true;
+        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
+        if (key === 'microPythonWorkBench.baudRate') return 115200;
+        if (key === 'microPythonWorkBench.debug') return false;
+        return defaultValue;
+      }),
+    }));
+    fs.existsSync.mockReturnValue(true);
+    (vscode.extensions as any).getExtension = jest.fn(() => ({ extensionPath: '/extension' }));
+    (vscode.extensions as any).all = [];
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    (vscode.window.showInformationMessage as jest.Mock)
+      .mockResolvedValueOnce('Install to this Python')
+      .mockResolvedValueOnce(undefined);
+
+    const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    const replTerminal = await commands.getReplTerminal();
+
+    expect(mpRemoteManager.MpRemoteManager.installPackages).toHaveBeenCalledWith(['pyserial'], 'python3');
+    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
   });
 
   test('runActiveFile covers missing editor, missing port, run terminal open and close', async () => {

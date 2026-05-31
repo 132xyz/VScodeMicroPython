@@ -84,9 +84,76 @@ function getCustomReplControlFile(device: string): string {
   return path.join(os.tmpdir(), 'vscodemicropython', `mpyrepl-${sanitizeForFileName(device)}.json`);
 }
 
+async function ensurePythonPackageForCustomRepl(
+  pythonPath: string,
+  moduleName: string,
+  packageName: string,
+): Promise<void> {
+  const available = await MpRemoteManager.isPythonModuleAvailable(moduleName, pythonPath);
+  if (available) return;
+
+  const lang = vscode.env.language || '';
+  const zh = lang.startsWith('zh');
+  const installLabel = zh ? '安装到此 Python' : 'Install to this Python';
+  const showPathLabel = zh ? '显示 Python 路径' : 'Show Python Path';
+  const laterLabel = zh ? '稍后' : 'Later';
+  const message = zh
+    ? `实验性自定义 REPL 需要 ${packageName}（import ${moduleName}），但当前所选 Python 环境中未检测到。是否安装到该环境？`
+    : `The experimental custom REPL requires ${packageName} (import ${moduleName}), but it is not available in the selected Python environment. Install it into this environment?`;
+
+  const choice = await vscode.window.showInformationMessage(
+    message,
+    installLabel,
+    showPathLabel,
+    laterLabel,
+  );
+
+  if (choice === showPathLabel) {
+    await vscode.window.showInformationMessage(
+      zh ? `Python 路径：${pythonPath}` : `Python path: ${pythonPath}`,
+    );
+  }
+
+  if (choice !== installLabel) {
+    throw new Error(
+      zh
+        ? `未检测到 ${packageName}，无法启动实验性自定义 REPL。`
+        : `${packageName} is required to start the experimental custom REPL.`,
+    );
+  }
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: zh ? `正在安装 ${packageName}...` : `Installing ${packageName}...`,
+    },
+    async () => {
+      await MpRemoteManager.installPackages([packageName], pythonPath);
+    },
+  );
+
+  const installed = await MpRemoteManager.isPythonModuleAvailable(moduleName, pythonPath);
+  if (!installed) {
+    throw new Error(
+      zh
+        ? `安装完成但仍未检测到 ${packageName}。请手动运行：${pythonPath} -m pip install --upgrade ${packageName}`
+        : `Installation finished but ${packageName} is still unavailable. Please run: ${pythonPath} -m pip install --upgrade ${packageName}`,
+    );
+  }
+
+  await vscode.window.showInformationMessage(
+    zh ? `${packageName} 已成功安装。` : `${packageName} installed successfully.`,
+  );
+}
+
+async function ensureCustomReplDependencies(pythonPath: string): Promise<void> {
+  await ensurePythonPackageForCustomRepl(pythonPath, 'serial', 'pyserial');
+}
+
 async function buildCustomReplCommand(device: string): Promise<{ command: string; controlFile: string }> {
   const pythonPath = await MpRemoteManager.detectPythonPath();
   if (!pythonPath) throw new Error('Python interpreter not found');
+  await ensureCustomReplDependencies(pythonPath);
 
   const scriptPath = getCustomReplScriptPath();
   if (!scriptPath) {

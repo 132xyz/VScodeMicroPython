@@ -33,6 +33,8 @@ That distinction matters when troubleshooting: the custom REPL can improve inter
 - The selected interpreter must have `pyserial` available.
 - In normal extension usage you should still install `mpremote`, because sync, browsing, and Run Active File still depend on it.
 
+If `pyserial` is missing, the extension now prompts to install it into the selected Python environment before launching the custom REPL.
+
 Recommended installation for the shared Python environment:
 
 ```bash

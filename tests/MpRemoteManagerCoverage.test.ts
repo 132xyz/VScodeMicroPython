@@ -79,6 +79,7 @@ describe('MpRemoteManager coverage', () => {
     MpRemoteManager.clearPythonPathCache();
 
     await expect(MpRemoteManager.isModuleAvailable('py -3')).resolves.toBe(true);
+    await expect(MpRemoteManager.isPythonModuleAvailable('serial', 'py -3')).resolves.toBe(true);
     await expect(MpRemoteManager.checkVersion()).resolves.toEqual({ version: '1.24.0', compatible: true, source: 'python-module' });
 
     const quick = await MpRemoteManager.runQuick(['devs'], { pythonPath: 'py -3', timeoutMs: 1234 });
@@ -90,6 +91,7 @@ describe('MpRemoteManager coverage', () => {
       return { kill: jest.fn() };
     });
     await expect(MpRemoteManager.install('py -3')).resolves.toBeUndefined();
+    await expect(MpRemoteManager.installPackages(['pyserial'], 'py -3')).resolves.toBeUndefined();
 
     const fakeChild = { kill: jest.fn() };
     (MpRemoteManager as any).activeChild = fakeChild;

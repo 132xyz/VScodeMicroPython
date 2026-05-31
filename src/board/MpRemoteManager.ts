@@ -148,6 +148,20 @@ class MpRemoteManagerClass {
     }
   }
 
+  async isPythonModuleAvailable(moduleName: string, pythonPath?: string | null): Promise<boolean> {
+    const py = pythonPath ?? await this.detectPythonPath();
+    if (!py) return false;
+    try {
+      const parsed = splitCommand(py);
+      const exe = parsed.exe;
+      const args = parsed.args.concat(['-c', `import ${moduleName}`]);
+      await execFileAsync(exe, args, { timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private getInternalPythonRoot(): string | null {
     try {
       const ext = vscode.extensions.getExtension('WebForks.mpy')
@@ -331,10 +345,10 @@ class MpRemoteManagerClass {
     return child;
   }
 
-  async install(_pythonPath?: string, _opts: { silent?: boolean } = {}): Promise<void> {
-    // Installation helper: attempts to install mpremote into given pythonPath.
+  async installPackages(packages: string[], _pythonPath?: string, _opts: { silent?: boolean } = {}): Promise<void> {
     const pythonPath = _pythonPath ?? await this.detectPythonPath();
     if (!pythonPath) throw new Error('No python interpreter found');
+    if (packages.length === 0) throw new Error('No Python packages specified for installation');
     const parsed = splitCommand(pythonPath);
     const exe = parsed.exe;
     const preArgs = parsed.args;
@@ -345,14 +359,18 @@ class MpRemoteManagerClass {
       throw new Error('pip not available for the selected Python');
     }
 
-    // Run pip install --upgrade mpremote
+    // Run pip install --upgrade <packages...>
     try {
-      await execFileAsync(exe, preArgs.concat(['-m', 'pip', 'install', '--upgrade', 'mpremote']), { timeout: 120000 });
+      await execFileAsync(exe, preArgs.concat(['-m', 'pip', 'install', '--upgrade']).concat(packages), { timeout: 120000 });
       return;
     } catch (e: any) {
       const msg = e?.message || String(e);
       throw new Error(`Installation failed: ${msg}`);
     }
+  }
+
+  async install(_pythonPath?: string, _opts: { silent?: boolean } = {}): Promise<void> {
+    await this.installPackages(['mpremote'], _pythonPath, _opts);
   }
 
   cancelActive(): void {
