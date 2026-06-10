@@ -23,17 +23,13 @@ function Invoke-PythonTests {
     exit 1
 }
 
-function Write-JsonFileUtf8NoBom {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$Path,
-        [Parameter(Mandatory=$true)]
-        [object]$Value
-    )
-
-    $json = $Value | ConvertTo-Json -Depth 10
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText([System.IO.Path]::GetFullPath($Path), $json + [Environment]::NewLine, $encoding)
+function Get-PackageJsonVersion {
+    $version = node -p "require('./package.json').version"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: failed to read package.json version via node." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+    return (($version | Select-Object -Last 1) -as [string]).Trim()
 }
 
 # 先编译，只有编译成功才会考虑增加版本号和打包
@@ -67,53 +63,24 @@ if (-not $S) {
     # 自动增加版本号
     Write-Host "Reading current version from package.json..." -ForegroundColor Green
 
-    # 读取 package.json 文件
-    $packageJsonPath = "package.json"
-    $packageJson = Get-Content $packageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
-
     # 获取当前版本
-    $currentVersion = $packageJson.version
+    $currentVersion = Get-PackageJsonVersion
     Write-Host "Current version: $currentVersion" -ForegroundColor Yellow
 
-    # 解析版本号 (假设格式为 x.y.z)
-    $versionParts = $currentVersion -split '\.'
-    if ($versionParts.Length -ne 3) {
-        Write-Host "Error: Version format should be x.y.z" -ForegroundColor Red
-        exit 1
+    # Let npm update package.json and package-lock.json together without creating a git tag.
+    Write-Host "Incrementing version ($VersionType)..." -ForegroundColor Green
+    npm version $VersionType --no-git-tag-version
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: version bump failed. Aborting packaging." -ForegroundColor Red
+        exit $LASTEXITCODE
     }
 
-    # 根据参数增加相应版本号
-    $major = [int]$versionParts[0]
-    $minor = [int]$versionParts[1]
-    $patch = [int]$versionParts[2]
-
-    switch ($VersionType) {
-        "major" {
-            $major++
-            $minor = 0
-            $patch = 0
-        }
-        "minor" {
-            $minor++
-            $patch = 0
-        }
-        "patch" {
-            $patch++
-        }
-    }
-
-    $newVersion = "$major.$minor.$patch"
-    Write-Host "New version ($VersionType): $newVersion" -ForegroundColor Green
-
-    # 更新 package.json 中的版本
-    $packageJson.version = $newVersion
-    Write-JsonFileUtf8NoBom -Path $packageJsonPath -Value $packageJson
-
+    $newVersion = Get-PackageJsonVersion
     Write-Host "Version updated to $newVersion" -ForegroundColor Green
 } else {
     # 读取当前版本用于显示
-    $packageJson = Get-Content "package.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-    $currentVersion = $packageJson.version
+    $currentVersion = Get-PackageJsonVersion
     Write-Host "Using current version: $currentVersion (no increment)" -ForegroundColor Cyan
 }
 

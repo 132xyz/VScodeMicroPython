@@ -49,6 +49,7 @@ from indent import (
 from models import ExecResult
 from repl_semantics import build_helper_source, instrument_source
 from transport import TransportError
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 
@@ -214,13 +215,41 @@ async def coro():
             )
 
             dotted_document = Document("machine.P", cursor_position=len("machine.P"))
+            auto_before_cache = list(
+                completer.get_completions(
+                    dotted_document,
+                    CompleteEvent(text_inserted=True),
+                )
+            )
+            self.assertEqual([item.text for item in auto_before_cache], ["PWM", "Pin"])
+            self.assertEqual(calls, [("machine", "P")])
+
             first = [item.text for item in completer.get_completions(dotted_document, None)]
             second = [item.text for item in completer.get_completions(dotted_document, None)]
             self.assertEqual(first, ["PWM", "Pin"])
             self.assertEqual(second, ["PWM", "Pin"])
             self.assertEqual(calls, [("machine", "P")])
 
+            narrower_document = Document("machine.Pi", cursor_position=len("machine.Pi"))
+            narrower = [
+                item.text
+                for item in completer.get_completions(
+                    narrower_document,
+                    CompleteEvent(text_inserted=True),
+                )
+            ]
+            self.assertEqual(narrower, ["Pin"])
+            self.assertEqual(calls, [("machine", "P")])
+
             completer.clear_runtime_cache()
+            auto_after_clear = list(
+                completer.get_completions(
+                    dotted_document,
+                    CompleteEvent(text_inserted=True),
+                )
+            )
+            self.assertEqual([item.text for item in auto_after_clear], ["PWM", "Pin"])
+            self.assertEqual(calls, [("machine", "P"), ("machine", "P")])
             third = [item.text for item in completer.get_completions(dotted_document, None)]
             self.assertEqual(third, ["PWM", "Pin"])
             self.assertEqual(calls, [("machine", "P"), ("machine", "P")])
@@ -236,10 +265,17 @@ async def coro():
     def test_completion_engine_request_parsing_respects_strings_comments_and_patterns(self) -> None:
         self.assertTrue(cursor_in_string_or_comment("'unterminated"))
         self.assertFalse(cursor_in_string_or_comment("machine.P"))
+        self.assertFalse(cursor_in_string_or_comment("fun(machine.P"))
         self.assertIsNone(parse_completion_request(Document("'unterminated", cursor_position=13)))
 
         dotted = parse_completion_request(Document("machine.P", cursor_position=9))
         self.assertEqual((dotted.kind, dotted.expression, dotted.prefix), ("dotted", "machine", "P"))
+
+        nested_dotted = parse_completion_request(Document("fun(machine.P", cursor_position=13))
+        self.assertEqual((nested_dotted.kind, nested_dotted.expression, nested_dotted.prefix), ("dotted", "machine", "P"))
+
+        list_dotted = parse_completion_request(Document("[machine.P", cursor_position=10))
+        self.assertEqual((list_dotted.kind, list_dotted.expression, list_dotted.prefix), ("dotted", "machine", "P"))
 
         meta = parse_completion_request(Document(":qu", cursor_position=3))
         self.assertEqual((meta.kind, meta.prefix), ("meta", ":qu"))

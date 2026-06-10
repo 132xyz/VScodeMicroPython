@@ -86,6 +86,9 @@ def builtin_candidates() -> set[str]:
     }
 
 
+BUILTIN_CANDIDATES = builtin_candidates()
+
+
 def has_unterminated_string_or_comment(line_before_cursor: str) -> bool:
     """Return whether a lightweight scan sees an open string or comment.
 
@@ -160,7 +163,7 @@ def cursor_in_string_or_comment(line_before_cursor: str) -> bool:
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(line_before_cursor).readline))
     except tokenize.TokenError:
-        return True
+        return has_unterminated_string_or_comment(line_before_cursor)
 
     if not tokens:
         return has_unterminated_string_or_comment(line_before_cursor)
@@ -222,7 +225,7 @@ class ReplCompleter(Completer):
         self._session_symbols = session_symbols
         self._stub_modules = discover_stub_modules(stub_root)
         self._dotted_provider = dotted_provider
-        self._runtime_cache: dict[tuple[str, str], list[str]] = {}
+        self._runtime_cache: dict[str, list[str]] = {}
 
     def has_completion_target(self, document: Document) -> bool:
         """Return whether completion should be attempted at the cursor.
@@ -253,18 +256,18 @@ class ReplCompleter(Completer):
         if request.kind == "dotted":
             if self._dotted_provider is None:
                 return
-            cache_key = (request.expression, request.prefix)
-            if cache_key not in self._runtime_cache:
-                self._runtime_cache[cache_key] = list(
-                    self._dotted_provider(request.expression, request.prefix)
+            candidates = self._runtime_cache.get(request.expression)
+            if candidates is None:
+                candidates = sorted(
+                    dict.fromkeys(self._dotted_provider(request.expression, request.prefix))
                 )
-            candidates = self._runtime_cache[cache_key]
+                self._runtime_cache[request.expression] = candidates
         else:
-            candidates = self._bare_candidates(request)
+            candidates = sorted(self._bare_candidates(request))
 
         prefix = request.prefix
         start_position = -len(prefix)
-        for candidate in sorted(dict.fromkeys(candidates)):
+        for candidate in candidates:
             if not candidate.startswith(prefix):
                 continue
             yield Completion(candidate, start_position=start_position, display=candidate)
@@ -279,7 +282,7 @@ class ReplCompleter(Completer):
             return set(META_COMMANDS)
 
         candidates = set(keyword.kwlist)
-        candidates.update(builtin_candidates())
+        candidates.update(BUILTIN_CANDIDATES)
         candidates.update(DEFAULT_CORE_MODULES)
         candidates.update(self._session_symbols.bare_candidates())
         candidates.update(self._stub_modules)

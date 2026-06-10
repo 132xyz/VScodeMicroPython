@@ -546,17 +546,13 @@ async def run_async_repl(
         completer = ReplCompleter(
             session_symbols,
             stub_root=stub_root,
-            dotted_provider=lambda expression, prefix: [
-                name
-                for name in query_device_attributes(
-                    transport,
-                    gate,
-                    session_symbols,
-                    expression,
-                    timeout=dir_query_timeout,
-                )
-                if name.startswith(prefix)
-            ],
+            dotted_provider=lambda expression, prefix: query_device_attributes(
+                transport,
+                gate,
+                session_symbols,
+                expression,
+                timeout=dir_query_timeout,
+            ),
         )
         session = build_prompt_session(completer=completer)
         restore_sigint = install_sigint_forwarder(transport)
