@@ -1,5 +1,6 @@
 jest.mock('vscode');
 jest.mock('../src/board/mpremote', () => ({
+  getActiveConnect: jest.fn(() => 'serial:///COM4'),
   lsTyped: jest.fn(),
 }));
 jest.mock('../src/python/pyraw', () => ({
@@ -11,6 +12,7 @@ jest.mock('../src/sync/sync', () => ({
 
 const vscode = require('vscode') as typeof import('vscode');
 const mp = require('../src/board/mpremote') as {
+  getActiveConnect: jest.Mock;
   lsTyped: jest.Mock;
 };
 const pyraw = require('../src/python/pyraw') as {
@@ -65,6 +67,7 @@ describe('Esp32Tree coverage', () => {
     (vscode.window as any).showInformationMessage = jest.fn();
     (vscode.window as any).showErrorMessage = jest.fn();
     (vscode.commands as any).executeCommand = jest.fn().mockResolvedValue(undefined);
+    mp.getActiveConnect.mockReturnValue('serial:///COM4');
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';

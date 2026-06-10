@@ -33,6 +33,8 @@ jest.mock('../src/core/workspaceUtils', () => ({
   getLocalSyncRoot: jest.fn(() => '/workspace/src'),
 }));
 jest.mock('../src/board/mpremote', () => ({
+  getActiveConnect: jest.fn(() => 'auto'),
+  clearSelectedConnect: jest.fn(),
   clearFileTreeCache: jest.fn(),
   refreshFileTreeCache: jest.fn().mockResolvedValue(undefined),
   ls: jest.fn().mockResolvedValue([]),

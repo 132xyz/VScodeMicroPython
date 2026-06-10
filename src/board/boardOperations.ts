@@ -156,7 +156,6 @@ export class BoardOperations {
 
   async syncBaseline(): Promise<void> {
     try {
-      const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
       const ws = vscode.workspace.workspaceFolders?.[0];
       if (!ws) { vscode.window.showErrorMessage("No workspace folder open"); return; }
       const initialized = await isLocalSyncInitialized();

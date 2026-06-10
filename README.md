@@ -8,6 +8,7 @@ Board file operations still use `mpremote`. The REPL terminal can optionally swi
 
 ## Main features
 
+
 - Remote file explorer for the connected board: open, download, upload, rename, delete
 - Diff-based sync in both directions between workspace files and board files
 - Active-file sync and optional auto-sync on save

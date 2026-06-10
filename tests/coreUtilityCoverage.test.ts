@@ -9,6 +9,7 @@ jest.mock('node:child_process', () => ({
   execFile: jest.fn(),
 }));
 jest.mock('../src/board/mpremote', () => ({
+  getActiveConnect: jest.fn(() => 'serial://COM4'),
   normalizeConnect: jest.fn((connect: string) => connect.replace(/^serial:\/\/+/, '').replace(/^\//, '')),
   debugTreeParsing: jest.fn(),
   debugFilesystemStatus: jest.fn(),
@@ -42,6 +43,7 @@ const path = require('node:path') as typeof import('node:path');
 const { execFile } = require('node:child_process') as typeof import('node:child_process');
 const execFileMock = execFile as unknown as jest.Mock;
 const mpremote = require('../src/board/mpremote') as {
+  getActiveConnect: jest.Mock;
   debugTreeParsing: jest.Mock;
   debugFilesystemStatus: jest.Mock;
 };
@@ -124,6 +126,7 @@ describe('small core utilities coverage', () => {
     jest.clearAllMocks();
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    mpremote.getActiveConnect.mockReturnValue('serial://COM4');
 
     (vscode as any).EventEmitter = MockEventEmitter;
     (vscode as any).TreeItem = MockTreeItem;
@@ -295,9 +298,7 @@ describe('small core utilities coverage', () => {
     );
     await expect(listDirPyRaw('/')).rejects.toThrow('stderr boom');
 
-    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
-      get: jest.fn().mockReturnValue('auto'),
-    });
+    mpremote.getActiveConnect.mockReturnValue('auto');
     await expect(listDirPyRaw('/')).rejects.toThrow('No fixed serial port selected');
   });
 

@@ -15,6 +15,7 @@ jest.mock('node:child_process', () => ({
   exec: jest.fn(),
 }));
 jest.mock('../src/board/mpremote', () => ({
+  getActiveConnect: jest.fn(() => 'serial:///COM4'),
   normalizeConnect: jest.fn((connect: string) => connect.replace(/^serial:\/\/+/, '').replace(/^\//, '')),
   toLocalRelative: jest.fn(),
   toDevicePath: jest.fn(),
@@ -45,6 +46,7 @@ const childProcess = require('node:child_process') as {
   exec: jest.Mock;
 };
 const mp = require('../src/board/mpremote') as {
+  getActiveConnect: jest.Mock;
   normalizeConnect: jest.Mock;
   toLocalRelative: jest.Mock;
   toDevicePath: jest.Mock;
@@ -129,6 +131,7 @@ describe('board mpremoteCommands coverage', () => {
     childProcess.exec.mockImplementation((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       callback(null, '', '');
     });
+    mp.getActiveConnect.mockReturnValue('serial:///COM4');
     mp.normalizeConnect.mockImplementation((connect: string) => connect.replace(/^serial:\/\/+/, '').replace(/^\//, ''));
     mp.toLocalRelative.mockImplementation((devicePath: string) => devicePath.replace(/^\//, ''));
     mp.toDevicePath.mockImplementation((localRel: string, rootPath: string) => (rootPath === '/' ? `/${localRel}` : `${rootPath}/${localRel}`));
@@ -227,6 +230,7 @@ describe('board mpremoteCommands coverage', () => {
           save: jest.fn().mockResolvedValue(undefined),
         },
       };
+      mp.getActiveConnect.mockReturnValue('auto');
       (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
         get: jest.fn((key: string, defaultValue: unknown) => {
           if (key === 'microPythonWorkBench.connect') return 'auto';
@@ -237,6 +241,7 @@ describe('board mpremoteCommands coverage', () => {
       await commands.runActiveFile();
       expect(localization.showError).toHaveBeenCalledWith('messages.selectSpecificPort');
 
+      mp.getActiveConnect.mockReturnValue('serial:///COM4');
       (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
         get: jest.fn((key: string, defaultValue: unknown) => {
           if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';

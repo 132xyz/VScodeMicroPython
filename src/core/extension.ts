@@ -236,7 +236,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Context key for welcome UI when no port is selected
   const updatePortContext = () => {
-    const v = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const v = mp.getActiveConnect();
     const has = !!v && v !== "auto";
     vscode.commands.executeCommand('setContext', 'microPythonWorkBench.hasPort', has);
     if (!has) {
@@ -248,8 +248,8 @@ export async function activate(context: vscode.ExtensionContext) {
       } catch {}
     }
   };
-  // Ensure no port is selected at startup
-  vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", "auto", vscode.ConfigurationTarget.Global);
+  // A QuickPick selection is session-scoped; when the extension starts, fall back to configuration.
+  mp.clearSelectedConnect();
   updatePortContext();
   // If workspace contains a top-level `mpy` folder and the user has not
   // overridden `microPythonWorkBench.rootPath` (still default '/'), then
@@ -510,7 +510,7 @@ export async function activate(context: vscode.ExtensionContext) {
       view.description = undefined;
     }
 
-    const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const connect = mp.getActiveConnect();
     if (!connect || connect === "auto") return;
 
     try {
@@ -546,11 +546,26 @@ export async function activate(context: vscode.ExtensionContext) {
       console.warn('[Extension] _cachePopulated handler failed', e);
     }
   }));
-  const initialConnect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+  const initialConnect = mp.getActiveConnect();
   if (initialConnect && initialConnect !== "auto") {
     try { mp.refreshFileTreeCache().catch(() => {}); } catch {}
     tree.refreshTree();
   }
+
+  async function refreshActiveConnectUi(): Promise<void> {
+    updatePortContext();
+    await refreshFilesViewTitle().catch(() => {});
+    tree.requireManualRefresh();
+    tree.clearCache();
+    try { mp.clearFileTreeCache(); } catch {}
+    const newConnect = mp.getActiveConnect();
+    if (newConnect && newConnect !== "auto") {
+      try { mp.refreshFileTreeCache().catch(() => {}); } catch {}
+    }
+    tree.refreshTree();
+    refreshActionsTree();
+  }
+
   if (view) context.subscriptions.push(view);
   if (actionsView) context.subscriptions.push(actionsView);
   if (syncView) context.subscriptions.push(syncView);
@@ -605,7 +620,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.debugFilesystemStatus", debugCommands.debugFilesystemStatus),
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", debugCommands.cancelAllTasks),
     // 已移除外部 mpremote 安装与状态检查命令
-    vscode.commands.registerCommand("microPythonWorkBench.pickPort", boardCommands.pickPort),
+    vscode.commands.registerCommand("microPythonWorkBench.pickPort", async () => {
+      const selected = await boardCommands.pickPort();
+      if (selected) await refreshActiveConnectUi();
+    }),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),
     vscode.commands.registerCommand("microPythonWorkBench.stop", async () => {
       try {
@@ -620,7 +638,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncActiveFileLocalToBoard", fileCommands.syncActiveFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileLocalToBoard", fileCommands.syncFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
-    vscode.commands.registerCommand("microPythonWorkBench.setPort", boardCommands.setPort),
+    vscode.commands.registerCommand("microPythonWorkBench.setPort", async (port: string) => {
+      const selected = await boardCommands.setPort(port);
+      if (selected) await refreshActiveConnectUi();
+    }),
     // `flashMicroPython` command removed: esptool-based auto-flash was deleted
     vscode.commands.registerCommand("microPythonWorkBench.syncBaseline", syncCommands.syncBaseline),
     vscode.commands.registerCommand("microPythonWorkBench.syncBaselineFromBoard", syncCommands.syncBaselineFromBoard),
@@ -664,20 +685,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Keep welcome button visibility in sync if user changes settings directly
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('microPythonWorkBench.connect')) {
-        updatePortContext();
-        refreshFilesViewTitle().catch(() => {});
-        tree.requireManualRefresh();
-        tree.clearCache();
-        try { mp.clearFileTreeCache(); } catch {}
-        // When the configured connect port changes, proactively refresh the
-        // device file tree so the Files view auto-populates for the newly
-        // selected device without requiring the user to click Refresh.
-        // Only do this if a specific port is selected (not "auto").
-        const newConnect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
-        if (newConnect && newConnect !== "auto") {
-          try { mp.refreshFileTreeCache().catch(()=>{}); } catch {}
-        }
-        tree.refreshTree();
+        refreshActiveConnectUi().catch(() => {});
       }
     }),
 

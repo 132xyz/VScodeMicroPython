@@ -263,7 +263,7 @@ function setReplContext(open: boolean) {
 
 export async function restartReplInExistingTerminal(opts: { show?: boolean } = {}) {
   try {
-    const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const connect = mp.getActiveConnect();
     if (!connect || connect === "auto") return;
     const device = mp.normalizeConnect(connect);
 
@@ -461,7 +461,7 @@ export async function softReset(): Promise<void> {
   }
 
   // Use mpremote connect with explicit port
-  const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+  const connect = mp.getActiveConnect();
   const device = mp.normalizeConnect(connect);
   const cmd = await buildShellCommand(["connect", device, "reset"]);
   await new Promise<void>((resolve) => {
@@ -481,7 +481,7 @@ export async function runActiveFile(): Promise<void> {
   if (!ed) { showError("messages.noActiveEditor"); return; }
   await ed.document.save();
 
-  const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+  const connect = mp.getActiveConnect();
   if (!connect || connect === "auto") {
     showError("messages.selectSpecificPort");
     return;
@@ -596,7 +596,7 @@ export async function getReplTerminal(
     replTerminal = undefined;
   }
 
-  const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+  const connect = mp.getActiveConnect();
   if (!connect || connect === "auto") {
     throw new Error("Select a specific serial port first (not 'auto')");
   }
@@ -781,7 +781,7 @@ export async function robustInterrupt(port?: string): Promise<void> {
   if (port) {
     devicePort = port;
   } else {
-    const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const connect = mp.getActiveConnect();
     if (!connect || connect === "auto") {
       throw new Error("Select a specific serial port first (not 'auto').");
     }
@@ -856,7 +856,7 @@ export async function robustInterruptAndReset(port?: string): Promise<void> {
   if (port) {
     devicePort = port;
   } else {
-    const connect = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const connect = mp.getActiveConnect();
     if (!connect || connect === "auto") {
       throw new Error("Select a specific serial port first (not 'auto').");
     }

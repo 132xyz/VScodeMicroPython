@@ -131,7 +131,7 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
 
   // Modifica getChildNodes para usar el cache si existe
   async getChildNodes(element?: Esp32Node): Promise<(Esp32Node | "no-port")[]> {
-    const port = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.connect", "auto");
+    const port = mp.getActiveConnect();
     if (!port || port === "" || port === "auto") {
       return [];
     }

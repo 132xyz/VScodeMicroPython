@@ -30,9 +30,9 @@ export const boardCommands = {
       ...devices.map(d => ({ label: d.port, description: d.name || "serial port" }))
     ];
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select Board serial port" });
-    if (!picked) return;
+    if (!picked) return undefined;
     const value = picked.label === "auto" ? "auto" : picked.label;
-    await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", value, vscode.ConfigurationTarget.Global);
+    mp.setSelectedConnect(value);
     // updatePortContext(); // Assuming this function exists
     // tree.requireManualRefresh();
     // await refreshFilesViewTitle();
@@ -40,17 +40,19 @@ export const boardCommands = {
     // tree.clearCache();
     // tree.refreshTree();
     // (no prompt) just refresh the tree after selecting port
+    return value;
   },
 
   setPort: async (port: string) => {
-    await vscode.workspace.getConfiguration().update("microPythonWorkBench.connect", port, vscode.ConfigurationTarget.Global);
+    const value = mp.setSelectedConnect(port);
     // updatePortContext();
     // tree.requireManualRefresh();
     // await refreshFilesViewTitle();
-    vscode.window.showInformationMessage(`ESP32 connect set to ${port}`);
+    vscode.window.showInformationMessage(`ESP32 connect set to ${value}`);
     // tree.clearCache();
     // tree.refreshTree();
     // (no prompt) just refresh the tree after setting port
+    return value;
   },
 
   // `flashMicroPython` removed: esptool-based automatic flashing has been

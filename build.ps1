@@ -23,6 +23,19 @@ function Invoke-PythonTests {
     exit 1
 }
 
+function Write-JsonFileUtf8NoBom {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path,
+        [Parameter(Mandatory=$true)]
+        [object]$Value
+    )
+
+    $json = $Value | ConvertTo-Json -Depth 10
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText([System.IO.Path]::GetFullPath($Path), $json + [Environment]::NewLine, $encoding)
+}
+
 # 先编译，只有编译成功才会考虑增加版本号和打包
 Write-Host "Compiling..." -ForegroundColor Green
 npm run compile
@@ -56,7 +69,7 @@ if (-not $S) {
 
     # 读取 package.json 文件
     $packageJsonPath = "package.json"
-    $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+    $packageJson = Get-Content $packageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
     # 获取当前版本
     $currentVersion = $packageJson.version
@@ -94,12 +107,12 @@ if (-not $S) {
 
     # 更新 package.json 中的版本
     $packageJson.version = $newVersion
-    $packageJson | ConvertTo-Json -Depth 10 | Set-Content $packageJsonPath -Encoding UTF8
+    Write-JsonFileUtf8NoBom -Path $packageJsonPath -Value $packageJson
 
     Write-Host "Version updated to $newVersion" -ForegroundColor Green
 } else {
     # 读取当前版本用于显示
-    $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
+    $packageJson = Get-Content "package.json" -Raw -Encoding UTF8 | ConvertFrom-Json
     $currentVersion = $packageJson.version
     Write-Host "Using current version: $currentVersion (no increment)" -ForegroundColor Cyan
 }
@@ -110,6 +123,11 @@ Get-ChildItem -Path "." -Filter "*.vsix" | Remove-Item -Force
 
 Write-Host "Packaging..." -ForegroundColor Green
 npm run package
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Error: packaging failed. Aborting output organization." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
 
 # 整理输出
 Write-Host "Organizing output..." -ForegroundColor Green

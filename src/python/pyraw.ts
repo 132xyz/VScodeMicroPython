@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { normalizeConnect } from "../board/mpremote";
+import { getActiveConnect, normalizeConnect } from "../board/mpremote";
 import { getPythonPath } from "./pythonInterpreter";
 
 export async function listDirPyRaw(dirPath: string): Promise<{ name: string; isDir: boolean }[]> {
-  const cfg = vscode.workspace.getConfiguration();
-  const connect = cfg.get<string>("microPythonWorkBench.connect", "auto") || "auto";
+  const connect = getActiveConnect();
   if (!connect || connect === "auto") throw new Error("No fixed serial port selected");
   const device = normalizeConnect(connect);
   // Use the actual publisher.name from package.json
