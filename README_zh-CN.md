@@ -4,7 +4,7 @@
 
 MicroPython 工作台是一个面向 ESP32 类开发板及类似设备的 VS Code 扩展，聚合了开发板文件浏览、双向差异同步、运行与 REPL 终端，以及工作区级别的 MicroPython stub 管理能力。
 
-当前开发板文件相关操作仍然通过 `mpremote` 完成。REPL 终端则可以按需切换到内置的实验性 Python 客户端 `scripts/mpyrepl`，以获得更强的主机侧编辑、补全和 Unicode 处理能力。
+当前开发板文件相关操作仍然通过 `mpremote` 完成。REPL 终端则可以按需切换到内置的实验性 Python 客户端 `scripts/mpyrepl`，以获得更强的主机侧编辑、补全、Unicode 处理能力，并在同一个 REPL 会话中执行活动文件。
 
 ## 主要功能
 
@@ -75,6 +75,7 @@ python -m pip install --user mpremote
 
 - 默认 REPL 终端通过 `mpremote connect <port>` 打开。
 - `MicroPython 工作台：运行活动文件` 通过 `mpremote connect <port> run <file>` 执行当前本地文件。
+- 开启 `microPythonWorkBench.experimentalCustomRepl` 后，运行活动文件会改为发送到自定义 REPL 会话执行，执行结束后回到同一个提示符。
 - 在 Windows 上，扩展会为 REPL 和 Run 终端注入更偏向 UTF-8 的环境变量与 PowerShell 输出编码设置。
 - `microPythonWorkBench.serialAutoSuspend` 会在同步前关闭 REPL / Run 终端，避免串口冲突，并在同步后恢复原来的串口会话状态。
 - `microPythonWorkBench.replRestoreBehavior` 用于控制自动恢复 REPL 后的行为：
@@ -94,7 +95,7 @@ python -m pip install --user mpremote
 ### 实验性自定义 Python REPL
 
 - 开启 `microPythonWorkBench.experimentalCustomRepl` 后，REPL 终端会从默认的 `mpremote` 方式切换到内置的 `mpyrepl` Python 客户端。
-- 该设置只影响 REPL 终端。文件浏览、文件同步和“运行活动文件”仍然走 `mpremote`。
+- 该设置也会让“运行活动文件”复用自定义 REPL 会话。文件浏览和文件同步仍然走 `mpremote`。
 - 当前这条路径主要用于改善以下体验：
   - 主机侧多行编辑
   - prompt_toolkit 补全
@@ -178,7 +179,7 @@ CI 当前运行于 GitHub Actions，覆盖：
 ## 当前限制
 
 - 当前兼容性验证仍主要集中在 ESP32 系列，尤其是 ESP32-S3 与 ESP32-C3。
-- 实验性自定义 REPL 只替换 REPL 终端路径；同步、浏览与运行文件仍依赖 `mpremote`。
+- 实验性自定义 REPL 不替换完整传输栈；同步与浏览仍依赖 `mpremote`。
 - 部分贴近硬件的 board/runtime 路径覆盖率仍低于纯工具和配置逻辑，因此涉及真实开发板行为时仍建议上板验证。
 - 自动固件烧录已从扩展中移除，请在扩展外使用 `esptool` 或厂商工具完成烧录。
 

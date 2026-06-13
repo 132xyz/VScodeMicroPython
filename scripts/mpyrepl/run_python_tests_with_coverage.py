@@ -17,6 +17,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 EXCLUDED_FILES = {
     "run_python_tests_with_coverage.py",
 }
+MINIMUM_COVERAGE_PERCENT = 80.0
 
 
 def target_source_files() -> list[Path]:
@@ -58,11 +59,11 @@ def measured_lines(counts: dict[tuple[str, int], int], path: Path) -> set[int]:
     }
 
 
-def print_coverage_summary(counts: dict[tuple[str, int], int]) -> None:
+def print_coverage_summary(counts: dict[tuple[str, int], int]) -> float:
     """Print per-file and overall coverage for local mpyrepl sources.
 
     :param counts: Trace counts mapping.
-    :return: None
+    :return: Overall coverage percentage.
     """
     total_executable = 0
     total_measured = 0
@@ -86,6 +87,7 @@ def print_coverage_summary(counts: dict[tuple[str, int], int]) -> None:
         "Overall local Python coverage: %.1f%% (%d/%d executable lines)"
         % (overall_percent, total_measured, total_executable)
     )
+    return overall_percent
 
 
 def main() -> int:
@@ -105,7 +107,13 @@ def main() -> int:
     if output:
         print(output, end="")
 
-    print_coverage_summary(tracer.results().counts)
+    overall_percent = print_coverage_summary(tracer.results().counts)
+    if overall_percent < MINIMUM_COVERAGE_PERCENT:
+        print(
+            "Python coverage below required %.1f%%: %.1f%%"
+            % (MINIMUM_COVERAGE_PERCENT, overall_percent)
+        )
+        return 1
     return 0 if result.wasSuccessful() else 1
 
 

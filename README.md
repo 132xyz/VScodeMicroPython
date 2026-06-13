@@ -4,7 +4,7 @@
 
 MicroPython Workbench is a VS Code extension for MicroPython development on ESP32-class boards and similar devices. It combines board file browsing, diff-based sync, run/REPL terminals, and workspace-scoped MicroPython stub management in one workflow.
 
-Board file operations still use `mpremote`. The REPL terminal can optionally switch to an experimental Python client (`scripts/mpyrepl`) that adds host-side editing, richer completion, and more robust Unicode handling.
+Board file operations still use `mpremote`. The REPL terminal can optionally switch to an experimental Python client (`scripts/mpyrepl`) that adds host-side editing, richer completion, more robust Unicode handling, and active-file execution inside the same REPL session.
 
 ## Main features
 
@@ -76,6 +76,7 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 
 - The default REPL terminal opens `mpremote connect <port>` in a persistent VS Code terminal.
 - `MicroPython WorkBench: Run Active File` runs the current local file through `mpremote connect <port> run <file>`.
+- When `microPythonWorkBench.experimentalCustomRepl` is enabled, Run Active File sends the current file to the custom REPL session instead, then returns to the same prompt.
 - On Windows, the extension initializes REPL and Run terminals with UTF-8-oriented environment settings and PowerShell output encoding.
 - `microPythonWorkBench.serialAutoSuspend` closes REPL/Run terminals before sync operations to avoid serial-port conflicts, then restores the previous session state afterward.
 - `microPythonWorkBench.replRestoreBehavior` controls what happens after auto-suspend restores the REPL:
@@ -95,7 +96,7 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 ### Experimental custom Python REPL
 
 - Enable `microPythonWorkBench.experimentalCustomRepl` to replace the default `mpremote` REPL terminal with the bundled Python `mpyrepl` client.
-- This affects the REPL terminal only. File browsing, file sync, and Run Active File still use `mpremote`.
+- This also routes Run Active File through the custom REPL session. File browsing and file sync still use `mpremote`.
 - The custom REPL currently focuses on:
   - host-side multiline editing
   - prompt-toolkit based completion
@@ -179,7 +180,7 @@ For more detail, see [docs/TEST_README.md](docs/TEST_README.md).
 ## Current limitations
 
 - Compatibility validation is still concentrated on ESP32 variants, especially ESP32-S3 and ESP32-C3.
-- The experimental custom REPL only replaces the REPL terminal path. Sync, browsing, and Run Active File still depend on `mpremote`.
+- The experimental custom REPL does not replace the full transport stack. Sync and browsing still depend on `mpremote`.
 - Some board/runtime paths remain less covered than pure utility and configuration code, so board-specific regressions should still be validated on hardware.
 - Automatic firmware flashing has been removed from this extension. Flash boards with `esptool` or vendor tooling outside the extension.
 

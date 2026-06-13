@@ -15,23 +15,22 @@ This path exists to improve the parts that are hard to solve with a plain termin
 
 ## Scope
 
-Enabling `microPythonWorkBench.experimentalCustomRepl` changes the REPL terminal only.
+Enabling `microPythonWorkBench.experimentalCustomRepl` changes the REPL terminal and routes `Run Active File` through the same custom REPL session.
 
 These features still use `mpremote`:
 
 - board file browsing
 - board file sync
-- `Run Active File`
 - most non-REPL board operations
 
-That distinction matters when troubleshooting: the custom REPL can improve interactive terminal behavior without replacing the rest of the board workflow stack.
+That distinction matters when troubleshooting: the custom REPL can improve interactive terminal and active-file execution behavior without replacing the rest of the board workflow stack.
 
 ## Requirements
 
 - Select a fixed serial port first. The REPL does not start with `auto`.
 - Use Python 3.9 or newer for the `mpyrepl` script.
 - The selected interpreter must have `pyserial` available.
-- In normal extension usage you should still install `mpremote`, because sync, browsing, and Run Active File still depend on it.
+- In normal extension usage you should still install `mpremote`, because sync, browsing, and other non-REPL board operations still depend on it.
 
 If `pyserial` is missing, the extension now prompts to install it into the selected Python environment before launching the custom REPL.
 
@@ -109,8 +108,9 @@ Supported control commands are:
 - `soft-reset`
 - `interrupt-reset`
 - `exit`
+- `exec`
 
-This is how extension commands such as interrupt, stop, and close can affect the still-running REPL process without killing the whole terminal first.
+This is how extension commands such as interrupt, stop, close, and Run Active File can affect the still-running REPL process without killing the whole terminal first.
 
 ### 4. Unicode handling
 
@@ -160,7 +160,7 @@ Useful options include:
 ## Current limitations
 
 - This is still an experimental path.
-- It only replaces the REPL terminal path, not the full extension transport stack.
+- It does not replace the full extension transport stack.
 - Runtime dotted completion depends on live device state and may time out.
 - A raw REPL session still owns the serial port, so sync and file operations must suspend it first.
 - If the chosen interpreter is older than Python 3.9 or lacks `pyserial`, startup will fail.

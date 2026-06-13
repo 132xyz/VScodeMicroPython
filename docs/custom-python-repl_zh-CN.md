@@ -15,23 +15,22 @@ MicroPython 工作台可以把默认的 `mpremote` REPL 终端替换为位于 `s
 
 ## 作用范围
 
-开启 `microPythonWorkBench.experimentalCustomRepl` 后，只会替换 REPL 终端路径。
+开启 `microPythonWorkBench.experimentalCustomRepl` 后，会替换 REPL 终端路径，并让 `运行活动文件` 复用同一个自定义 REPL 会话执行。
 
 以下能力仍然继续走 `mpremote`：
 
 - 开发板文件浏览
 - 开发板文件同步
-- `运行活动文件`
 - 大多数非 REPL 的开发板操作
 
-排障时要特别注意这一点：自定义 REPL 可以改善交互式终端体验，但不会替代整套开发板传输栈。
+排障时要特别注意这一点：自定义 REPL 可以改善交互式终端和活动文件执行体验，但不会替代整套开发板传输栈。
 
 ## 使用要求
 
 - 必须先选择固定串口，不能用 `auto`
 - `mpyrepl` 脚本建议使用 Python 3.9 及以上
 - 所选 Python 解释器中需要可导入 `pyserial`
-- 在完整扩展工作流中仍建议安装 `mpremote`，因为同步、浏览和运行文件仍依赖它
+- 在完整扩展工作流中仍建议安装 `mpremote`，因为同步、浏览和其他非 REPL 开发板操作仍依赖它
 
 如果当前解释器缺少 `pyserial`，扩展现在会在启动自定义 REPL 前提示安装到所选 Python 环境中。
 
@@ -109,8 +108,9 @@ REPL 提示符由 prompt-toolkit 实现，而不是完全依赖开发板侧的�
 - `soft-reset`
 - `interrupt-reset`
 - `exit`
+- `exec`
 
-扩展中的中断、停止、关闭等命令，正是通过这个控制通道作用到持续运行的 REPL 进程上的，而不是每次都直接杀掉整个终端。
+扩展中的中断、停止、关闭和运行活动文件等命令，正是通过这个控制通道作用到持续运行的 REPL 进程上的，而不是每次都直接杀掉整个终端。
 
 ### 4. Unicode 处理
 
@@ -160,7 +160,7 @@ python scripts/mpyrepl/__main__.py --port COM4 async-repl --stub-root .mpy-workb
 ## 当前限制
 
 - 这仍然是一条实验性路径。
-- 它只替换 REPL 终端，不替换扩展完整的传输链路。
+- 它不替换扩展完整的传输链路。
 - 运行时点式补全依赖实时设备状态，也可能超时。
 - raw REPL 会独占串口，因此同步和文件操作仍然需要先挂起 REPL。
 - 如果所选解释器低于 Python 3.9，或缺少 `pyserial`，启动会失败。

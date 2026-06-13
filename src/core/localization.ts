@@ -113,7 +113,7 @@ export class Localization {
 }
 
 // 导出便捷函数
-export const t = Localization.t;
-export const showInfo = Localization.showInfo;
-export const showError = Localization.showError;
-export const showWarning = Localization.showWarning;
+export const t = (key: string, ...args: any[]): string => Localization.t(key, ...args);
+export const showInfo = (key: string, ...args: any[]): Thenable<string | undefined> => Localization.showInfo(key, ...args);
+export const showError = (key: string, ...args: any[]): Thenable<string | undefined> => Localization.showError(key, ...args);
+export const showWarning = (key: string, ...args: any[]): Thenable<string | undefined> => Localization.showWarning(key, ...args);

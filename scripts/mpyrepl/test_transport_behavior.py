@@ -156,6 +156,54 @@ class TransportBehaviorTests(unittest.TestCase):
         self.assertFalse(transport._in_raw_repl)
         self.assertTrue(serial_stub.closed)
 
+    def test_context_manager_opens_and_closes_transport(self) -> None:
+        serial_stub = _FakeSerial()
+        transport = SerialReplTransport(ReplConfig(port="loop://"))
+
+        with mock.patch("transport.serial.serial_for_url", return_value=serial_stub):
+            with transport as opened:
+                self.assertIs(opened, transport)
+                self.assertIs(transport._serial, serial_stub)
+
+        self.assertIsNone(transport._serial)
+        self.assertTrue(serial_stub.closed)
+
+    def test_read_until_streams_chunks_and_handles_timeouts(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="COM4", read_timeout=0.01, operation_timeout=0.05))
+        serial_stub = _FakeSerial()
+        serial_stub.read_chunks = [b"ab", b"c", b"END"]
+        transport._serial = serial_stub
+        streamed: list[bytes] = []
+
+        self.assertEqual(
+            transport.read_until(b"END", timeout=0.01, consumer=streamed.append),
+            b"abcEND",
+        )
+        self.assertEqual(streamed, [b"a", b"b", b"c", b"E"])
+
+        serial_stub.read_chunks = [b"xy", b"END"]
+        streamed = []
+        self.assertEqual(
+            transport.read_until(
+                b"END",
+                timeout=0.01,
+                consumer=streamed.append,
+                include_ending_in_consumer=True,
+            ),
+            b"xyEND",
+        )
+        self.assertEqual(streamed, [b"x", b"y", b"E", b"ND"])
+
+        transport._serial = _FakeSerial()
+        with mock.patch("transport.time.sleep", return_value=None):
+            self.assertEqual(transport.read_until(b"END", timeout=0.0), b"")
+            self.assertEqual(transport.read_until(b"END", timeout=None, overall_timeout=0.0), b"")
+            transport._interrupt_requested_at = 0.0
+            self.assertEqual(
+                transport.read_until(b"END", timeout=None, interrupt_timeout=0.0),
+                b"",
+            )
+
     def test_soft_reset_requires_raw_mode_and_streams_banner(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))
         transport._serial = _FakeSerial()
@@ -185,6 +233,29 @@ class TransportBehaviorTests(unittest.TestCase):
         self.assertEqual(streamed, [b"soft reboot\r\n", b"raw REPL; CTRL-B to exit\r\n"])
         self.assertEqual(transport._serial.writes, [b"\x04"])
 
+        prompt_failure = SerialReplTransport(ReplConfig(port="COM4"))
+        prompt_failure._serial = _FakeSerial()
+        prompt_failure._in_raw_repl = True
+        prompt_failure.read_until = lambda *args, **kwargs: b"not ready"
+        with self.assertRaisesRegex(transport_module.TransportError, "raw prompt not ready"):
+            prompt_failure.soft_reset()
+
+        reboot_failure = SerialReplTransport(ReplConfig(port="COM4"))
+        reboot_failure._serial = _FakeSerial()
+        reboot_failure._in_raw_repl = True
+        reboot_responses = iter([b">", b"missing reboot"])
+        reboot_failure.read_until = lambda *args, **kwargs: next(reboot_responses)
+        with self.assertRaisesRegex(transport_module.TransportError, "soft reboot banner"):
+            reboot_failure.soft_reset()
+
+        restore_failure = SerialReplTransport(ReplConfig(port="COM4"))
+        restore_failure._serial = _FakeSerial()
+        restore_failure._in_raw_repl = True
+        restore_responses = iter([b">", b"soft reboot\r\n", b"missing prompt"])
+        restore_failure.read_until = lambda *args, **kwargs: next(restore_responses)
+        with self.assertRaisesRegex(transport_module.TransportError, "raw repl prompt not restored"):
+            restore_failure.soft_reset()
+
     def test_exec_raw_no_follow_supports_raw_paste_and_plain_fallback(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))
         transport._serial = _FakeSerial()
@@ -206,12 +277,17 @@ class TransportBehaviorTests(unittest.TestCase):
 
     def test_follow_and_ensure_serial_cover_success_and_errors(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))
+        timeouts = []
         responses = iter([b"out\x04", b"err\x04"])
-        transport.read_until = lambda *args, **kwargs: next(responses)
+        transport.read_until = lambda *args, **kwargs: (
+            timeouts.append(kwargs.get("timeout")),
+            next(responses),
+        )[-1]
         self.assertEqual(
-            transport.follow(1.0),
+            transport.follow(None),
             transport_module.ExecResult(stdout=b"out", stderr=b"err"),
         )
+        self.assertEqual(timeouts, [None, None])
 
         transport = SerialReplTransport(ReplConfig(port="COM4"))
         transport.read_until = lambda *args, **kwargs: b"out"
@@ -223,6 +299,12 @@ class TransportBehaviorTests(unittest.TestCase):
         transport.read_until = lambda *args, **kwargs: next(responses)
         with self.assertRaisesRegex(transport_module.TransportError, "stderr EOF"):
             transport.follow(1.0)
+
+        transport = SerialReplTransport(ReplConfig(port="COM4"))
+        transport._interrupt_requested_at = 1.0
+        transport.read_until = lambda *args, **kwargs: b"partial"
+        with self.assertRaisesRegex(transport_module.TransportInterrupted, "stdout EOF"):
+            transport.follow(None)
 
         with self.assertRaisesRegex(transport_module.TransportError, "serial port is not open"):
             transport._ensure_serial()
@@ -245,6 +327,12 @@ class TransportBehaviorTests(unittest.TestCase):
         transport.read_until = lambda *args, **kwargs: b">"
         transport.read_exact = lambda size, timeout: b"NO"
         with self.assertRaisesRegex(transport_module.TransportError, "could not execute command"):
+            transport.exec_raw_no_follow(b"print(1)")
+
+        transport = SerialReplTransport(ReplConfig(port="COM4"))
+        transport._serial = _FakeSerial()
+        transport.read_until = lambda *args, **kwargs: b"not a prompt"
+        with self.assertRaisesRegex(transport_module.TransportError, "raw prompt before execution"):
             transport.exec_raw_no_follow(b"print(1)")
 
         transport = SerialReplTransport(ReplConfig(port="COM4"))
@@ -284,6 +372,29 @@ class TransportBehaviorTests(unittest.TestCase):
         ):
             broken_response.raw_paste_write(b"abc")
 
+        early_eof = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
+        early_eof._serial = _FakeSerial()
+        early_eof.read_exact = lambda size, timeout: struct.pack("<H", 2)
+        early_eof.in_waiting = lambda: 1
+        early_eof._serial.read_chunks = [b"\x04"]
+        early_eof.raw_paste_write(b"abc")
+        self.assertEqual(early_eof._serial.writes, [b"\x04"])
+
+        missing_ack = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
+        missing_ack._serial = _FakeSerial()
+        missing_ack.read_exact = lambda size, timeout: struct.pack("<H", 8)
+        missing_ack.read_until = lambda *args, **kwargs: b""
+        with self.assertRaisesRegex(transport_module.TransportError, "acknowledge raw paste end"):
+            missing_ack.raw_paste_write(b"abc")
+
+        timed_out_credit = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=0.01))
+        timed_out_credit._serial = _FakeSerial()
+        timed_out_credit.read_exact = lambda size, timeout: struct.pack("<H", 0)
+        timed_out_credit.in_waiting = lambda: 0
+        with mock.patch("transport.time.sleep", return_value=None):
+            with self.assertRaisesRegex(transport_module.TransportError, "window credit"):
+                timed_out_credit.raw_paste_write(b"abc")
+
     def test_drain_input_in_waiting_and_read_exact_work_with_buffered_serial(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=0.1))
         serial_stub = _FakeSerial()
@@ -292,6 +403,8 @@ class TransportBehaviorTests(unittest.TestCase):
 
         self.assertEqual(transport.in_waiting(), 3)
         self.assertEqual(transport.read_exact(4, timeout=0.1), b"abcd")
+
+        self.assertEqual(transport.read_exact(10, timeout=0.0), b"ef")
 
         serial_stub.read_chunks = [b"12", b"34"]
         transport.drain_input()
@@ -306,6 +419,18 @@ class TransportBehaviorTests(unittest.TestCase):
         transport.exit_raw_repl()
 
         self.assertEqual(transport._serial.writes, [b"\x03", b"\r\x02"])
+        self.assertFalse(transport._in_raw_repl)
+        self.assertEqual(
+            transport_module._describe_observed_bytes(b"123456789", limit=4),
+            "<9 bytes total, tail=b'6789'>",
+        )
+
+        transport = SerialReplTransport(ReplConfig(port="COM4"))
+        serial_stub = _FakeSerial()
+        serial_stub.write = mock.Mock(side_effect=transport_module.serial.SerialException("write failed"))
+        transport._serial = serial_stub
+        transport._in_raw_repl = True
+        transport.exit_raw_repl()
         self.assertFalse(transport._in_raw_repl)
 
     def test_in_waiting_falls_back_to_legacy_api(self) -> None:

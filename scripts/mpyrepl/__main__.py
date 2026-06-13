@@ -32,7 +32,7 @@ from decode import Utf8StreamDecoder
 from models import ReplConfig
 from repl_semantics import build_helper_source, instrument_source
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
-from transport import SerialReplTransport, TransportError
+from transport import SerialReplTransport, TransportError, TransportInterrupted
 from prompt_toolkit.patch_stdout import patch_stdout
 
 
@@ -55,6 +55,8 @@ class AsyncReplState:
         self.executing = False
         self.prompt_active = False
         self.pending_action = ""
+        self.pending_exec_source = ""
+        self.pending_exec_label = ""
 
 
 class SerialOperationGate:
@@ -349,7 +351,7 @@ def run_soft_reset(config: ReplConfig) -> int:
 def execute_once(
     transport: SerialReplTransport,
     code: str,
-    follow_timeout: float,
+    follow_timeout: float | None,
     stdout_decoder: Utf8StreamDecoder,
     stderr_decoder: Utf8StreamDecoder,
 ):
@@ -369,6 +371,34 @@ def execute_once(
         stdout_consumer=lambda chunk: write_stream_chunk(sys.stdout, stdout_decoder, chunk),
         stderr_consumer=lambda chunk: write_stream_chunk(sys.stderr, stderr_decoder, chunk),
     )
+
+
+def recover_after_interrupted_execution(
+    transport: SerialReplTransport,
+    recovery_timeout: float,
+) -> None:
+    """Best-effort recovery when user interrupt does not produce raw EOF markers.
+
+    :param transport: Active serial transport.
+    :param recovery_timeout: Overall timeout for prompt realignment.
+    :return: None
+    """
+    transport.clear_interrupt_request()
+    try:
+        prompt = transport.read_until(
+            b">",
+            timeout=transport._config.read_timeout,
+            overall_timeout=recovery_timeout,
+        )
+        if prompt.endswith(b">"):
+            return
+    except Exception:
+        pass
+
+    try:
+        transport.enter_raw_repl(soft_reset=False)
+    except Exception as exc:
+        write_text(sys.stderr, "\n[mpyrepl] interrupt recovery failed: %s\n" % (exc,))
 
 
 def run_session_probe(config: ReplConfig, first: str, second: str, follow_timeout: float) -> int:
@@ -467,6 +497,65 @@ async def apply_pending_action(
     raise RuntimeError("unsupported pending action: %s" % (action,))
 
 
+async def execute_source_block(
+    transport: SerialReplTransport,
+    gate: SerialOperationGate,
+    state: AsyncReplState,
+    session_symbols: ReplSessionSymbols,
+    completer: ReplCompleter,
+    source: str,
+    follow_timeout: float | None,
+) -> None:
+    """Execute one user source block and update session-side caches on success.
+
+    :param transport: Active serial transport.
+    :param gate: Serialized raw REPL operation gate.
+    :param state: Shared async REPL state.
+    :param session_symbols: Host-side symbol cache.
+    :param completer: Runtime completer cache.
+    :param source: Python source code.
+    :param follow_timeout: Inter-byte timeout for execution output, or None to wait indefinitely.
+    :return: None
+    """
+    prepared_code = source.rstrip()
+    if not prepared_code:
+        return
+
+    stdout_decoder = Utf8StreamDecoder()
+    stderr_decoder = Utf8StreamDecoder()
+    state.executing = True
+    try:
+        result = await gate.run(
+            "execute",
+            execute_once,
+            transport,
+            prepared_code,
+            follow_timeout,
+            stdout_decoder,
+            stderr_decoder,
+        )
+    except TransportInterrupted:
+        state.executing = False
+        flush_decoder(sys.stdout, stdout_decoder)
+        flush_decoder(sys.stderr, stderr_decoder)
+        write_text(sys.stderr, "\n[mpyrepl] interrupted; recovering raw REPL\n")
+        await gate.run(
+            "interrupt-recover",
+            recover_after_interrupted_execution,
+            transport,
+            2.0,
+        )
+        return
+    finally:
+        state.executing = False
+        flush_decoder(sys.stdout, stdout_decoder)
+        flush_decoder(sys.stderr, stderr_decoder)
+
+    if not result.stderr:
+        session_symbols.record_successful_source(prepared_code)
+        completer.clear_runtime_cache()
+
+
 async def watch_control_channel(
     channel: FileControlChannel,
     state: AsyncReplState,
@@ -519,6 +608,13 @@ async def watch_control_channel(
                 request_prompt_exit(session)
             continue
 
+        if command == "exec":
+            state.pending_exec_source = request.source
+            state.pending_exec_label = request.label
+            if state.prompt_active:
+                request_prompt_exit(session)
+            continue
+
 
 async def run_async_repl(
     config: ReplConfig,
@@ -539,6 +635,7 @@ async def run_async_repl(
     session_symbols = ReplSessionSymbols()
     input_buffer = ReplInputBuffer()
     control_channel = FileControlChannel(control_file) if control_file else None
+    execution_follow_timeout: float | None = None
 
     with SerialReplTransport(config) as transport:
         transport.enter_raw_repl(soft_reset=config.soft_reset_on_connect)
@@ -578,6 +675,31 @@ async def run_async_repl(
                         break
                     if had_pending_action:
                         input_buffer.reset()
+
+                    pending_exec_source = state.pending_exec_source
+                    if pending_exec_source.strip():
+                        state.pending_exec_source = ""
+                        state.pending_exec_label = ""
+                        input_buffer.reset()
+                        await execute_source_block(
+                            transport,
+                            gate,
+                            state,
+                            session_symbols,
+                            completer,
+                            pending_exec_source,
+                            execution_follow_timeout,
+                        )
+                        if await apply_pending_action(
+                            transport,
+                            gate,
+                            state,
+                            session_symbols,
+                            completer,
+                            follow_timeout,
+                        ):
+                            break
+                        continue
 
                     state.prompt_active = True
                     try:
@@ -625,30 +747,15 @@ async def run_async_repl(
                         break
 
                     prepared_code = input_buffer.consume_source(code)
-                    if not prepared_code:
-                        continue
-
-                    stdout_decoder = Utf8StreamDecoder()
-                    stderr_decoder = Utf8StreamDecoder()
-                    state.executing = True
-                    try:
-                        result = await gate.run(
-                            "execute",
-                            execute_once,
-                            transport,
-                            prepared_code,
-                            follow_timeout,
-                            stdout_decoder,
-                            stderr_decoder,
-                        )
-                    finally:
-                        state.executing = False
-                        flush_decoder(sys.stdout, stdout_decoder)
-                        flush_decoder(sys.stderr, stderr_decoder)
-
-                    if not result.stderr:
-                        session_symbols.record_successful_source(prepared_code)
-                        completer.clear_runtime_cache()
+                    await execute_source_block(
+                        transport,
+                        gate,
+                        state,
+                        session_symbols,
+                        completer,
+                        prepared_code,
+                        execution_follow_timeout,
+                    )
 
                     if await apply_pending_action(
                         transport,
@@ -669,7 +776,10 @@ async def run_async_repl(
             if control_channel is not None:
                 control_channel.clear()
             restore_sigint()
-            transport.exit_raw_repl()
+            try:
+                transport.exit_raw_repl()
+            except Exception:
+                pass
 
     return 0
 

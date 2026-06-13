@@ -145,6 +145,9 @@ describe('sync and localization coverage', () => {
     await localization.Localization.showInfo('messages.codeCompletionEnabled');
     await localization.Localization.showError('messages.codeCompletionDisabled');
     await localization.Localization.showWarning('messages.installPylance');
+    await localization.showInfo('messages.codeCompletionEnabled');
+    await localization.showError('messages.codeCompletionDisabled');
+    await localization.showWarning('messages.installPylance');
 
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('MicroPython code completion enabled');
     expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('MicroPython code completion disabled');

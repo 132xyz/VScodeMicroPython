@@ -183,18 +183,84 @@ async function buildCustomReplCommand(device: string): Promise<{ command: string
   return { command, controlFile };
 }
 
-async function sendCustomReplControl(command: 'interrupt' | 'soft-reset' | 'interrupt-reset' | 'exit'): Promise<void> {
+type CustomReplControlCommand = 'interrupt' | 'soft-reset' | 'interrupt-reset' | 'exit' | 'exec';
+
+type CustomReplControlPayload = {
+  source?: string;
+  label?: string;
+};
+
+async function readCustomReplControlSequence(controlFile: string): Promise<number> {
+  try {
+    const rawPayload = await fs.promises.readFile(controlFile, 'utf8');
+    const payload = JSON.parse(rawPayload);
+    const sequence = payload?.sequence;
+    return typeof sequence === 'number' && Number.isFinite(sequence) ? sequence : -1;
+  } catch {
+    return -1;
+  }
+}
+
+function getActiveCustomReplControlFile(): string | undefined {
+  const connect = mp.getActiveConnect();
+  if (!connect || connect === "auto") return undefined;
+  return getCustomReplControlFile(mp.normalizeConnect(connect));
+}
+
+async function activateExistingCustomReplControl(): Promise<boolean> {
+  if (replUsesCustomClient && replControlFile) return true;
+  if (!useExperimentalCustomRepl()) return false;
+
+  const controlFile = getActiveCustomReplControlFile();
+  if (!controlFile || !fs.existsSync(controlFile)) return false;
+
+  replUsesCustomClient = true;
+  replControlFile = controlFile;
+  replControlSequence = Math.max(replControlSequence, await readCustomReplControlSequence(controlFile));
+  return true;
+}
+
+async function sendCustomReplControl(
+  command: CustomReplControlCommand,
+  payload: CustomReplControlPayload = {},
+): Promise<void> {
   if (!replUsesCustomClient || !replControlFile) {
     throw new Error('Experimental REPL control channel is not active');
   }
 
   await fs.promises.mkdir(path.dirname(replControlFile), { recursive: true });
+  replControlSequence = Math.max(replControlSequence, await readCustomReplControlSequence(replControlFile));
   replControlSequence += 1;
   await fs.promises.writeFile(
     replControlFile,
-    JSON.stringify({ sequence: replControlSequence, command }),
+    JSON.stringify({ sequence: replControlSequence, command, ...payload }),
     'utf8',
   );
+}
+
+async function sendCustomReplControlIfActive(
+  command: CustomReplControlCommand,
+  payload: CustomReplControlPayload = {},
+): Promise<boolean> {
+  if (!(await activateExistingCustomReplControl())) return false;
+  await sendCustomReplControl(command, payload);
+  return true;
+}
+
+async function waitForCustomReplReady(controlFile: string, timeoutMs: number = 6000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const rawPayload = await fs.promises.readFile(controlFile, 'utf8');
+      const payload = JSON.parse(rawPayload);
+      if (payload && typeof payload === 'object' && payload.command === 'ready') {
+        return;
+      }
+    } catch {}
+    await sleep(100);
+  }
+
+  throw new Error('Experimental REPL did not become ready before running the file');
 }
 
 async function clearCustomReplControlFile(): Promise<void> {
@@ -208,6 +274,33 @@ function resetCustomReplState(): void {
   replUsesCustomClient = false;
   replControlFile = undefined;
   replControlSequence = 0;
+}
+
+async function runActiveFileInCustomRepl(device: string, filePath: string): Promise<void> {
+  const replOpen = isReplOpen();
+  const hadCustomRepl = replOpen && replUsesCustomClient && !!replControlFile;
+
+  if (replOpen && !hadCustomRepl) {
+    await closeReplTerminal();
+    await sleep(300);
+  }
+
+  const source = await fs.promises.readFile(filePath, 'utf8');
+  const terminal = await getReplTerminal(undefined, { interrupt: false });
+  terminal.show(true);
+
+  if (!hadCustomRepl) {
+    if (!replControlFile) {
+      throw new Error('Experimental REPL control channel is not active');
+    }
+    await waitForCustomReplReady(replControlFile);
+  }
+
+  await sendCustomReplControl('exec', {
+    source,
+    label: path.basename(filePath),
+  });
+  debugLog("Sent active file to custom REPL:", device, filePath);
 }
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
@@ -409,8 +502,7 @@ export async function checkMpremoteAvailability(): Promise<void> {
 }
 
 export async function serialSendCtrlC(): Promise<void> {
-  if (isReplOpen() && replUsesCustomClient) {
-    await sendCustomReplControl('interrupt');
+  if (await sendCustomReplControlIfActive('interrupt')) {
     showInfo("messages.interruptSentViaRepl");
     return;
   }
@@ -424,8 +516,7 @@ export async function serialSendCtrlC(): Promise<void> {
 }
 
 export async function stop(): Promise<void> {
-  if (isReplOpen() && replUsesCustomClient) {
-    await sendCustomReplControl('interrupt-reset');
+  if (await sendCustomReplControlIfActive('interrupt-reset')) {
     showInfo("messages.interruptAndSoftResetSentViaRepl");
     return;
   }
@@ -439,6 +530,11 @@ export async function stop(): Promise<void> {
 }
 
 export async function softReset(): Promise<void> {
+  if (await sendCustomReplControlIfActive('soft-reset')) {
+    showInfo("messages.softResetSentViaRepl");
+    return;
+  }
+
   // If REPL terminal is open, prefer sending through it to avoid port conflicts
   if (isReplOpen()) {
     try {
@@ -489,6 +585,11 @@ export async function runActiveFile(): Promise<void> {
 
   const device = mp.normalizeConnect(connect);
   const filePath = ed.document.uri.fsPath;
+
+  if (useExperimentalCustomRepl()) {
+    await runActiveFileInCustomRepl(device, filePath);
+    return;
+  }
 
   // If the REPL terminal is open, close it before executing and remember to restore later
   replWasOpenBeforeRun = isReplOpen();

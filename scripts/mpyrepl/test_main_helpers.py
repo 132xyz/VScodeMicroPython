@@ -39,7 +39,7 @@ class FakeGate:
 
     async def run(self, operation, func, *args):
         self.operations.append(operation)
-        return None
+        return func(*args)
 
 
 class FakeSymbols:
@@ -132,6 +132,21 @@ class FailingEncodingStream:
         self.flush_calls += 1
 
 
+class NoBufferEncodingStream:
+    def __init__(self) -> None:
+        self.encoding = "cp1252"
+        self.values = []
+        self.flush_calls = 0
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        self.values.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+
 class MainHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeContextTransport.instances.clear()
@@ -157,6 +172,16 @@ class MainHelperTests(unittest.TestCase):
         finally:
             gate._lock.release()
 
+        self.assertEqual(gate.try_run_blocking("demo", lambda value: value + 2, 3), 5)
+        self.assertEqual(gate.current_operation, "")
+
+    def test_serial_operation_gate_async_run_returns_result(self) -> None:
+        async def run_gate() -> int:
+            gate = mpyrepl_main.SerialOperationGate()
+            return await gate.run("async-demo", lambda value: value + 1, 4)
+
+        self.assertEqual(__import__("asyncio").run(run_gate()), 5)
+
     def test_repl_input_buffer_remembers_document_and_consumes_trimmed_source(self) -> None:
         input_buffer = mpyrepl_main.ReplInputBuffer()
         self.assertEqual(input_buffer.prompt_text(), ">>> ")
@@ -179,6 +204,47 @@ class MainHelperTests(unittest.TestCase):
 
         self.assertEqual(stream.buffer.getvalue(), "中OK".encode("utf-8"))
         self.assertEqual(stream.flush_calls, 1)
+
+        no_buffer_stream = NoBufferEncodingStream()
+        mpyrepl_main.write_text(no_buffer_stream, "中OK")
+        self.assertEqual(no_buffer_stream.values, ["?OK"])
+        self.assertEqual(no_buffer_stream.flush_calls, 1)
+
+        flush_stream = io.StringIO()
+        decoder = mpyrepl_main.Utf8StreamDecoder()
+        decoder.feed("中".encode("utf-8")[:1])
+        mpyrepl_main.flush_decoder(flush_stream, decoder)
+        self.assertEqual(flush_stream.getvalue(), "\ufffd")
+
+    def test_install_sigint_forwarder_forwards_and_restores_handler(self) -> None:
+        transport = mock.Mock()
+        stderr_stream = io.StringIO()
+        handlers = []
+        previous_handler = object()
+
+        with mock.patch.object(mpyrepl_main.signal, "getsignal", return_value=previous_handler):
+            with mock.patch.object(mpyrepl_main.signal, "signal", side_effect=lambda *_args: handlers.append(_args)):
+                with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                    restore = mpyrepl_main.install_sigint_forwarder(transport)
+                    handler = handlers[-1][1]
+                    handler(None, None)
+                    restore()
+
+        transport.interrupt.assert_called_once_with()
+        self.assertIn("forwarded Ctrl-C", stderr_stream.getvalue())
+        self.assertIs(handlers[-1][1], previous_handler)
+
+        failing_transport = mock.Mock()
+        failing_transport.interrupt.side_effect = RuntimeError("boom")
+        stderr_stream = io.StringIO()
+        handlers = []
+        with mock.patch.object(mpyrepl_main.signal, "getsignal", return_value=previous_handler):
+            with mock.patch.object(mpyrepl_main.signal, "signal", side_effect=lambda *_args: handlers.append(_args)):
+                with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                    mpyrepl_main.install_sigint_forwarder(failing_transport)
+                    handlers[-1][1](None, None)
+
+        self.assertIn("failed to forward Ctrl-C", stderr_stream.getvalue())
 
     def test_request_prompt_exit_exits_running_prompt(self) -> None:
         loop = FakeLoop()
@@ -316,6 +382,18 @@ class MainHelperTests(unittest.TestCase):
         self.assertEqual(transport.enter_raw_repl_calls, [False])
         self.assertEqual(transport.exit_raw_repl_calls, 1)
 
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "execute_once",
+                    return_value=ExecResult(stdout=b"", stderr=b""),
+                ):
+                    self.assertEqual(
+                        mpyrepl_main.run_session_probe(config, "a = 1", "a", 1.0),
+                        0,
+                    )
+
     def test_main_dispatches_exec_and_maps_errors_to_exit_codes(self) -> None:
         args = SimpleNamespace(
             command="exec",
@@ -364,6 +442,53 @@ class MainHelperTests(unittest.TestCase):
                     with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
                         self.assertEqual(mpyrepl_main.main(), 3)
         self.assertIn("runtime boom", stderr_stream.getvalue())
+
+    def test_main_dispatches_other_commands(self) -> None:
+        base_args = dict(
+            port="COM4",
+            baudrate=115200,
+            read_timeout=0.1,
+            operation_timeout=10.0,
+            soft_reset_on_connect=False,
+            follow_timeout=1.5,
+            code="print(1)",
+            first="a = 1",
+            second="a",
+            control_file="control.json",
+            stub_root="stubs",
+            dir_query_timeout=2.0,
+        )
+
+        dispatch_cases = [
+            ("session-probe", "run_session_probe", 21),
+            ("prompt-once", "run_prompt_once", 22),
+            ("soft-reset", "run_soft_reset", 23),
+        ]
+        for command, function_name, status in dispatch_cases:
+            args = SimpleNamespace(command=command, **base_args)
+            with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+                with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                    with mock.patch.object(mpyrepl_main, function_name, return_value=status):
+                        self.assertEqual(mpyrepl_main.main(), status)
+
+        args = SimpleNamespace(command="async-repl", **base_args)
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with mock.patch.object(
+                    mpyrepl_main,
+                    "run_async_repl",
+                    new=mock.Mock(return_value=mock.sentinel.repl_coro),
+                ) as run_async_repl:
+                    with mock.patch.object(mpyrepl_main.asyncio, "run", return_value=24) as asyncio_run:
+                        self.assertEqual(mpyrepl_main.main(), 24)
+        run_async_repl.assert_called_once()
+        asyncio_run.assert_called_once_with(mock.sentinel.repl_coro)
+
+        args = SimpleNamespace(command="unknown", **base_args)
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with self.assertRaisesRegex(ValueError, "unsupported command"):
+                    mpyrepl_main.main()
 
 
 class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -421,10 +546,69 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                 follow_timeout=1.0,
             )
 
+    async def test_execute_source_block_updates_symbols_after_success(self) -> None:
+        gate = FakeGate()
+        state = mpyrepl_main.AsyncReplState()
+        session_symbols = FakeSymbols()
+        completer = FakeCompleter()
+
+        with mock.patch.object(
+            mpyrepl_main,
+            "execute_once",
+            return_value=ExecResult(stdout=b"", stderr=b""),
+        ) as execute_once:
+            await mpyrepl_main.execute_source_block(
+                transport=mock.Mock(),
+                gate=gate,
+                state=state,
+                session_symbols=session_symbols,
+                completer=completer,
+                source="print('中')\n",
+                follow_timeout=1.0,
+            )
+
+        self.assertFalse(state.executing)
+        self.assertEqual(gate.operations, ["execute"])
+        self.assertEqual(session_symbols.recorded, ["print('中')"])
+        self.assertEqual(completer.clear_runtime_cache_calls, 1)
+        execute_once.assert_called_once()
+
+    async def test_execute_source_block_recovers_after_user_interrupt_timeout(self) -> None:
+        gate = FakeGate()
+        state = mpyrepl_main.AsyncReplState()
+        session_symbols = FakeSymbols()
+        completer = FakeCompleter()
+        stderr_stream = io.StringIO()
+
+        with mock.patch.object(
+            mpyrepl_main,
+            "execute_once",
+            side_effect=mpyrepl_main.TransportInterrupted("interrupted"),
+        ):
+            with mock.patch.object(mpyrepl_main, "recover_after_interrupted_execution") as recover:
+                with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+                    await mpyrepl_main.execute_source_block(
+                        transport=mock.Mock(),
+                        gate=gate,
+                        state=state,
+                        session_symbols=session_symbols,
+                        completer=completer,
+                        source="while True:\n    pass",
+                        follow_timeout=None,
+                    )
+
+        self.assertFalse(state.executing)
+        self.assertEqual(gate.operations, ["execute", "interrupt-recover"])
+        self.assertEqual(session_symbols.recorded, [])
+        self.assertEqual(completer.clear_runtime_cache_calls, 0)
+        recover.assert_called_once()
+        self.assertIn("interrupted; recovering raw REPL", stderr_stream.getvalue())
+
     async def test_watch_control_channel_handles_all_supported_commands(self) -> None:
         requests = iter(
             [
                 SimpleNamespace(command="interrupt"),
+                SimpleNamespace(command="exec", source="print(2)", label="main.py"),
                 SimpleNamespace(command="soft-reset"),
                 SimpleNamespace(command="interrupt-reset"),
                 SimpleNamespace(command="exit"),
@@ -461,7 +645,9 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                         )
 
         self.assertEqual(transport.interrupt.call_count, 5)
-        self.assertEqual(request_prompt_exit.call_count, 4)
+        self.assertEqual(request_prompt_exit.call_count, 5)
+        self.assertEqual(state.pending_exec_source, "print(2)")
+        self.assertEqual(state.pending_exec_label, "main.py")
         self.assertEqual(state.pending_action, "exit")
 
     async def test_run_async_repl_executes_code_and_records_symbols(self) -> None:
@@ -510,6 +696,7 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(symbols.recorded, ["print(1)"])
         self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 1)
         execute_once.assert_called_once()
+        self.assertIsNone(execute_once.call_args.args[2])
         transport = FakeContextTransport.instances[-1]
         self.assertEqual(transport.enter_raw_repl_calls, [False])
         self.assertEqual(transport.exit_raw_repl_calls, 1)

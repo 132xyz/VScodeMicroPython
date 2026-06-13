@@ -352,7 +352,8 @@ async def coro():
             control_path = Path(tmp_dir) / "nested" / "control.json"
             channel = FileControlChannel(str(control_path))
             channel.prepare()
-            self.assertFalse(control_path.exists())
+            self.assertTrue(control_path.exists())
+            self.assertIsNone(channel.read_next())
 
             control_path.write_text("{bad json", encoding="utf-8")
             self.assertIsNone(channel.read_next())
@@ -374,6 +375,21 @@ async def coro():
                 encoding="utf-8",
             )
             self.assertEqual(channel.read_next(), ControlRequest(sequence=2, command="exit"))
+            self.assertIsNone(channel.read_next())
+
+            control_path.write_text(
+                json.dumps({"sequence": 3, "command": "exec", "source": "print('中')", "label": "main.py"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                channel.read_next(),
+                ControlRequest(sequence=3, command="exec", source="print('中')", label="main.py"),
+            )
+
+            control_path.write_text(
+                json.dumps({"sequence": 4, "command": "exec", "source": 1}),
+                encoding="utf-8",
+            )
             self.assertIsNone(channel.read_next())
 
             channel.clear()

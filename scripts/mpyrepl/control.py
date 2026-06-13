@@ -16,6 +16,7 @@ SUPPORTED_COMMANDS = {
     "soft-reset",
     "interrupt-reset",
     "exit",
+    "exec",
 }
 
 
@@ -25,11 +26,15 @@ class ControlRequest:
 
     :param sequence: Monotonic sequence number.
     :param command: Requested action.
+    :param source: Python source for exec requests.
+    :param label: Optional human-readable source label.
     :return: None
     """
 
     sequence: int
     command: str
+    source: str = ""
+    label: str = ""
 
 
 class FileControlChannel:
@@ -55,6 +60,10 @@ class FileControlChannel:
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self.clear()
+        self._path.write_text(
+            json.dumps({"sequence": 0, "command": "ready"}),
+            encoding="utf-8",
+        )
 
     def clear(self) -> None:
         """Remove the control file if it exists.
@@ -97,5 +106,22 @@ class FileControlChannel:
             self._last_sequence = sequence
             return None
 
+        source = payload.get("source", "")
+        label = payload.get("label", "")
+        if source is not None and not isinstance(source, str):
+            self._last_sequence = sequence
+            return None
+        if label is not None and not isinstance(label, str):
+            self._last_sequence = sequence
+            return None
+        if command == "exec" and not isinstance(source, str):
+            self._last_sequence = sequence
+            return None
+
         self._last_sequence = sequence
-        return ControlRequest(sequence=sequence, command=command)
+        return ControlRequest(
+            sequence=sequence,
+            command=command,
+            source=source or "",
+            label=label or "",
+        )

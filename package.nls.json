@@ -92,7 +92,7 @@
   "messages.errorCreatingFile": "Error creating file: {0}",
   "messages.useWorkspaceRoot": "Use Workspace Root",
   "configuration.strictConnect.description": "Before opening REPL, perform a strict handshake (reset + quick check + retry) to ensure prompt like Thonny.",
-  "configuration.experimentalCustomRepl.description": "Use the experimental Python mpyrepl client instead of mpremote for the REPL terminal. This currently focuses on UTF-8 handling and execution-time interrupt behavior.",
+  "configuration.experimentalCustomRepl.description": "Use the experimental Python mpyrepl client for the REPL terminal and Run Active File. This currently focuses on UTF-8 handling and execution-time interrupt behavior.",
   "commands.syncFileLocalToBoard.title": "MicroPython WorkBench: Sync File Local → Board",
   "commands.syncBaselineFromView.title": "MicroPython WorkBench: Sync all files (Local → Board) (View)",
   "messages.filesystemStatusDebugCompleted": "Filesystem status debug completed - check console for details",

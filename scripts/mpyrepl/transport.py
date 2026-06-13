@@ -15,10 +15,15 @@ from models import ExecResult, ReplConfig
 
 
 BytesConsumer = Callable[[bytes], None]
+INTERRUPT_FOLLOW_GRACE = 1.5
 
 
 class TransportError(RuntimeError):
     """Raised when the transport cannot complete a protocol step."""
+
+
+class TransportInterrupted(TransportError):
+    """Raised when a user interrupt breaks a long-running follow operation."""
 
 
 def _describe_observed_bytes(data: bytes, limit: int = 120) -> str:
@@ -50,6 +55,7 @@ class SerialReplTransport:
         self._serial: Optional[serial.Serial] = None
         self._in_raw_repl = False
         self._use_raw_paste = True
+        self._interrupt_requested_at: Optional[float] = None
 
     def __enter__(self) -> "SerialReplTransport":
         """Open the transport when used as a context manager.
@@ -105,6 +111,7 @@ class SerialReplTransport:
         overall_timeout: Optional[float] = None,
         consumer: Optional[BytesConsumer] = None,
         include_ending_in_consumer: bool = False,
+        interrupt_timeout: Optional[float] = None,
     ) -> bytes:
         """Read until a byte suffix matches or timeouts expire.
 
@@ -143,6 +150,12 @@ class SerialReplTransport:
             if timeout is not None and now >= last_char_at + timeout:
                 return data
             if overall_timeout is not None and now >= started_at + overall_timeout:
+                return data
+            if (
+                interrupt_timeout is not None
+                and self._interrupt_requested_at is not None
+                and now >= max(self._interrupt_requested_at, last_char_at) + interrupt_timeout
+            ):
                 return data
             time.sleep(0.01)
 
@@ -200,8 +213,12 @@ class SerialReplTransport:
         """
         if self._serial is None:
             return
-        self._serial.write(b"\r\x02")
-        self._in_raw_repl = False
+        try:
+            self._serial.write(b"\r\x02")
+        except (OSError, serial.SerialException):
+            pass
+        finally:
+            self._in_raw_repl = False
 
     def interrupt(self) -> None:
         """Send Ctrl-C to the device.
@@ -209,6 +226,14 @@ class SerialReplTransport:
         :return: None
         """
         self._ensure_serial().write(b"\x03")
+        self._interrupt_requested_at = time.monotonic()
+
+    def clear_interrupt_request(self) -> None:
+        """Clear local interrupt follow state.
+
+        :return: None
+        """
+        self._interrupt_requested_at = None
 
     def soft_reset(self, output_consumer: Optional[BytesConsumer] = None) -> None:
         """Trigger a raw-mode soft reset and wait for the next raw prompt.
@@ -251,7 +276,7 @@ class SerialReplTransport:
     def exec_raw(
         self,
         command: str,
-        timeout: float,
+        timeout: Optional[float],
         stdout_consumer: Optional[BytesConsumer] = None,
         stderr_consumer: Optional[BytesConsumer] = None,
     ) -> ExecResult:
@@ -310,13 +335,13 @@ class SerialReplTransport:
 
     def follow(
         self,
-        timeout: float,
+        timeout: Optional[float],
         stdout_consumer: Optional[BytesConsumer] = None,
         stderr_consumer: Optional[BytesConsumer] = None,
     ) -> ExecResult:
         """Read raw REPL stdout and stderr until both EOF markers arrive.
 
-        :param timeout: Follow timeout in seconds.
+        :param timeout: Inter-byte follow timeout in seconds, or None to wait indefinitely.
         :param stdout_consumer: Optional streaming stdout callback.
         :param stderr_consumer: Optional streaming stderr callback.
         :return: Raw stdout and stderr bytes.
@@ -325,18 +350,25 @@ class SerialReplTransport:
             b"\x04",
             timeout=timeout,
             consumer=stdout_consumer,
+            interrupt_timeout=INTERRUPT_FOLLOW_GRACE,
         )
         if not stdout_data.endswith(b"\x04"):
+            if self._interrupt_requested_at is not None:
+                raise TransportInterrupted("interrupted waiting for stdout EOF")
             raise TransportError("timeout waiting for stdout EOF")
 
         stderr_data = self.read_until(
             b"\x04",
             timeout=timeout,
             consumer=stderr_consumer,
+            interrupt_timeout=INTERRUPT_FOLLOW_GRACE,
         )
         if not stderr_data.endswith(b"\x04"):
+            if self._interrupt_requested_at is not None:
+                raise TransportInterrupted("interrupted waiting for stderr EOF")
             raise TransportError("timeout waiting for stderr EOF")
 
+        self.clear_interrupt_request()
         return ExecResult(stdout=stdout_data[:-1], stderr=stderr_data[:-1])
 
     def raw_paste_write(self, command_bytes: bytes) -> None:

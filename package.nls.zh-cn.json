@@ -92,7 +92,7 @@
   "messages.errorCreatingFile": "创建文件时出错：{0}",
   "messages.useWorkspaceRoot": "使用工作区根目录",
   "configuration.strictConnect.description": "打开 REPL 前执行严格握手（重置 + 快速检查 + 重试）以确保提示符像 Thonny 一样。",
-  "configuration.experimentalCustomRepl.description": "在 REPL 终端中使用实验性的 Python mpyrepl 客户端替代 mpremote。当前重点是 UTF-8 兼容和执行期中断行为。",
+  "configuration.experimentalCustomRepl.description": "在 REPL 终端和运行活动文件中使用实验性的 Python mpyrepl 客户端。当前重点是 UTF-8 兼容和执行期中断行为。",
   "commands.syncFileLocalToBoard.title": "MicroPython 工作台：同步文件 本地 → 开发板",
   "commands.syncBaselineFromView.title": "MicroPython 工作台：同步所有文件（本地 → 开发板）（视图）",
   "messages.filesystemStatusDebugCompleted": "文件系统状态调试已完成 - 检查控制台获取详细信息",

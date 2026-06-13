@@ -4,6 +4,7 @@ jest.mock('node:fs', () => ({
   existsSync: jest.fn(() => false),
   promises: {
     mkdir: jest.fn().mockResolvedValue(undefined),
+    readFile: jest.fn(),
     writeFile: jest.fn().mockResolvedValue(undefined),
     unlink: jest.fn().mockResolvedValue(undefined),
   },
@@ -63,6 +64,12 @@ const mpRemoteManager = require('../src/board/MpRemoteManager') as {
 };
 const fs = require('node:fs') as {
   existsSync: jest.Mock;
+  promises: {
+    mkdir: jest.Mock;
+    readFile: jest.Mock;
+    writeFile: jest.Mock;
+    unlink: jest.Mock;
+  };
 };
 const localization = require('../src/core/localization') as {
   showInfo: jest.Mock;
@@ -136,6 +143,7 @@ describe('board mpremoteCommands coverage', () => {
     mp.toLocalRelative.mockImplementation((devicePath: string) => devicePath.replace(/^\//, ''));
     mp.toDevicePath.mockImplementation((localRel: string, rootPath: string) => (rootPath === '/' ? `/${localRel}` : `${rootPath}/${localRel}`));
     mp.healthCheck.mockResolvedValue({ healthy: true, responseTime: 20 });
+    fs.promises.readFile.mockResolvedValue('');
   });
 
   afterEach(() => {
@@ -214,6 +222,87 @@ describe('board mpremoteCommands coverage', () => {
 
     expect(mpRemoteManager.MpRemoteManager.installPackages).toHaveBeenCalledWith(['pyserial'], 'python3');
     expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
+  });
+
+  test('runActiveFile uses custom repl control exec when experimental repl is enabled', async () => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue: unknown) => {
+        if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
+        if (key === 'microPythonWorkBench.interruptOnConnect') return true;
+        if (key === 'microPythonWorkBench.strictConnect') return true;
+        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
+        if (key === 'microPythonWorkBench.baudRate') return 115200;
+        if (key === 'microPythonWorkBench.debug') return false;
+        return defaultValue;
+      }),
+    }));
+    fs.existsSync.mockReturnValue(true);
+    fs.promises.readFile.mockResolvedValue('print("中文")\n');
+    (vscode.extensions as any).getExtension = jest.fn(() => ({ extensionPath: '/extension' }));
+    (vscode.extensions as any).all = [];
+
+    (vscode.window as any).activeTextEditor = {
+      document: {
+        uri: { fsPath: '/workspace/main.py' },
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    const replTerminal = await commands.getReplTerminal();
+    fs.promises.writeFile.mockClear();
+    (vscode.window.createTerminal as jest.Mock).mockClear();
+
+    await commands.runActiveFile();
+
+    expect(fs.promises.readFile).toHaveBeenCalledWith('/workspace/main.py', 'utf8');
+    expect(vscode.window.createTerminal).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'ESP32 Run File' }),
+    );
+    expect(replTerminal.show).toHaveBeenCalled();
+
+    const writeCalls = fs.promises.writeFile.mock.calls;
+    const writeCall = writeCalls[writeCalls.length - 1];
+    expect(writeCall).toBeDefined();
+    const payload = JSON.parse(writeCall[1]);
+    expect(payload.command).toBe('exec');
+    expect(payload.source).toBe('print("中文")\n');
+    expect(payload.label).toBe('main.py');
+
+    const closePromise = commands.closeReplTerminal();
+    await jest.runOnlyPendingTimersAsync();
+    await closePromise;
+  });
+
+  test('softReset reattaches to existing custom repl control file after extension reload', async () => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue: unknown) => {
+        if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
+        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
+        if (key === 'microPythonWorkBench.debug') return false;
+        return defaultValue;
+      }),
+    }));
+    fs.existsSync.mockReturnValue(true);
+    fs.promises.readFile.mockResolvedValue(JSON.stringify({ sequence: 7, command: 'ready' }));
+
+    const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    try {
+      await commands.softReset();
+
+      expect(childProcess.exec).not.toHaveBeenCalled();
+      const writeCalls = fs.promises.writeFile.mock.calls;
+      const writeCall = writeCalls[writeCalls.length - 1];
+      expect(writeCall).toBeDefined();
+      const payload = JSON.parse(writeCall[1]);
+      expect(payload.sequence).toBe(8);
+      expect(payload.command).toBe('soft-reset');
+      expect(localization.showInfo).toHaveBeenCalledWith('messages.softResetSentViaRepl');
+    } finally {
+      const closePromise = commands.closeReplTerminal();
+      await jest.runOnlyPendingTimersAsync();
+      await closePromise;
+    }
   });
 
   test('runActiveFile covers missing editor, missing port, run terminal open and close', async () => {
