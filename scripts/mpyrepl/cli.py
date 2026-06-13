@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     :return: Configured parser.
     """
     parser = argparse.ArgumentParser(description="Standalone MicroPython raw REPL spike")
-    parser.add_argument("--port", required=True, help="Serial port or URL, for example COM4")
+    parser.add_argument("--port", default="", help="Serial port or URL, for example COM4")
     parser.add_argument("--baudrate", type=int, default=115200, help="Serial baud rate")
     parser.add_argument(
         "--read-timeout",
@@ -96,6 +96,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for device-backed dir() completion queries",
     )
 
+    subparsers.add_parser("ports", help="List host serial ports as JSON")
+
+    fs_parser = subparsers.add_parser("fs", help="Run one filesystem operation as JSON")
+    fs_parser.add_argument("--op", required=True, help="Filesystem operation name")
+    fs_parser.add_argument("--path", default="", help="Device path")
+    fs_parser.add_argument("--src", default="", help="Source device path for rename")
+    fs_parser.add_argument("--dst", default="", help="Destination device path for rename")
+    fs_parser.add_argument("--local-path", default="", help="Local file path for upload/download")
+    fs_parser.add_argument("--source", default="", help="Python source for exec operation")
+    fs_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Do not recursively remove directories",
+    )
+
+    subparsers.add_parser("interrupt", help="Send Ctrl-C to the configured serial port")
     subparsers.add_parser("soft-reset", help="Trigger a raw-mode soft reset")
     return parser
 

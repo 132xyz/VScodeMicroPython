@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import contextlib
 import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +95,10 @@ class FakeContextTransport:
 
     def __init__(self, config) -> None:
         self.config = config
+        self._config = config
+        self.open_calls = 0
+        self.close_calls = 0
+        self.interrupt_calls = 0
         self.enter_raw_repl_calls = []
         self.exit_raw_repl_calls = 0
         self.soft_reset_calls = 0
@@ -103,6 +109,12 @@ class FakeContextTransport:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         return None
+
+    def open(self) -> None:
+        self.open_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
 
     def enter_raw_repl(self, soft_reset: bool) -> None:
         self.enter_raw_repl_calls.append(soft_reset)
@@ -116,6 +128,9 @@ class FakeContextTransport:
             payload = "中OK".encode("utf-8")
             output_consumer(payload[:1])
             output_consumer(payload[1:])
+
+    def interrupt(self) -> None:
+        self.interrupt_calls += 1
 
 
 class FailingEncodingStream:
@@ -358,7 +373,106 @@ class MainHelperTests(unittest.TestCase):
         self.assertEqual(transport.enter_raw_repl_calls, [False])
         self.assertEqual(transport.soft_reset_calls, 1)
         self.assertEqual(transport.exit_raw_repl_calls, 1)
-        self.assertEqual(stdout_stream.getvalue(), "中OK")
+        self.assertEqual(
+            stdout_stream.getvalue(),
+            '中OK{"request_id": "", "ok": true, "data": true}\n',
+        )
+
+    def test_run_interrupt_uses_transport_context_and_emits_json(self) -> None:
+        config = ReplConfig(port="COM4")
+        stdout_stream = io.StringIO()
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                self.assertEqual(mpyrepl_main.run_interrupt(config), 0)
+
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.interrupt_calls, 1)
+        self.assertEqual(json.loads(stdout_stream.getvalue()), {"request_id": "", "ok": True, "data": True})
+
+    def test_recover_after_interrupted_execution_realigns_or_reports_failure(self) -> None:
+        transport = mock.Mock()
+
+        mpyrepl_main.recover_after_interrupted_execution(transport, 1.0)
+
+        transport.clear_interrupt_request.assert_called_once_with()
+        transport.drain_input.assert_called_once_with(max_duration=0.2)
+        transport.enter_raw_repl.assert_called_once_with(soft_reset=False, operation_timeout=1.0)
+
+        broken_transport = mock.Mock()
+        broken_transport.enter_raw_repl.side_effect = RuntimeError("still lost")
+        stderr_stream = io.StringIO()
+
+        with mock.patch.object(mpyrepl_main.sys, "stderr", stderr_stream):
+            mpyrepl_main.recover_after_interrupted_execution(broken_transport, 1.0)
+
+        broken_transport.clear_interrupt_request.assert_called_once_with()
+        broken_transport.drain_input.assert_called_once_with(max_duration=0.2)
+        broken_transport.enter_raw_repl.assert_called_once_with(soft_reset=False, operation_timeout=1.0)
+        self.assertIn("interrupt recovery failed: still lost", stderr_stream.getvalue())
+
+    def test_run_ports_emits_success_and_error_payloads(self) -> None:
+        stdout_stream = io.StringIO()
+
+        with mock.patch.object(mpyrepl_main, "list_serial_ports", return_value=[{"port": "COM7"}]):
+            with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                self.assertEqual(mpyrepl_main.run_ports(), 0)
+
+        self.assertEqual(
+            json.loads(stdout_stream.getvalue()),
+            {"request_id": "", "ok": True, "data": [{"port": "COM7"}]},
+        )
+
+        stdout_stream = io.StringIO()
+        with mock.patch.object(mpyrepl_main, "list_serial_ports", side_effect=RuntimeError("scan failed")):
+            with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                self.assertEqual(mpyrepl_main.run_ports(), 1)
+
+        payload = json.loads(stdout_stream.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "error")
+        self.assertIn("scan failed", payload["error"])
+
+    def test_run_fs_cli_uses_custom_transport_and_maps_errors(self) -> None:
+        config = ReplConfig(port="COM4", soft_reset_on_connect=True)
+        args = SimpleNamespace(
+            op="stat",
+            path="/main.py",
+            src="",
+            dst="",
+            local_path="",
+            source="",
+            no_recursive=False,
+        )
+        stdout_stream = io.StringIO()
+
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "DeviceFsClient") as device_fs_client:
+                with mock.patch.object(mpyrepl_main, "run_fs_operation", return_value={"exists": True}):
+                    with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                        self.assertEqual(mpyrepl_main.run_fs_cli(config, args), 0)
+
+        transport = FakeContextTransport.instances[-1]
+        self.assertEqual(transport.open_calls, 1)
+        self.assertEqual(transport.enter_raw_repl_calls, [True])
+        self.assertEqual(transport.exit_raw_repl_calls, 1)
+        self.assertEqual(transport.close_calls, 1)
+        device_fs_client.assert_called_once_with(transport, timeout=config.operation_timeout)
+        self.assertEqual(json.loads(stdout_stream.getvalue())["data"], {"exists": True})
+
+        for error, expected_code in (
+            (mpyrepl_main.FsOperationError("missing", "missing"), "missing"),
+            (RuntimeError("boom"), "error"),
+        ):
+            stdout_stream = io.StringIO()
+            with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+                with mock.patch.object(mpyrepl_main, "DeviceFsClient"):
+                    with mock.patch.object(mpyrepl_main, "run_fs_operation", side_effect=error):
+                        with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                            self.assertEqual(mpyrepl_main.run_fs_cli(config, args), 1)
+            payload = json.loads(stdout_stream.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["code"], expected_code)
 
     def test_run_session_probe_returns_error_when_any_block_fails(self) -> None:
         config = ReplConfig(port="COM4")
@@ -489,6 +603,22 @@ class MainHelperTests(unittest.TestCase):
             with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
                 with self.assertRaisesRegex(ValueError, "unsupported command"):
                     mpyrepl_main.main()
+
+        for command, function_name, status in (
+            ("interrupt", "run_interrupt", 25),
+            ("fs", "run_fs_cli", 26),
+        ):
+            args = SimpleNamespace(command=command, **base_args)
+            with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+                with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                    with mock.patch.object(mpyrepl_main, function_name, return_value=status):
+                        self.assertEqual(mpyrepl_main.main(), status)
+
+        args = SimpleNamespace(command="ports", port="", baudrate=115200)
+        with mock.patch.object(mpyrepl_main, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_main, "parse_args", return_value=args):
+                with mock.patch.object(mpyrepl_main, "run_ports", return_value=27):
+                    self.assertEqual(mpyrepl_main.main(), 27)
 
 
 class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -642,6 +772,8 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                             state,
                             session=mock.Mock(),
                             transport=transport,
+                            gate=mpyrepl_main.SerialOperationGate(),
+                            fs_client=mock.Mock(),
                         )
 
         self.assertEqual(transport.interrupt.call_count, 5)
@@ -649,6 +781,96 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.pending_exec_source, "print(2)")
         self.assertEqual(state.pending_exec_label, "main.py")
         self.assertEqual(state.pending_action, "exit")
+
+    async def test_handle_fs_control_request_writes_success_busy_and_error_payloads(self) -> None:
+        gate = FakeGate()
+        state = mpyrepl_main.AsyncReplState()
+        fs_client = mock.Mock()
+        fs_client.stat.return_value = {"exists": True}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            response_file = str(Path(tmp_dir) / "nested" / "response.json")
+            request = SimpleNamespace(
+                sequence=3,
+                request_id="req-3",
+                response_file=response_file,
+                payload={"op": "stat", "path": "/main.py"},
+            )
+
+            await mpyrepl_main.handle_fs_control_request(request, gate, state, fs_client)
+            payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["request_id"], "req-3")
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["data"], {"exists": True})
+            self.assertEqual(gate.operations, ["fs-stat"])
+
+            state.executing = True
+            await mpyrepl_main.handle_fs_control_request(request, gate, state, fs_client)
+            busy_payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+            self.assertFalse(busy_payload["ok"])
+            self.assertEqual(busy_payload["code"], "busy")
+            state.executing = False
+
+            with mock.patch.object(
+                mpyrepl_main,
+                "run_fs_operation",
+                side_effect=mpyrepl_main.FsOperationError("no file", "missing"),
+            ):
+                await mpyrepl_main.handle_fs_control_request(request, FakeGate(), state, fs_client)
+            fs_error_payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+            self.assertFalse(fs_error_payload["ok"])
+            self.assertEqual(fs_error_payload["code"], "missing")
+
+            with mock.patch.object(
+                mpyrepl_main,
+                "run_fs_operation",
+                side_effect=RuntimeError("broken"),
+            ):
+                await mpyrepl_main.handle_fs_control_request(request, FakeGate(), state, fs_client)
+            error_payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+            self.assertFalse(error_payload["ok"])
+            self.assertEqual(error_payload["code"], "error")
+
+    async def test_watch_control_channel_handles_fs_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            response_file = str(Path(tmp_dir) / "fs-response.json")
+            requests = iter(
+                [
+                    SimpleNamespace(
+                        command="fs",
+                        sequence=7,
+                        request_id="req-7",
+                        response_file=response_file,
+                        payload={"op": "stat", "path": "/boot.py"},
+                    ),
+                ]
+            )
+
+            class FakeChannel:
+                def read_next(self):
+                    try:
+                        return next(requests)
+                    except StopIteration as exc:
+                        raise RuntimeError("stop") from exc
+
+            fs_client = mock.Mock()
+            fs_client.stat.return_value = {"exists": False}
+
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                await mpyrepl_main.watch_control_channel(
+                    FakeChannel(),
+                    mpyrepl_main.AsyncReplState(),
+                    session=mock.Mock(),
+                    transport=mock.Mock(),
+                    gate=FakeGate(),
+                    fs_client=fs_client,
+                )
+
+            payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["request_id"], "req-7")
+            self.assertEqual(payload["data"], {"exists": False})
 
     async def test_run_async_repl_executes_code_and_records_symbols(self) -> None:
         config = ReplConfig(port="COM4")

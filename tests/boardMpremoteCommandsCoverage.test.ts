@@ -22,6 +22,10 @@ jest.mock('../src/board/mpremote', () => ({
   toDevicePath: jest.fn(),
   healthCheck: jest.fn(),
 }));
+jest.mock('../src/board/mpyClient', () => ({
+  interrupt: jest.fn(),
+  softReset: jest.fn(),
+}));
 jest.mock('../src/board/MpRemoteManager', () => ({
   MpRemoteManager: {
     isModuleAvailable: jest.fn(),
@@ -71,6 +75,10 @@ const fs = require('node:fs') as {
     unlink: jest.Mock;
   };
 };
+const mpyClient = require('../src/board/mpyClient') as {
+  interrupt: jest.Mock;
+  softReset: jest.Mock;
+};
 const localization = require('../src/core/localization') as {
   showInfo: jest.Mock;
   showError: jest.Mock;
@@ -103,7 +111,8 @@ describe('board mpremoteCommands coverage', () => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
         if (key === 'microPythonWorkBench.interruptOnConnect') return true;
         if (key === 'microPythonWorkBench.strictConnect') return true;
-        if (key === 'microPythonWorkBench.experimentalCustomRepl') return false;
+        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
+        if (key === 'microPythonWorkBench.baudRate') return 115200;
         if (key === 'microPythonWorkBench.debug') return false;
         return defaultValue;
       }),
@@ -111,7 +120,7 @@ describe('board mpremoteCommands coverage', () => {
 
     (vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: '/workspace' } }];
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => globalConfig);
-    (vscode.extensions as any).getExtension = jest.fn(() => undefined);
+    (vscode.extensions as any).getExtension = jest.fn(() => ({ extensionPath: '/extension' }));
     (vscode.extensions as any).all = [];
 
     const terminals: MockTerminal[] = [];
@@ -134,7 +143,9 @@ describe('board mpremoteCommands coverage', () => {
     mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValue(true);
     mpRemoteManager.MpRemoteManager.installPackages.mockResolvedValue(undefined);
     mpRemoteManager.MpRemoteManager.detectPythonPath.mockResolvedValue('python3');
-    fs.existsSync.mockImplementation((candidate: string) => !candidate.includes('scripts/mpyrepl/__main__.py'));
+    mpyClient.interrupt.mockResolvedValue(undefined);
+    mpyClient.softReset.mockResolvedValue(undefined);
+    fs.existsSync.mockReturnValue(true);
     childProcess.exec.mockImplementation((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       callback(null, '', '');
     });
@@ -156,9 +167,8 @@ describe('board mpremoteCommands coverage', () => {
 
     await expect(commands.checkMpremoteAvailability()).resolves.toBeUndefined();
 
-    mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValueOnce(false);
-    await expect(commands.checkMpremoteAvailability()).rejects.toThrow('Python interpreter or mpremote not available');
-    expect(vscode.window.showErrorMessage).toHaveBeenCalled();
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValueOnce(false);
+    await expect(commands.checkMpremoteAvailability()).rejects.toThrow('pyserial');
 
     expect(commands.toLocalRelative('/lib/utils.py', '/')).toBe('lib/utils.py');
     expect(commands.toDevicePath('main.py', '/')).toBe('/main.py');
@@ -179,7 +189,7 @@ describe('board mpremoteCommands coverage', () => {
 
     const replTerminal = await commands.getReplTerminal();
     expect(vscode.window.createTerminal).toHaveBeenCalledWith(expect.objectContaining({ name: 'ESP32 REPL' }));
-    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('connect COM4'), true);
+    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
     expect(commands.isReplOpen()).toBe(true);
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', true);
 
@@ -305,7 +315,7 @@ describe('board mpremoteCommands coverage', () => {
     }
   });
 
-  test('runActiveFile covers missing editor, missing port, run terminal open and close', async () => {
+  test('runActiveFile covers missing editor, missing port, and custom repl execution', async () => {
     jest.useRealTimers();
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
 
@@ -336,56 +346,56 @@ describe('board mpremoteCommands coverage', () => {
           if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
           if (key === 'microPythonWorkBench.interruptOnConnect') return true;
           if (key === 'microPythonWorkBench.strictConnect') return true;
-          if (key === 'microPythonWorkBench.experimentalCustomRepl') return false;
+          if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
+          if (key === 'microPythonWorkBench.baudRate') return 115200;
           if (key === 'microPythonWorkBench.debug') return false;
           return defaultValue;
         }),
       }));
+      fs.existsSync.mockReturnValue(true);
+      fs.promises.readFile.mockImplementation(async (candidate: string) => (
+        String(candidate).endsWith('.py')
+          ? 'print("run")\n'
+          : JSON.stringify({ sequence: 1, command: 'ready' })
+      ));
 
       await commands.runActiveFile();
       const runTerminal = ((vscode.window.terminals as unknown) as MockTerminal[]).find(t => t.name === 'ESP32 Run File');
-      expect(runTerminal).toBeDefined();
-      if (process.platform === 'win32') {
-        expect(runTerminal?.sendText).toHaveBeenCalledWith(expect.stringContaining('OutputEncoding'), true);
-      }
-      expect(runTerminal?.sendText).toHaveBeenCalledWith(expect.stringContaining('connect COM4 run /workspace/main.py'), true);
-
-      await commands.closeRunTerminal();
-      expect(runTerminal?.dispose).toHaveBeenCalled();
+      expect(runTerminal).toBeUndefined();
+      const writeCall = fs.promises.writeFile.mock.calls.find(call => String(call[1]).includes('"command":"exec"'));
+      expect(writeCall).toBeDefined();
+      await commands.closeReplTerminal();
     } finally {
       jest.useFakeTimers();
     }
   }, 10000);
 
-  test('softReset falls back to shell command when repl is closed', async () => {
+  test('softReset uses helper when repl is closed', async () => {
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    fs.existsSync.mockReturnValue(false);
 
     const resetPromise = commands.softReset();
     await jest.runOnlyPendingTimersAsync();
     await resetPromise;
 
-    expect(childProcess.exec).toHaveBeenCalledWith(expect.stringContaining('connect COM4 reset'), expect.any(Function));
-    expect(localization.showInfo).toHaveBeenCalledWith('messages.softResetSentViaMpremoteConnect');
+    expect(mpyClient.softReset).toHaveBeenCalledWith('COM4');
+    expect(childProcess.exec).not.toHaveBeenCalled();
+    expect(localization.showInfo).toHaveBeenCalledWith('messages.softResetSentViaRepl');
   });
 
-  test('robustInterrupt falls back to mpremote when direct echo fails', async () => {
+  test('robustInterrupt uses helper when no repl is open', async () => {
     jest.useRealTimers();
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
 
     try {
       mp.healthCheck.mockResolvedValueOnce({ healthy: false, responseTime: 999 });
-      childProcess.exec.mockImplementationOnce((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
-        callback(new Error('serial failed'), '', 'serial failed');
-      });
 
       await commands.robustInterrupt('COM4');
 
       expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('Device at COM4 may not be responding properly.');
-      expect(mpRemoteManager.MpRemoteManager.run).toHaveBeenCalledWith(
-        ['connect', 'COM4', 'exec', '--no-follow', "import sys; sys.stdin.write(b'\\x03\\x03')"],
-        { retryOnFailure: true }
-      );
-      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Board: Interrupt sent via mpremote to COM4');
+      expect(mpyClient.interrupt).toHaveBeenCalledWith('COM4');
+      expect(mpRemoteManager.MpRemoteManager.run).not.toHaveBeenCalled();
+      expect(localization.showInfo).toHaveBeenCalledWith('messages.interruptSentViaRepl');
     } finally {
       jest.useFakeTimers();
     }

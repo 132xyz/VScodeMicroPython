@@ -181,7 +181,7 @@ export class BoardOperations {
       const matcher2 = await createIgnoreMatcher(localRootDir);
       const man = await buildManifest(localRootDir, matcher2);
 
-      // Upload all files with progress using single mpremote fs cp command
+      // Upload all files with progress using the board transport helper
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Uploading all files to board...",

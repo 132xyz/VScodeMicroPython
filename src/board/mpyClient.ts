@@ -1,0 +1,243 @@
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as vscode from "vscode";
+import { MpRemoteManager } from "./MpRemoteManager";
+import {
+  clearCustomReplControlFile,
+  customReplControlFileExists,
+  requestCustomReplRpc,
+} from "./customReplControl";
+
+type HelperResponse<T = unknown> = {
+  ok: boolean;
+  data?: T;
+  error?: string;
+  code?: string;
+};
+
+export type DeviceEntry = {
+  name: string;
+  is_dir?: boolean;
+  isDir?: boolean;
+  size?: number;
+  mtime?: number;
+  mode?: number;
+};
+
+export type DeviceStat = {
+  exists?: boolean;
+  mode: number;
+  size: number;
+  mtime?: number;
+  is_dir?: boolean;
+  isDir?: boolean;
+  is_readonly?: boolean;
+  isReadonly?: boolean;
+};
+
+export type TreeStat = {
+  path: string;
+  is_dir?: boolean;
+  isDir?: boolean;
+  size: number;
+  mtime: number;
+  mode?: number;
+};
+
+function splitCommand(cmd: string): { exe: string; args: string[] } {
+  if (!cmd.includes('"') && (cmd.includes("\\") || cmd.includes("/")) && cmd.includes(" ")) {
+    return { exe: cmd, args: [] };
+  }
+
+  const parts: string[] = [];
+  const re = /[^\s"]+|"([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(cmd)) !== null) {
+    parts.push(match[1] !== undefined ? match[1] : match[0]);
+  }
+  if (parts.length === 0) return { exe: cmd, args: [] };
+  return { exe: parts[0], args: parts.slice(1) };
+}
+
+function getExtensionRoot(): string | null {
+  try {
+    const ext = vscode.extensions.getExtension("WebForks.mpy")
+      || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith(".mpy"))
+      || null;
+    if (ext?.extensionPath) return ext.extensionPath;
+  } catch {
+    // ignore
+  }
+
+  try {
+    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!ws) return null;
+    const candidate = path.join(ws, "VScodeMicroPython");
+    return fs.existsSync(path.join(candidate, "scripts", "mpyrepl", "__main__.py")) ? candidate : ws;
+  } catch {
+    return null;
+  }
+}
+
+function getMpyReplScriptPath(): string {
+  const extensionRoot = getExtensionRoot();
+  if (!extensionRoot) throw new Error("Extension root not found");
+  const candidate = path.join(extensionRoot, "scripts", "mpyrepl", "__main__.py");
+  if (!fs.existsSync(candidate)) {
+    throw new Error(`mpyrepl helper not found: ${candidate}`);
+  }
+  return candidate;
+}
+
+function getBaudRate(): number {
+  return vscode.workspace.getConfiguration("microPythonWorkBench").get<number>("baudRate", 115200);
+}
+
+async function getPythonCommand(): Promise<{ exe: string; args: string[] }> {
+  const pythonPath = await MpRemoteManager.detectPythonPath();
+  if (!pythonPath) throw new Error("Python interpreter not found");
+  return splitCommand(pythonPath);
+}
+
+function parseHelperJson<T>(stdout: string): T {
+  const lines = String(stdout || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const jsonLine = [...lines].reverse().find(line => line.startsWith("{") && line.endsWith("}"));
+  if (!jsonLine) {
+    throw new Error(`mpyrepl helper did not return JSON: ${stdout}`);
+  }
+  const parsed = JSON.parse(jsonLine) as HelperResponse<T>;
+  if (!parsed.ok) {
+    const error = new Error(parsed.error || "mpyrepl helper failed") as Error & { code?: string };
+    error.code = parsed.code;
+    throw error;
+  }
+  return parsed.data as T;
+}
+
+async function runHelper<T>(args: string[], timeoutMs = 30000): Promise<T> {
+  const python = await getPythonCommand();
+  const script = getMpyReplScriptPath();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+  };
+
+  return await new Promise<T>((resolve, reject) => {
+    execFile(
+      python.exe,
+      python.args.concat([script]).concat(args),
+      { env, timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(String(stderr || error.message || error)));
+          return;
+        }
+        try {
+          resolve(parseHelperJson<T>(String(stdout || "")));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+}
+
+async function runFsHelper<T>(
+  device: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<T> {
+  const op = String(payload.op || "");
+  const args = [
+    "--port", device,
+    "--baudrate", String(getBaudRate()),
+    "fs",
+    "--op", op,
+  ];
+
+  const append = (flag: string, value: unknown) => {
+    if (typeof value === "string" && value.length > 0) args.push(flag, value);
+  };
+  append("--path", payload.path);
+  append("--src", payload.src);
+  append("--dst", payload.dst);
+  append("--local-path", payload.local_path);
+  append("--source", payload.source);
+  if (payload.recursive === false) args.push("--no-recursive");
+
+  return runHelper<T>(args, timeoutMs);
+}
+
+async function runFs<T>(
+  device: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 30000,
+): Promise<T> {
+  if (customReplControlFileExists(device)) {
+    try {
+      return await requestCustomReplRpc<T>(device, "fs", payload, timeoutMs);
+    } catch (error: any) {
+      if (error?.code === "busy") throw error;
+      await clearCustomReplControlFile(device);
+    }
+  }
+  return runFsHelper<T>(device, payload, timeoutMs);
+}
+
+export async function listSerialPorts(): Promise<{ port: string; name: string }[]> {
+  return runHelper<{ port: string; name: string }[]>(["ports"], 10000);
+}
+
+export async function stat(device: string, devicePath: string): Promise<DeviceStat | null> {
+  return runFs<DeviceStat | null>(device, { op: "stat", path: devicePath });
+}
+
+export async function listdir(device: string, devicePath: string): Promise<DeviceEntry[]> {
+  return runFs<DeviceEntry[]>(device, { op: "listdir", path: devicePath });
+}
+
+export async function tree(device: string, root: string): Promise<TreeStat[]> {
+  return runFs<TreeStat[]>(device, { op: "tree", path: root }, 60000);
+}
+
+export async function mkdir(device: string, devicePath: string): Promise<void> {
+  await runFs(device, { op: "mkdir", path: devicePath, parents: true });
+}
+
+export async function remove(device: string, devicePath: string, recursive = true): Promise<void> {
+  await runFs(device, { op: "remove", path: devicePath, recursive }, 60000);
+}
+
+export async function rename(device: string, src: string, dst: string): Promise<void> {
+  await runFs(device, { op: "rename", src, dst });
+}
+
+export async function writeFile(device: string, localPath: string, devicePath: string): Promise<void> {
+  await runFs(device, { op: "write_file", local_path: localPath, path: devicePath }, 120000);
+}
+
+export async function readFile(device: string, devicePath: string, localPath: string): Promise<void> {
+  await runFs(device, { op: "read_file", path: devicePath, local_path: localPath }, 120000);
+}
+
+export async function exec(device: string, source: string): Promise<{ stdout: string; stderr: string }> {
+  return runFs<{ stdout: string; stderr: string }>(device, { op: "exec", source }, 30000);
+}
+
+export async function softReset(device: string): Promise<void> {
+  await runHelper([
+    "--port", device,
+    "--baudrate", String(getBaudRate()),
+    "soft-reset",
+  ], 30000);
+}
+
+export async function interrupt(device: string): Promise<void> {
+  await runHelper([
+    "--port", device,
+    "--baudrate", String(getBaudRate()),
+    "interrupt",
+  ], 10000);
+}

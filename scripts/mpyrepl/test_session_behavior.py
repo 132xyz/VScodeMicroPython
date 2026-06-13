@@ -34,6 +34,7 @@ from session import (
     PROMPT_SOFT_RESET,
     _continuation_after_newline,
     _dedent_backspace_count,
+    _safe_exit,
     _should_accept_on_enter,
     _should_insert_indent,
     build_prompt_session,
@@ -176,6 +177,22 @@ class SessionBehaviorTests(unittest.TestCase):
 
             pipe.send_bytes(b"\x18")
             self.assertEqual(session.prompt(">>> "), PROMPT_EXIT)
+
+    def test_safe_exit_ignores_duplicate_prompt_exit(self) -> None:
+        class _App:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def exit(self, result: str) -> None:
+                self.calls += 1
+                if self.calls > 1:
+                    raise Exception("Return value already set. Application.exit() failed.")
+
+        app = _App()
+        _safe_exit(app, PROMPT_EXIT)
+        _safe_exit(app, PROMPT_EXIT)
+
+        self.assertEqual(app.calls, 2)
 
     def test_tab_indent_and_backspace_dedent_modify_buffer(self) -> None:
         with create_pipe_input() as pipe:

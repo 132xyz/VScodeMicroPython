@@ -13,7 +13,7 @@ export class PythonInterpreterManager {
     private static cachedInterpreter: string | null = null;
     private static lastCacheTime = 0;
     private static readonly CACHE_DURATION = 30000; // 30 seconds
-    private static lastMpremoteNotification = 0;
+    private static lastDependencyNotification = 0;
     private static readonly NOTIFICATION_COOLDOWN = 300000; // 5 minutes
 
     /**
@@ -38,9 +38,8 @@ export class PythonInterpreterManager {
                 if (validation.valid) {
                     this.cacheResult(pythonPath);
                     return pythonPath;
-                } else if (validation.missingMpremote) {
-                    // Show mpremote installation notification
-                    this.showMpremoteInstallationNotification(pythonPath);
+                } else if (validation.missingPyserial) {
+                    this.showPyserialInstallationNotification(pythonPath);
                 }
             }
         } catch (error) {
@@ -189,37 +188,36 @@ export class PythonInterpreterManager {
     /**
      * Validate that a Python path is valid and has the required modules
      */
-    private static async validatePythonPath(pythonPath: string): Promise<{ valid: boolean; missingMpremote: boolean; error?: string }> {
+    private static async validatePythonPath(pythonPath: string): Promise<{ valid: boolean; missingPyserial: boolean; error?: string }> {
         try {
             // Test if Python executable exists and can run
             await execFileAsync(pythonPath, ['-c', 'import sys; print(sys.version)'], { timeout: 5000 });
-            // Check whether mpremote module is available in this Python
+            // Check whether pyserial is available in this Python
             try {
-                const available = await MpRemoteManager.isModuleAvailable(pythonPath);
-                return { valid: true, missingMpremote: !available };
+                const available = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
+                return { valid: true, missingPyserial: !available };
             } catch (e: any) {
-                // If the module check itself failed, treat Python as valid but report mpremote missing
-                return { valid: true, missingMpremote: true };
+                return { valid: true, missingPyserial: true };
             }
         } catch (error: any) {
             const errorMessage = error.message || String(error);
             // Other Python-related errors
-            return { valid: false, missingMpremote: false, error: errorMessage };
+            return { valid: false, missingPyserial: false, error: errorMessage };
         }
     }
 
     /**
-     * Show notification for missing mpremote
+     * Show notification for missing pyserial
      */
-    private static showMpremoteInstallationNotification(_pythonPath: string): void {
-        // Prompt the user to install mpremote into the selected Python environment.
+    private static showPyserialInstallationNotification(_pythonPath: string): void {
+        // Prompt the user to install pyserial into the selected Python environment.
         // This helper is intentionally synchronous from the caller's perspective;
         // use it sparingly and rely on cooldown to avoid repeated prompts.
         const lang = vscode.env.language || '';
         const zh = lang.startsWith('zh');
         const msg = zh
-            ? `未在所选 Python 环境中检测到 mpremote。是否安装到该环境？` 
-            : `mpremote is not installed in the selected Python environment. Install into this environment?`;
+            ? `未在所选 Python 环境中检测到 pyserial。是否安装到该环境？`
+            : `pyserial is not installed in the selected Python environment. Install into this environment?`;
         // Show a non-blocking prompt
         vscode.window.showInformationMessage(msg, zh ? '安装' : 'Install', zh ? '稍后' : 'Later').then(async choice => {
             if (!choice) return;
@@ -227,18 +225,18 @@ export class PythonInterpreterManager {
                 try {
                     const pythonPath = await this.getPythonPath();
                     if (!pythonPath) {
-                        vscode.window.showErrorMessage(zh ? '未找到 Python 可执行文件，无法安装 mpremote。' : 'No Python executable found to install mpremote.');
+                        vscode.window.showErrorMessage(zh ? '未找到 Python 可执行文件，无法安装 pyserial。' : 'No Python executable found to install pyserial.');
                         return;
                     }
-                    await MpRemoteManager.install(pythonPath);
-                    const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+                    await MpRemoteManager.installPackages(['pyserial'], pythonPath);
+                    const ok = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
                     if (!ok) {
-                        vscode.window.showErrorMessage(zh ? `安装完成但验证失败，请手动运行：${pythonPath} -m pip install --upgrade mpremote` : `Installation finished but verification failed. Please run: ${pythonPath} -m pip install --upgrade mpremote`);
+                        vscode.window.showErrorMessage(zh ? `安装完成但验证失败，请手动运行：${pythonPath} -m pip install --upgrade pyserial` : `Installation finished but verification failed. Please run: ${pythonPath} -m pip install --upgrade pyserial`);
                     } else {
-                        vscode.window.showInformationMessage(zh ? 'mpremote 已成功安装。' : 'mpremote installed successfully.');
+                        vscode.window.showInformationMessage(zh ? 'pyserial 已成功安装。' : 'pyserial installed successfully.');
                     }
                 } catch (e: any) {
-                    vscode.window.showErrorMessage(zh ? `安装失败：${e?.message || String(e)}。请手动运行：python -m pip install --upgrade mpremote` : `Install failed: ${e?.message || String(e)}. Run: python -m pip install --upgrade mpremote`);
+                    vscode.window.showErrorMessage(zh ? `安装失败：${e?.message || String(e)}。请手动运行：python -m pip install --upgrade pyserial` : `Install failed: ${e?.message || String(e)}. Run: python -m pip install --upgrade pyserial`);
                 }
             }
         });
@@ -261,7 +259,7 @@ export class PythonInterpreterManager {
     }
 
     /**
-     * Check mpremote availability and show notification if missing
+     * Check pyserial availability and show notification if missing
      * This can be called on extension activation to proactively notify users
      */
     static async checkMpremoteAvailability(): Promise<boolean> {
@@ -269,14 +267,13 @@ export class PythonInterpreterManager {
             const pythonPath = await this.getPythonPath();
             const validation = await this.validatePythonPath(pythonPath);
             if (!validation.valid) return false;
-            // Check whether mpremote module is available in the detected Python
-            const available = await MpRemoteManager.isModuleAvailable(pythonPath);
+            const available = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
             if (!available) {
                 // Throttle notifications
                 const now = Date.now();
-                if ((now - this.lastMpremoteNotification) > this.NOTIFICATION_COOLDOWN) {
-                    this.lastMpremoteNotification = now;
-                    this.showMpremoteInstallationNotification(pythonPath);
+                if ((now - this.lastDependencyNotification) > this.NOTIFICATION_COOLDOWN) {
+                    this.lastDependencyNotification = now;
+                    this.showPyserialInstallationNotification(pythonPath);
                 }
             }
             return available;
@@ -327,7 +324,7 @@ export function clearPythonCache(): void {
 }
 
 /**
- * Check mpremote availability and show notification if missing
+ * Check pyserial availability and show notification if missing
  */
 export async function checkMpremoteAvailability(): Promise<boolean> {
     return PythonInterpreterManager.checkMpremoteAvailability();

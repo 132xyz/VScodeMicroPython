@@ -95,6 +95,19 @@ class _LegacyWaitingSerial:
         return self._pending
 
 
+class _ContinuousSerial:
+    def __init__(self) -> None:
+        self.read_calls = 0
+
+    @property
+    def in_waiting(self) -> int:
+        return 1
+
+    def read(self, size: int) -> bytes:
+        self.read_calls += 1
+        return b"x"
+
+
 class TransportBehaviorTests(unittest.TestCase):
     """Cover transport diagnostics for raw REPL entry failures.
 
@@ -409,6 +422,12 @@ class TransportBehaviorTests(unittest.TestCase):
         serial_stub.read_chunks = [b"12", b"34"]
         transport.drain_input()
         self.assertEqual(serial_stub.read_chunks, [])
+
+        continuous_serial = _ContinuousSerial()
+        transport._serial = continuous_serial
+        with mock.patch("transport.time.monotonic", side_effect=[0.0, 0.1, 0.3]):
+            transport.drain_input(max_duration=0.2)
+        self.assertEqual(continuous_serial.read_calls, 2)
 
     def test_interrupt_exit_and_describe_bytes(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))

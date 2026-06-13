@@ -20,6 +20,20 @@ PROMPT_SOFT_RESET = "__mpyrepl_soft_reset__"
 PROMPT_EXIT = "__mpyrepl_exit__"
 
 
+def _safe_exit(app, result: str) -> None:
+    """Exit a prompt_toolkit app, ignoring duplicate-exit races.
+
+    :param app: Prompt application.
+    :param result: Prompt result.
+    :return: None
+    """
+    try:
+        app.exit(result=result)
+    except Exception as exc:
+        if "Return value already set" not in str(exc):
+            raise
+
+
 def _should_insert_indent(document: Document) -> bool:
     """Return whether Tab should insert spaces instead of requesting completion.
 
@@ -87,15 +101,15 @@ def build_prompt_session(completer=None, history=None, input=None, output=None) 
 
     @bindings.add("c-d")
     def _request_soft_reset(event) -> None:
-        event.app.exit(result=PROMPT_SOFT_RESET)
+        _safe_exit(event.app, PROMPT_SOFT_RESET)
 
     @bindings.add("c-]")
     def _request_exit(event) -> None:
-        event.app.exit(result=PROMPT_EXIT)
+        _safe_exit(event.app, PROMPT_EXIT)
 
     @bindings.add("c-x")
     def _request_exit_via_ctrl_x(event) -> None:
-        event.app.exit(result=PROMPT_EXIT)
+        _safe_exit(event.app, PROMPT_EXIT)
 
     @bindings.add("up")
     def _handle_up(event) -> None:
@@ -120,7 +134,7 @@ def build_prompt_session(completer=None, history=None, input=None, output=None) 
             if accepted_text != buffer.text:
                 buffer.document = Document(accepted_text, cursor_position=len(accepted_text))
             buffer.append_to_history()
-            event.app.exit(result=accepted_text)
+            _safe_exit(event.app, accepted_text)
             return
 
         buffer.insert_text("\n" + _continuation_after_newline(document))

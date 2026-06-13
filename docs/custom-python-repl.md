@@ -4,9 +4,9 @@
 
 ## Overview
 
-MicroPython Workbench can replace the default `mpremote` REPL terminal with an experimental Python client located under `scripts/mpyrepl`.
+MicroPython Workbench uses the bundled Python client under `scripts/mpyrepl` for its default board transport.
 
-This path exists to improve the parts that are hard to solve with a plain terminal running `mpremote connect`, especially:
+This path exists to avoid the limitations of a plain terminal running `mpremote connect`, especially:
 
 - host-side multiline editing
 - richer completion behavior
@@ -15,29 +15,19 @@ This path exists to improve the parts that are hard to solve with a plain termin
 
 ## Scope
 
-Enabling `microPythonWorkBench.experimentalCustomRepl` changes the REPL terminal and routes `Run Active File` through the same custom REPL session.
-
-These features still use `mpremote`:
-
-- board file browsing
-- board file sync
-- most non-REPL board operations
-
-That distinction matters when troubleshooting: the custom REPL can improve interactive terminal and active-file execution behavior without replacing the rest of the board workflow stack.
+`microPythonWorkBench.experimentalCustomRepl` is enabled by default. REPL, Run Active File, interrupt/reset, port listing, board file browsing, and sync use the `mpyrepl` helper path.
 
 ## Requirements
 
 - Select a fixed serial port first. The REPL does not start with `auto`.
 - Use Python 3.9 or newer for the `mpyrepl` script.
 - The selected interpreter must have `pyserial` available.
-- In normal extension usage you should still install `mpremote`, because sync, browsing, and other non-REPL board operations still depend on it.
-
-If `pyserial` is missing, the extension now prompts to install it into the selected Python environment before launching the custom REPL.
+If `pyserial` is missing, the extension prompts to install it into the selected Python environment before starting board operations.
 
 Recommended installation for the shared Python environment:
 
 ```bash
-python -m pip install --user mpremote
+python -m pip install --user pyserial
 ```
 
 ## How to enable it in VS Code
@@ -65,7 +55,7 @@ Then:
 
 1. Run `MicroPython WorkBench: Select Serial Port`
 2. Run `MicroPython WorkBench: Open REPL`
-3. The extension will launch the bundled `scripts/mpyrepl/__main__.py` client instead of `mpremote connect`
+3. The extension will launch the bundled `scripts/mpyrepl/__main__.py` client
 
 ## What it adds
 
@@ -109,8 +99,9 @@ Supported control commands are:
 - `interrupt-reset`
 - `exit`
 - `exec`
+- `fs`
 
-This is how extension commands such as interrupt, stop, close, and Run Active File can affect the still-running REPL process without killing the whole terminal first.
+This is how extension commands such as interrupt, stop, close, Run Active File, and file operations can affect the still-running REPL process without killing the whole terminal first.
 
 ### 4. Unicode handling
 
@@ -159,10 +150,8 @@ Useful options include:
 
 ## Current limitations
 
-- This is still an experimental path.
-- It does not replace the full extension transport stack.
 - Runtime dotted completion depends on live device state and may time out.
-- A raw REPL session still owns the serial port, so sync and file operations must suspend it first.
+- A raw REPL session owns the serial port; file operations are routed through its control channel when it is active.
 - If the chosen interpreter is older than Python 3.9 or lacks `pyserial`, startup will fail.
 
 ## Troubleshooting

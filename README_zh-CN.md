@@ -4,17 +4,17 @@
 
 MicroPython 工作台是一个面向 ESP32 类开发板及类似设备的 VS Code 扩展，聚合了开发板文件浏览、双向差异同步、运行与 REPL 终端，以及工作区级别的 MicroPython stub 管理能力。
 
-当前开发板文件相关操作仍然通过 `mpremote` 完成。REPL 终端则可以按需切换到内置的实验性 Python 客户端 `scripts/mpyrepl`，以获得更强的主机侧编辑、补全、Unicode 处理能力，并在同一个 REPL 会话中执行活动文件。
+开发板通信现在通过内置 Python 客户端 `scripts/mpyrepl` 完成, 覆盖 REPL, 运行活动文件, 串口检测和开发板文件操作。扩展主工作流不再需要 `mpremote`。
 
 ## 主要功能
 
 - 连接开发板后的远程文件浏览、下载、上传、重命名、删除
 - 基于差异比较的本地 ↔ 开发板双向同步
 - 当前活动文件同步，以及可选的保存时自动同步
-- 集成 REPL 终端和独立的“运行活动文件”终端
+- 集成 REPL 终端, 并在同一会话内运行活动文件
 - 开发板操作命令：中断、软重置、重连等
 - 基于 stub 的 MicroPython 代码补全、安装、自动选择与 Pylance 集成
-- 可选的实验性自定义 Python REPL，支持多行编辑、补全和控制通道中断/重置
+- 内置 Python REPL 客户端, 支持多行编辑、补全、文件传输和控制通道中断/重置
 
 **连接开发板并运行文件**
 ![运行文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)
@@ -32,10 +32,10 @@ npm run compile
 npm run package
 ```
 
-2. 在扩展将要使用的 Python 环境中安装 `mpremote`：
+2. 在扩展将要使用的 Python 环境中安装 `pyserial`：
 
 ```bash
-python -m pip install --user mpremote
+python -m pip install --user pyserial
 ```
 
 3. 打开工作区后，执行 `MicroPython 工作台：选择串口`，再通过文件视图或命令面板执行同步、浏览和 REPL 操作。
@@ -43,13 +43,12 @@ python -m pip install --user mpremote
 4. 可选但推荐：
    - 安装 Python 与 Pylance 扩展，以获得更好的补全体验。
    - 开启 `microPythonWorkBench.enableCodeCompletion`，为当前工作区启用 MicroPython IntelliSense。
-   - 如果你想使用实验性的主机侧 REPL，开启 `microPythonWorkBench.experimentalCustomRepl`。
+   - `microPythonWorkBench.experimentalCustomRepl` 默认开启, 使用内置主机侧客户端。
 
 ## 使用要求
 
-- 标准 `mpremote` 工作流需要 Python 3.8+
-- 启用 `microPythonWorkBench.experimentalCustomRepl` 时，建议 Python 3.9+
-- 扩展使用的 Python 环境中需要安装 `mpremote`
+- 内置 `mpyrepl` helper 需要 Python 3.9+
+- 扩展使用的 Python 环境中需要安装 `pyserial`
 - Python 扩展 `ms-python.python` 为必需依赖
 - 推荐安装 Pylance `ms-python.vscode-pylance`，以获得完整代码补全体验
 
@@ -73,9 +72,8 @@ python -m pip install --user mpremote
 
 ### REPL、运行与自动挂起
 
-- 默认 REPL 终端通过 `mpremote connect <port>` 打开。
-- `MicroPython 工作台：运行活动文件` 通过 `mpremote connect <port> run <file>` 执行当前本地文件。
-- 开启 `microPythonWorkBench.experimentalCustomRepl` 后，运行活动文件会改为发送到自定义 REPL 会话执行，执行结束后回到同一个提示符。
+- 默认 REPL 终端通过内置 `scripts/mpyrepl/__main__.py` 客户端打开。
+- `MicroPython 工作台：运行活动文件` 会把当前文件发送到该 REPL 会话执行, 输出结束后回到同一个提示符。
 - 在 Windows 上，扩展会为 REPL 和 Run 终端注入更偏向 UTF-8 的环境变量与 PowerShell 输出编码设置。
 - `microPythonWorkBench.serialAutoSuspend` 会在同步前关闭 REPL / Run 终端，避免串口冲突，并在同步后恢复原来的串口会话状态。
 - `microPythonWorkBench.replRestoreBehavior` 用于控制自动恢复 REPL 后的行为：
@@ -92,15 +90,15 @@ python -m pip install --user mpremote
 - `microPythonWorkBench.codeCompletionExtraPaths` 可将额外目录或 `.pyi` 文件合并到当前激活的 MicroPython stub 根目录。
 - 如果选中的 stub 包包含 typeshed 风格的标准库布局，扩展还会同步更新 Pylance 的分析来源，以改善 MicroPython 内置符号和标准库模块的解析效果。
 
-### 实验性自定义 Python REPL
+### 内置 Python REPL
 
-- 开启 `microPythonWorkBench.experimentalCustomRepl` 后，REPL 终端会从默认的 `mpremote` 方式切换到内置的 `mpyrepl` Python 客户端。
-- 该设置也会让“运行活动文件”复用自定义 REPL 会话。文件浏览和文件同步仍然走 `mpremote`。
-- 当前这条路径主要用于改善以下体验：
+- `microPythonWorkBench.experimentalCustomRepl` 默认开启, 使用内置 `mpyrepl` Python 客户端。
+- REPL, 运行活动文件, 串口检测, 文件浏览和同步都使用同一套自定义传输栈。
+- Python 客户端提供：
   - 主机侧多行编辑
   - prompt_toolkit 补全
   - 会话内符号跟踪
-  - 基于控制文件的中断、软重置和退出
+  - 基于控制文件的中断、软重置、退出和文件系统 RPC
   - Windows 与混合编码主机下更稳妥的 Unicode 输出
 
 详见英文专题文档 [docs/custom-python-repl.md](docs/custom-python-repl.md) 和中文专题文档 [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)。
@@ -115,8 +113,8 @@ python -m pip install --user mpremote
 - `microPythonWorkBench.autoSyncOnSave`：保存时自动上传
 - `microPythonWorkBench.serialAutoSuspend`：同步前后自动挂起并恢复串口会话
 - `microPythonWorkBench.replRestoreBehavior`：自动恢复 REPL 后的行为
-- `microPythonWorkBench.experimentalCustomRepl`：切换到实验性 Python REPL 客户端
-- `microPythonWorkBench.pythonPath`：为 `mpremote` 与辅助脚本指定解释器
+- `microPythonWorkBench.experimentalCustomRepl`：兼容性设置；内置 mpyrepl 传输保持启用
+- `microPythonWorkBench.pythonPath`：为辅助脚本指定解释器
 - `microPythonWorkBench.enableCodeCompletion`：启用工作区级别的 MicroPython 补全
 - `microPythonWorkBench.stubInstallPath`：工作区内 stub 安装目录
 - `microPythonWorkBench.stubAutoSelect`：自动选择最合适的已安装 stub
@@ -179,7 +177,7 @@ CI 当前运行于 GitHub Actions，覆盖：
 ## 当前限制
 
 - 当前兼容性验证仍主要集中在 ESP32 系列，尤其是 ESP32-S3 与 ESP32-C3。
-- 实验性自定义 REPL 不替换完整传输栈；同步与浏览仍依赖 `mpremote`。
+- 部分遗留模块和命令名称仍包含 `mpremote` 以保持兼容, 但主传输路径已经使用 `mpyrepl`。
 - 部分贴近硬件的 board/runtime 路径覆盖率仍低于纯工具和配置逻辑，因此涉及真实开发板行为时仍建议上板验证。
 - 自动固件烧录已从扩展中移除，请在扩展外使用 `esptool` 或厂商工具完成烧录。
 

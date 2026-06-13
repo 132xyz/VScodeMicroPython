@@ -1,18 +1,16 @@
 import * as vscode from "vscode";
-import * as path from "node:path";
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { MpRemoteManager } from "../board/MpRemoteManager";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /**
- * Mpremote installation and management commands
+ * Python dependency management commands for the custom MicroPython transport.
  */
 export const mpremoteCommands = {
   /**
-   * Check if mpremote is available and show installation guide if not
+   * Check if pyserial is available and show installation guide if not.
    */
   async checkAndInstallMpremote(silent: boolean = false): Promise<boolean> {
     try {
@@ -20,11 +18,11 @@ export const mpremoteCommands = {
       const zh = lang.startsWith('zh');
       const pythonPath = await MpRemoteManager.detectPythonPath();
       if (!pythonPath) {
-        if (!silent) vscode.window.showErrorMessage(zh ? '未检测到 Python 解释器，无法安装 mpremote。' : 'No Python interpreter detected; cannot install mpremote.');
+        if (!silent) vscode.window.showErrorMessage(zh ? '未检测到 Python 解释器，无法安装 pyserial。' : 'No Python interpreter detected; cannot install pyserial.');
         return false;
       }
 
-      const available = await MpRemoteManager.isModuleAvailable(pythonPath);
+      const available = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
       if (available) return true;
 
       if (silent) return false;
@@ -34,19 +32,19 @@ export const mpremoteCommands = {
       const cancelLabel = zh ? '取消' : 'Cancel';
 
       const choice = await vscode.window.showInformationMessage(
-        zh ? `mpremote 未安装在检测到的 Python：${pythonPath}` : `mpremote is not installed in detected Python: ${pythonPath}`,
+        zh ? `pyserial 未安装在检测到的 Python：${pythonPath}` : `pyserial is not installed in detected Python: ${pythonPath}`,
         installLabel,
         showPathLabel,
         cancelLabel
       );
 
       if (choice === installLabel) {
-        return await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: zh ? '正在安装 mpremote...' : 'Installing mpremote...' }, async () => {
+        return await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: zh ? '正在安装 pyserial...' : 'Installing pyserial...' }, async () => {
           try {
-            await MpRemoteManager.install(pythonPath);
-            const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+            await MpRemoteManager.installPackages(['pyserial'], pythonPath);
+            const ok = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
             if (ok) {
-              vscode.window.showInformationMessage(zh ? 'mpremote 已成功安装。' : 'mpremote installed successfully.');
+              vscode.window.showInformationMessage(zh ? 'pyserial 已成功安装。' : 'pyserial installed successfully.');
               return true;
             } else {
               const msg = zh ? `安装完成但验证失败。请手动在此 Python 环境安装：${pythonPath}` : `Installation finished but verification failed. Please install manually for Python: ${pythonPath}`;
@@ -58,17 +56,16 @@ export const mpremoteCommands = {
                   shellPath: process.platform === 'win32' ? 'powershell.exe' : undefined
                 });
                 term.show(true);
-                // On Windows PowerShell, use & operator for quoted paths
                 const pipCmd = process.platform === 'win32' 
-                  ? `& "${pythonPath}" -m pip install --upgrade mpremote`
-                  : `${pythonPath} -m pip install --upgrade mpremote`;
+                  ? `& "${pythonPath}" -m pip install --upgrade pyserial`
+                  : `${pythonPath} -m pip install --upgrade pyserial`;
                 term.sendText(pipCmd, true);
               }
               return false;
             }
           } catch (e: any) {
             const errMsg = String(e?.message || e);
-            const msg = zh ? `自动安装失败：${errMsg}\n请手动运行：${pythonPath} -m pip install --upgrade mpremote` : `Automatic install failed: ${errMsg}\nPlease run manually: ${pythonPath} -m pip install --upgrade mpremote`;
+            const msg = zh ? `自动安装失败：${errMsg}\n请手动运行：${pythonPath} -m pip install --upgrade pyserial` : `Automatic install failed: ${errMsg}\nPlease run manually: ${pythonPath} -m pip install --upgrade pyserial`;
             const openTerm = zh ? '打开终端并复制命令' : 'Open terminal with command';
             const res = await vscode.window.showErrorMessage(msg, openTerm, 'OK');
             if (res === openTerm) {
@@ -78,8 +75,8 @@ export const mpremoteCommands = {
               });
               term.show(true);
               const pipCmd = process.platform === 'win32' 
-                ? `& "${pythonPath}" -m pip install --upgrade mpremote`
-                : `${pythonPath} -m pip install --upgrade mpremote`;
+                ? `& "${pythonPath}" -m pip install --upgrade pyserial`
+                : `${pythonPath} -m pip install --upgrade pyserial`;
               term.sendText(pipCmd, true);
             }
             return false;
@@ -99,53 +96,54 @@ export const mpremoteCommands = {
   },
 
   /**
-   * Check mpremote availability using python -m mpremote method
+   * Check pyserial availability.
    */
   async checkMpremoteAvailability(): Promise<boolean> {
     try {
-      // Delegate to MpRemoteManager
-      return await MpRemoteManager.isModuleAvailable();
+      const pythonPath = await MpRemoteManager.detectPythonPath();
+      if (!pythonPath) return false;
+      return await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
     } catch {
       return false;
     }
   },
 
   /**
-   * Find mpremote executable in common installation locations
+   * External mpremote executable lookup is no longer used.
    */
   async findMpremoteExecutable(): Promise<string | null> {
-    return MpRemoteManager.findExecutable();
+    return null;
   },
 
   /**
-   * Show comprehensive mpremote installation guide
+   * Show pyserial installation guide.
    */
   async showMpremoteInstallationGuide(): Promise<void> {
     const lang = vscode.env.language || '';
     const zh = lang.startsWith('zh');
     const msg = zh
-      ? 'mpremote 是本扩展所需的命令行工具。请在所选 Python 环境中运行：`python -m pip install --upgrade mpremote`。或使用扩展的安装命令自动安装。'
-      : 'mpremote is required by this extension. Run `python -m pip install --upgrade mpremote` in the desired Python environment, or use the extension install command to install it automatically.';
+      ? '自定义 MicroPython 传输需要 pyserial。请在所选 Python 环境中运行：`python -m pip install --upgrade pyserial`。或使用扩展的安装命令自动安装。'
+      : 'The custom MicroPython transport requires pyserial. Run `python -m pip install --upgrade pyserial` in the desired Python environment, or use the extension install command.';
     await vscode.window.showInformationMessage(msg);
   },
 
   /**
-   * Automatically install mpremote using detected Python environment
+   * Automatically install pyserial using detected Python environment.
    */
   async installMpremoteAutomatically(silent: boolean = false): Promise<void> {
     const pythonPath = await MpRemoteManager.detectPythonPath();
     if (!pythonPath) {
-      if (!silent) vscode.window.showErrorMessage('No Python detected to install mpremote into.');
+      if (!silent) vscode.window.showErrorMessage('No Python detected to install pyserial into.');
       return;
     }
     try {
-      await MpRemoteManager.install(pythonPath);
-      const ok = await MpRemoteManager.isModuleAvailable(pythonPath);
+      await MpRemoteManager.installPackages(['pyserial'], pythonPath);
+      const ok = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
       if (!ok && !silent) {
-        vscode.window.showErrorMessage(`mpremote installation failed for Python: ${pythonPath}`);
+        vscode.window.showErrorMessage(`pyserial installation failed for Python: ${pythonPath}`);
       }
     } catch (e: any) {
-      if (!silent) vscode.window.showErrorMessage(`mpremote installation failed: ${e?.message || String(e)}`);
+      if (!silent) vscode.window.showErrorMessage(`pyserial installation failed: ${e?.message || String(e)}`);
     }
   },
 
@@ -154,10 +152,10 @@ export const mpremoteCommands = {
    */
   async verifyAndHandleInstallation(pythonPath: string, silent: boolean = false): Promise<void> {
     // Delegate verification to manager
-    const isAvailable = await MpRemoteManager.isModuleAvailable(pythonPath);
+    const isAvailable = await MpRemoteManager.isPythonModuleAvailable('serial', pythonPath);
     if (!isAvailable) {
       if (!silent) {
-        vscode.window.showErrorMessage('mpremote installation verification failed. The package may not be properly installed.', 'Get Help').then(choice => {
+        vscode.window.showErrorMessage('pyserial installation verification failed. The package may not be properly installed.', 'Get Help').then(choice => {
           if (choice === 'Get Help') this.showPathTroubleshootingGuide(pythonPath);
         });
       }
@@ -172,8 +170,8 @@ export const mpremoteCommands = {
     const lang = vscode.env.language || '';
     const zh = lang.startsWith('zh');
     const msg = zh
-      ? `请确保在此 Python 环境中安装 mpremote：\n${pythonPath} -m pip install --upgrade mpremote`
-      : `Ensure mpremote is installed in this Python environment:\n${pythonPath} -m pip install --upgrade mpremote`;
+      ? `请确保在此 Python 环境中安装 pyserial：\n${pythonPath} -m pip install --upgrade pyserial`
+      : `Ensure pyserial is installed in this Python environment:\n${pythonPath} -m pip install --upgrade pyserial`;
     await vscode.window.showInformationMessage(msg);
   },
 
@@ -184,18 +182,18 @@ export const mpremoteCommands = {
     const lang = vscode.env.language || '';
     const zh = lang.startsWith('zh');
     const msg = zh
-      ? '手动安装 mpremote：在命令行运行 `python -m pip install --upgrade mpremote`，或在虚拟环境中激活后运行相同命令。'
-      : 'To install mpremote manually run `python -m pip install --upgrade mpremote` in the desired Python environment.';
+      ? '手动安装 pyserial：在命令行运行 `python -m pip install --upgrade pyserial`，或在虚拟环境中激活后运行相同命令。'
+      : 'To install pyserial manually run `python -m pip install --upgrade pyserial` in the desired Python environment.';
     await vscode.window.showInformationMessage(msg);
   },
 
   /**
-   * Show information about mpremote
+   * Show information about the custom transport.
    */
   async showMpremoteInformation(): Promise<void> {
-    const info = `**关于 mpremote**
+    const info = `**关于自定义 MicroPython 传输**
 
-mpremote 是与 MicroPython 开发板通信的命令行工具。请在您希望扩展使用的 Python 环境中安装 mpremote，或使用扩展的安装功能进行自动安装。
+扩展现在通过内置 mpyrepl helper 与 MicroPython 开发板通信。主功能不再依赖 mpremote, 但所选 Python 环境需要 pyserial 用于串口访问。
 
 功能包括：
 - 浏览开发板文件
@@ -204,19 +202,12 @@ mpremote 是与 MicroPython 开发板通信的命令行工具。请在您希望�
 - 直接运行脚本
 - 管理开发板文件系统
 
-如遇到问题，请确保已安装 Python 3.x 并在该环境中安装 mpremote。
-
-详情访问：https://docs.micropython.org/en/latest/reference/mpremote.html`;
+如遇到问题，请确保已安装 Python 3.x 并在该环境中安装 pyserial。`;
 
     await vscode.window.showInformationMessage(
-      '关于 mpremote',
+      '关于自定义 MicroPython 传输',
       { modal: true, detail: info },
-      '访问文档'
-    ).then(choice => {
-      if (choice === '访问文档') {
-        vscode.env.openExternal(vscode.Uri.parse('https://docs.micropython.org/en/latest/reference/mpremote.html'));
-      }
-    });
+    );
   },
 
   /**
@@ -242,8 +233,7 @@ mpremote 是与 MicroPython 开发板通信的命令行工具。请在您希望�
    * Check mpremote version and compatibility
    */
   async checkMpremoteVersion(): Promise<{ version: string | null; compatible: boolean }> {
-    const info = await MpRemoteManager.checkVersion();
-    return { version: info.version, compatible: info.compatible };
+    return { version: null, compatible: true };
   },
 
   /**

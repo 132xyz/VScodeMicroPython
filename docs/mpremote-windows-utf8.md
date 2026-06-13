@@ -15,28 +15,28 @@
 
 当前仓库不是单纯停留在“提示用户改编码”的阶段，而是已经采取了两类措施：
 
-### 1. 默认终端路径上的缓解
+### 1. 终端路径上的缓解
 
 - 在 Windows 上，扩展创建 REPL / Run 终端时会优先使用 PowerShell
 - 会向终端注入更偏向 UTF-8 的环境变量
 - 首次运行时会尝试设置 PowerShell 的输出编码为 UTF-8
 
-这能降低一部分 Windows 终端输出问题，但不能从根本上替代上游 `mpremote` 或宿主控制台的行为。
+这能降低一部分 Windows 终端输出问题。扩展内部主路径现在优先通过 `mpyrepl` 做增量解码；外部手动 `mpremote` 命令仍受宿主终端影响。
 
-### 2. 实验性自定义 Python REPL
+### 2. 内置 Python mpyrepl 客户端
 
-仓库现在提供了实验性的自定义 Python REPL：
+仓库现在默认使用内置 Python `mpyrepl` 客户端：
 
 - 设置项：`microPythonWorkBench.experimentalCustomRepl`
 - 文档：`docs/custom-python-repl.md` / `docs/custom-python-repl_zh-CN.md`
 
-这条路径通过内置的 `scripts/mpyrepl` 客户端处理 REPL 输出，当前具备：
+这条路径通过内置的 `scripts/mpyrepl` 客户端处理 REPL 输出和文件传输，当前具备：
 
 - 增量 UTF-8 解码
 - 宿主流写入时的 Unicode 安全回退
-- 基于控制通道的中断 / 软重置 / 退出
+- 基于控制通道的中断 / 软重置 / 退出 / 文件系统 RPC
 
-如果你在扩展内部 REPL 终端里主要遇到的是 Unicode 或 Windows 控制台相关问题，当前最值得优先尝试的方案就是启用这条自定义 REPL 路径。
+如果你在扩展内部 REPL 或运行活动文件时遇到 Unicode 或 Windows 控制台相关问题，当前优先验证这条 `mpyrepl` 路径。
 
 ## 推荐处理顺序
 
@@ -44,21 +44,21 @@
 
 优先顺序：
 
-1. 开启 `microPythonWorkBench.experimentalCustomRepl`
+1. 确认 `microPythonWorkBench.experimentalCustomRepl` 保持默认开启
 2. 确认 `microPythonWorkBench.pythonPath` 指向可用 Python
-3. 确认该 Python 环境具备 `pyserial`，并建议一并安装 `mpremote`
+3. 确认该 Python 环境具备 `pyserial`
 4. 重新打开 REPL 终端验证
 
 ### 情况 2：问题发生在扩展内部“运行活动文件”终端
 
-该路径当前仍然走 `mpremote connect <port> run <file>`，所以仍会受到宿主终端和 `mpremote` 路径影响。
+该路径现在会把当前文件发送到同一个 `mpyrepl` 会话执行，执行完成后回到提示符。
 
 可以先尝试：
 
 1. 确保使用的是 PowerShell
 2. 确保 Python / 终端输出编码配置为 UTF-8
-3. 升级本地 `mpremote`
-4. 如果主要需求是交互调试，改用自定义 REPL 路径执行相关代码片段
+3. 确认 `pyserial` 安装在扩展选择的 Python 环境中
+4. 重新打开 REPL 后再运行活动文件
 
 ### 情况 3：问题发生在扩展外部的命令行
 
@@ -87,8 +87,8 @@ python -m mpremote connect COM4 run script.py
 
 当前更符合仓库现状的推荐路径是：
 
-- 优先使用扩展内置的实验性自定义 REPL 改善 REPL 交互
-- 对仍走 `mpremote` 的路径，尽量使用 UTF-8 终端配置并跟进上游修复
+- 优先使用扩展内置的 `mpyrepl` 传输路径
+- 对扩展外部手动执行的 `mpremote` 命令，尽量使用 UTF-8 终端配置并跟进上游修复
 
 ## 上游参考
 

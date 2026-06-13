@@ -58,8 +58,7 @@ export async function activate(context: vscode.ExtensionContext) {
       if (enabled) _origConsoleLog(...args);
     } catch {}
   };
-  // mpremote 不再作为扩展内置分发：优先使用系统/用户 Python 中已安装的 mpremote，
-  // 如果缺失会提示用户安装或通过扩展自动安装。
+  // 主工作流使用内置 mpyrepl helper；MpRemoteManager 仅保留兼容旧模块名和少量遗留入口。
 
   // Initialize code completion manager (errors are logged)
   codeCompletionManager.initialize(context).catch(error => {
@@ -429,17 +428,17 @@ export async function activate(context: vscode.ExtensionContext) {
   cancelTasksStatus.show();
   isReplOpen();
 
-  // On startup, check whether mpremote is available in the selected Python
+  // On startup, check whether pyserial is available in the selected Python
   // environment and prompt the user to install if missing. Run non-blocking
   // so activation isn't delayed. Delay the check to avoid false prompts while
   // the Python extension is still starting up.
-  const mpremoteAvailabilityTimer = setTimeout(() => {
+  const pythonTransportAvailabilityTimer = setTimeout(() => {
     PythonInterpreterManager.checkMpremoteAvailability().catch(err => {
-      console.debug('[Extension] mpremote availability check failed (non-fatal):', err);
+      console.debug('[Extension] Python transport availability check failed (non-fatal):', err);
     });
   }, 10000);
   context.subscriptions.push({
-    dispose: () => clearTimeout(mpremoteAvailabilityTimer)
+    dispose: () => clearTimeout(pythonTransportAvailabilityTimer)
   });
 
   // Ensure sensible ignore files exist or are upgraded from old stub
@@ -471,7 +470,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
   async function withAutoSuspend<T>(fn: () => Promise<T>, opts: { preempt?: boolean; resumeReplCommand?: string; replBehavior?: "runChanged" | "executeBootMain" | "openReplEmpty" | "none" } = {}): Promise<T> {
     const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
-    // Optionally preempt any in-flight mpremote process so new command takes priority
+    // Optionally preempt any in-flight board operation so new command takes priority
     if (opts.preempt !== false) {
       opQueue = Promise.resolve();
     }

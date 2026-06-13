@@ -159,12 +159,14 @@ class SerialReplTransport:
                 return data
             time.sleep(0.01)
 
-    def enter_raw_repl(self, soft_reset: bool) -> None:
+    def enter_raw_repl(self, soft_reset: bool, operation_timeout: Optional[float] = None) -> None:
         """Interrupt the board and switch into raw REPL.
 
         :param soft_reset: Whether to soft reset while entering raw REPL.
+        :param operation_timeout: Optional timeout override for this entry attempt.
         :return: None
         """
+        protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
         serial_port = self._ensure_serial()
         serial_port.write(b"\r\x03")
         self.drain_input()
@@ -174,7 +176,7 @@ class SerialReplTransport:
             data = self.read_until(
                 b"raw REPL; CTRL-B to exit\r\n>",
                 timeout=self._config.read_timeout,
-                overall_timeout=self._config.operation_timeout,
+                overall_timeout=protocol_timeout,
             )
             if not data.endswith(b"raw REPL; CTRL-B to exit\r\n>"):
                 raise TransportError(
@@ -186,7 +188,7 @@ class SerialReplTransport:
             data = self.read_until(
                 b"soft reboot\r\n",
                 timeout=self._config.read_timeout,
-                overall_timeout=self._config.operation_timeout,
+                overall_timeout=protocol_timeout,
             )
             if not data.endswith(b"soft reboot\r\n"):
                 raise TransportError(
@@ -197,7 +199,7 @@ class SerialReplTransport:
         data = self.read_until(
             b"raw REPL; CTRL-B to exit\r\n",
             timeout=self._config.read_timeout,
-            overall_timeout=self._config.operation_timeout,
+            overall_timeout=protocol_timeout,
         )
         if not data.endswith(b"raw REPL; CTRL-B to exit\r\n"):
             raise TransportError(
@@ -417,15 +419,19 @@ class SerialReplTransport:
         if not result.endswith(b"\x04"):
             raise TransportError("device did not acknowledge raw paste end")
 
-    def drain_input(self) -> None:
+    def drain_input(self, max_duration: float | None = 0.25) -> None:
         """Consume any pending bytes from the serial input buffer.
 
+        :param max_duration: Maximum seconds to spend draining, or None for no bound.
         :return: None
         """
+        deadline = None if max_duration is None else time.monotonic() + max_duration
         pending = self.in_waiting()
         serial_port = self._ensure_serial()
         while pending > 0:
             serial_port.read(pending)
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             pending = self.in_waiting()
 
     def in_waiting(self) -> int:

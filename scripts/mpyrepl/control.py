@@ -17,6 +17,7 @@ SUPPORTED_COMMANDS = {
     "interrupt-reset",
     "exit",
     "exec",
+    "fs",
 }
 
 
@@ -35,6 +36,9 @@ class ControlRequest:
     command: str
     source: str = ""
     label: str = ""
+    request_id: str = ""
+    response_file: str = ""
+    payload: dict | None = None
 
 
 class FileControlChannel:
@@ -108,13 +112,28 @@ class FileControlChannel:
 
         source = payload.get("source", "")
         label = payload.get("label", "")
+        request_id = payload.get("request_id", "")
+        response_file = payload.get("response_file", "")
+        request_payload = payload.get("payload") if "payload" in payload else None
         if source is not None and not isinstance(source, str):
             self._last_sequence = sequence
             return None
         if label is not None and not isinstance(label, str):
             self._last_sequence = sequence
             return None
+        if request_id is not None and not isinstance(request_id, str):
+            self._last_sequence = sequence
+            return None
+        if response_file is not None and not isinstance(response_file, str):
+            self._last_sequence = sequence
+            return None
+        if request_payload is not None and not isinstance(request_payload, dict):
+            self._last_sequence = sequence
+            return None
         if command == "exec" and not isinstance(source, str):
+            self._last_sequence = sequence
+            return None
+        if command == "fs" and not response_file:
             self._last_sequence = sequence
             return None
 
@@ -124,4 +143,7 @@ class FileControlChannel:
             command=command,
             source=source or "",
             label=label or "",
+            request_id=request_id or "",
+            response_file=response_file or "",
+            payload=request_payload,
         )

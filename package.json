@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.85",
+  "version": "0.3.88",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -473,7 +473,7 @@
         },
         "microPythonWorkBench.experimentalCustomRepl": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "%configuration.experimentalCustomRepl.description%"
         },
         "microPythonWorkBench.preListDelayMs": {

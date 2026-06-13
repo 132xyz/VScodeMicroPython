@@ -6,7 +6,8 @@ jest.mock('node:child_process', () => ({
 jest.mock('../src/board/MpRemoteManager', () => ({
   MpRemoteManager: {
     isModuleAvailable: jest.fn(),
-    install: jest.fn().mockResolvedValue(undefined),
+    isPythonModuleAvailable: jest.fn(),
+    installPackages: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -17,7 +18,8 @@ const childProcess = require('node:child_process') as {
 const mpRemoteManager = require('../src/board/MpRemoteManager') as {
   MpRemoteManager: {
     isModuleAvailable: jest.Mock;
-    install: jest.Mock;
+    isPythonModuleAvailable: jest.Mock;
+    installPackages: jest.Mock;
   };
 };
 
@@ -54,7 +56,7 @@ describe('pythonInterpreter coverage', () => {
       }),
     }));
 
-    mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValue(true);
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValue(true);
   });
 
   test('getPythonPath prefers extension API and caches result', async () => {
@@ -62,7 +64,7 @@ describe('pythonInterpreter coverage', () => {
     module.clearPythonCache();
     const manager = module.PythonInterpreterManager as any;
     manager.getPythonFromExtensionAPI = jest.fn().mockResolvedValue('/venv/python');
-    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingMpremote: false });
+    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingPyserial: false });
 
     await expect(module.getPythonPath()).resolves.toBe('/venv/python');
     await expect(module.getPythonPath()).resolves.toBe('/venv/python');
@@ -75,34 +77,34 @@ describe('pythonInterpreter coverage', () => {
     const manager = module.PythonInterpreterManager as any;
     manager.getPythonFromExtensionAPI = jest.fn().mockResolvedValue(null);
     manager.getPythonFromConfiguration = jest.fn().mockReturnValue('/custom/python');
-    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingMpremote: false });
+    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingPyserial: false });
 
     await expect(module.getPythonPath()).resolves.toBe('/custom/python');
 
     manager.getPythonFromConfiguration = jest.fn().mockReturnValue(null);
     manager.getFallbackPythonPaths = jest.fn().mockReturnValue(['fallback-python']);
-    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: false, missingMpremote: false, error: 'missing' });
+    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: false, missingPyserial: false, error: 'missing' });
     module.clearPythonCache();
     await expect(module.getPythonPath()).resolves.toBe('python3');
   });
 
-  test('notification and mpremote availability flows are covered', async () => {
+  test('notification and pyserial availability flows are covered', async () => {
     const module = require('../src/python/pythonInterpreter') as typeof import('../src/python/pythonInterpreter');
     module.clearPythonCache();
     const manager = module.PythonInterpreterManager as any;
 
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Install').mockResolvedValueOnce(undefined);
     manager.getPythonPath = jest.fn().mockResolvedValue('/venv/python');
-    mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValue(true);
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValue(true);
 
-    manager.showMpremoteInstallationNotification('/venv/python');
+    manager.showPyserialInstallationNotification('/venv/python');
     await Promise.resolve();
     await Promise.resolve();
-    expect(mpRemoteManager.MpRemoteManager.install).toHaveBeenCalledWith('/venv/python');
+    expect(mpRemoteManager.MpRemoteManager.installPackages).toHaveBeenCalledWith(['pyserial'], '/venv/python');
     expect(vscode.window.showInformationMessage).toHaveBeenCalled();
 
-    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingMpremote: true });
-    mpRemoteManager.MpRemoteManager.isModuleAvailable.mockResolvedValue(false);
+    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingPyserial: true });
+    mpRemoteManager.MpRemoteManager.isPythonModuleAvailable.mockResolvedValue(false);
     expect(await module.checkMpremoteAvailability()).toBe(false);
   });
 
@@ -118,7 +120,7 @@ describe('pythonInterpreter coverage', () => {
     module.clearPythonCache();
     expect(await module.getPythonCommandForTerminal()).toBe('py -3');
 
-    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingMpremote: false });
+    manager.validatePythonPath = jest.fn().mockResolvedValue({ valid: true, missingPyserial: false });
     expect(await module.checkMpremoteAvailability()).toBe(true);
   });
 });

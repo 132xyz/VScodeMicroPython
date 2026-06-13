@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from typing import Callable, TypeVar
 
 
@@ -29,6 +31,7 @@ from completion_engine import ReplCompleter
 from completion_state import ReplSessionSymbols
 from control import FileControlChannel
 from decode import Utf8StreamDecoder
+from fs_ops import DeviceFsClient, FsOperationError, list_serial_ports, response_payload, run_fs_operation
 from models import ReplConfig
 from repl_semantics import build_helper_source, instrument_source
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
@@ -345,6 +348,19 @@ def run_soft_reset(config: ReplConfig) -> int:
         flush_decoder(sys.stdout, stdout_decoder)
         transport.exit_raw_repl()
 
+    print(json.dumps(response_payload("", True, data=True), ensure_ascii=False))
+    return 0
+
+
+def run_interrupt(config: ReplConfig) -> int:
+    """Send Ctrl-C without entering raw REPL.
+
+    :param config: Runtime configuration.
+    :return: Process exit code.
+    """
+    with SerialReplTransport(config) as transport:
+        transport.interrupt()
+    print(json.dumps(response_payload("", True, data=True), ensure_ascii=False))
     return 0
 
 
@@ -385,18 +401,12 @@ def recover_after_interrupted_execution(
     """
     transport.clear_interrupt_request()
     try:
-        prompt = transport.read_until(
-            b">",
-            timeout=transport._config.read_timeout,
-            overall_timeout=recovery_timeout,
-        )
-        if prompt.endswith(b">"):
-            return
+        transport.drain_input(max_duration=0.2)
     except Exception:
         pass
 
     try:
-        transport.enter_raw_repl(soft_reset=False)
+        transport.enter_raw_repl(soft_reset=False, operation_timeout=recovery_timeout)
     except Exception as exc:
         write_text(sys.stderr, "\n[mpyrepl] interrupt recovery failed: %s\n" % (exc,))
 
@@ -455,7 +465,71 @@ def request_prompt_exit(session) -> None:
     app = session.app
     if not app.is_running or app.loop is None:
         return
-    app.loop.call_soon_threadsafe(lambda: app.exit(result=PROMPT_CONTROL_EXIT))
+
+    def _exit_prompt() -> None:
+        try:
+            app.exit(result=PROMPT_CONTROL_EXIT)
+        except Exception as exc:
+            if "Return value already set" not in str(exc):
+                raise
+
+    app.loop.call_soon_threadsafe(_exit_prompt)
+
+
+def write_json_file(path: str, payload: dict) -> None:
+    """Write a JSON response file atomically enough for polling clients.
+
+    :param path: Response file path.
+    :param payload: JSON-compatible payload.
+    :return: None
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(target.name + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temp.replace(target)
+
+
+async def handle_fs_control_request(
+    request,
+    gate: SerialOperationGate,
+    state: AsyncReplState,
+    fs_client: DeviceFsClient,
+) -> None:
+    """Execute one filesystem control request and write its response.
+
+    :param request: Parsed control request.
+    :param gate: Shared serial operation gate.
+    :param state: Shared async REPL state.
+    :param fs_client: Filesystem client bound to the active transport.
+    :return: None
+    """
+    request_id = request.request_id or str(request.sequence)
+    response_file = request.response_file
+    payload = request.payload or {}
+    op = str(payload.get("op") or "")
+
+    if state.executing:
+        write_json_file(
+            response_file,
+            response_payload(request_id, False, error="device is busy running user code", code="busy"),
+        )
+        return
+
+    try:
+        data = await gate.run("fs-" + op, run_fs_operation, fs_client, op, payload)
+    except FsOperationError as exc:
+        write_json_file(
+            response_file,
+            response_payload(request_id, False, error=str(exc), code=exc.code),
+        )
+    except Exception as exc:
+        write_json_file(
+            response_file,
+            response_payload(request_id, False, error=str(exc), code="error"),
+        )
+    else:
+        write_json_file(response_file, response_payload(request_id, True, data=data))
 
 
 async def apply_pending_action(
@@ -561,6 +635,8 @@ async def watch_control_channel(
     state: AsyncReplState,
     session,
     transport: SerialReplTransport,
+    gate: SerialOperationGate,
+    fs_client: DeviceFsClient,
 ) -> None:
     """Poll the control file and translate commands into safe transport actions.
 
@@ -615,6 +691,10 @@ async def watch_control_channel(
                 request_prompt_exit(session)
             continue
 
+        if command == "fs":
+            await handle_fs_control_request(request, gate, state, fs_client)
+            continue
+
 
 async def run_async_repl(
     config: ReplConfig,
@@ -640,6 +720,7 @@ async def run_async_repl(
     with SerialReplTransport(config) as transport:
         transport.enter_raw_repl(soft_reset=config.soft_reset_on_connect)
         await gate.run("helper-load", ensure_helper_loaded, transport, follow_timeout)
+        fs_client = DeviceFsClient(transport, timeout=config.operation_timeout)
         completer = ReplCompleter(
             session_symbols,
             stub_root=stub_root,
@@ -657,7 +738,7 @@ async def run_async_repl(
         if control_channel is not None:
             control_channel.prepare()
             control_task = asyncio.create_task(
-                watch_control_channel(control_channel, state, session, transport)
+                watch_control_channel(control_channel, state, session, transport, gate, fs_client)
             )
         try:
             with patch_stdout(raw=True):
@@ -784,6 +865,58 @@ async def run_async_repl(
     return 0
 
 
+def run_ports() -> int:
+    """List host serial ports as one JSON response line.
+
+    :return: Process exit code.
+    """
+    try:
+        data = list_serial_ports()
+        print(json.dumps(response_payload("", True, data=data), ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        print(json.dumps(response_payload("", False, error=str(exc), code="error"), ensure_ascii=False))
+        return 1
+
+
+def run_fs_cli(config: ReplConfig, args) -> int:
+    """Run one filesystem operation from the command line.
+
+    :param config: Runtime configuration.
+    :param args: Parsed CLI arguments.
+    :return: Process exit code.
+    """
+    payload = {
+        "op": args.op,
+        "path": args.path,
+        "src": args.src,
+        "dst": args.dst,
+        "local_path": args.local_path,
+        "source": args.source,
+        "recursive": not args.no_recursive,
+    }
+    transport = SerialReplTransport(config)
+    try:
+        transport.open()
+        transport.enter_raw_repl(soft_reset=config.soft_reset_on_connect)
+        client = DeviceFsClient(transport, timeout=config.operation_timeout)
+        data = run_fs_operation(client, args.op, payload)
+        print(json.dumps(response_payload("", True, data=data), ensure_ascii=False))
+        return 0
+    except FsOperationError as exc:
+        print(json.dumps(response_payload("", False, error=str(exc), code=exc.code), ensure_ascii=False))
+        return 1
+    except Exception as exc:
+        print(json.dumps(response_payload("", False, error=str(exc), code="error"), ensure_ascii=False))
+        return 1
+    finally:
+        try:
+            transport.exit_raw_repl()
+        except Exception:
+            pass
+        transport.close()
+
+
 def main() -> int:
     """Parse arguments and execute the selected spike command.
 
@@ -791,6 +924,12 @@ def main() -> int:
     """
     ensure_python_version()
     args = parse_args()
+    if args.command == "ports":
+        return run_ports()
+    if not args.port:
+        sys.stderr.write("[mpyrepl] --port is required for %s\n" % (args.command,))
+        sys.stderr.flush()
+        return 2
     config = ReplConfig(
         port=args.port,
         baudrate=args.baudrate,
@@ -818,6 +957,10 @@ def main() -> int:
             )
         if args.command == "soft-reset":
             return run_soft_reset(config)
+        if args.command == "interrupt":
+            return run_interrupt(config)
+        if args.command == "fs":
+            return run_fs_cli(config, args)
         raise ValueError("unsupported command: %s" % (args.command,))
     except TransportError as exc:
         sys.stderr.write("[mpyrepl] %s\n" % (exc,))
