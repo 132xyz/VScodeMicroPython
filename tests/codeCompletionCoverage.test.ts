@@ -276,6 +276,40 @@ describe('CodeCompletionManager helper coverage', () => {
     expect(manager.stubStatusBarItem.hide).toHaveBeenCalled();
   });
 
+  test('extra stub path changes refresh and persist active overlay stub path', async () => {
+    const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
+    const manager = codeCompletionManager as any;
+    manager.isEnabled = true;
+    manager.lastBaseStubPath = '/workspace/base-stub';
+    manager.lastStubPath = '/workspace/old-overlay';
+
+    const workspaceState = {
+      get: jest.fn((key: string) => {
+        if (key === 'mpy.lastBaseStubPath') return '/workspace/base-stub';
+        if (key === 'mpy.lastStubPath') return '/workspace/old-overlay';
+        return undefined;
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      workspaceState,
+      subscriptions: [] as Array<{ dispose?: () => void }>,
+    } as any;
+
+    stubOverlay.buildOverlayStubRoot.mockReturnValueOnce('/workspace/base-stub/overlay-v2');
+
+    await codeCompletionManager.initialize(context);
+    const listener = (vscode.workspace.onDidChangeConfiguration as jest.Mock).mock.calls.at(-1)[0];
+    listener({
+      affectsConfiguration: (key: string) => key === 'microPythonWorkBench.codeCompletionExtraPaths',
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(workspaceState.update).toHaveBeenCalledWith('mpy.lastBaseStubPath', '/workspace/base-stub');
+    expect(workspaceState.update).toHaveBeenCalledWith('mpy.lastStubPath', '/workspace/base-stub/overlay-v2');
+    expect(codeCompletionManager.getActiveStubPath()).toBe('/workspace/base-stub/overlay-v2');
+  });
+
   test('language server restart helpers cover success and failure prompts', async () => {
     const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
     const manager = codeCompletionManager as any;

@@ -54,14 +54,23 @@ class FakeSymbols:
 
     def record_successful_source(self, source: str) -> None:
         self.recorded.append(source)
+        return SimpleNamespace(
+            rebound_roots=set(),
+            mutated_roots=set(),
+            clear_runtime_cache=False,
+        )
 
 
 class FakeCompleter:
     def __init__(self) -> None:
         self.clear_runtime_cache_calls = 0
+        self.invalidate_runtime_cache_calls = []
 
     def clear_runtime_cache(self) -> None:
         self.clear_runtime_cache_calls += 1
+
+    def invalidate_runtime_cache(self, **kwargs) -> None:
+        self.invalidate_runtime_cache_calls.append(kwargs)
 
 
 class FakePromptSession:
@@ -700,7 +709,17 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.executing)
         self.assertEqual(gate.operations, ["execute"])
         self.assertEqual(session_symbols.recorded, ["print('中')"])
-        self.assertEqual(completer.clear_runtime_cache_calls, 1)
+        self.assertEqual(completer.clear_runtime_cache_calls, 0)
+        self.assertEqual(
+            completer.invalidate_runtime_cache_calls,
+            [
+                {
+                    "rebound_roots": set(),
+                    "mutated_roots": set(),
+                    "clear_all": False,
+                }
+            ],
+        )
         execute_once.assert_called_once()
 
     async def test_execute_source_block_recovers_after_user_interrupt_timeout(self) -> None:
@@ -916,7 +935,17 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(symbols.recorded, ["print(1)"])
-        self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 1)
+        self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 0)
+        self.assertEqual(
+            FakeRuntimeCompleter.instances[-1].invalidate_runtime_cache_calls,
+            [
+                {
+                    "rebound_roots": set(),
+                    "mutated_roots": set(),
+                    "clear_all": False,
+                }
+            ],
+        )
         execute_once.assert_called_once()
         self.assertIsNone(execute_once.call_args.args[2])
         transport = FakeContextTransport.instances[-1]

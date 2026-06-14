@@ -10,10 +10,9 @@ from prompt_toolkit.completion import CompleteEvent, get_common_complete_suffix
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.lexers import PygmentsLexer
-from pygments.lexers.python import PythonLexer
 
 from indent import INDENT, continuation_default, is_block_complete
+from repl_lexer import MicroPythonLexer, build_repl_style
 
 
 PROMPT_SOFT_RESET = "__mpyrepl_soft_reset__"
@@ -88,13 +87,22 @@ def _should_accept_on_enter(document: Document) -> bool:
     return document.current_line.strip() == ""
 
 
-def build_prompt_session(completer=None, history=None, input=None, output=None) -> PromptSession:
+def build_prompt_session(
+    completer=None,
+    history=None,
+    input=None,
+    output=None,
+    session_symbols=None,
+    stub_modules=None,
+) -> PromptSession:
     """Create the minimal prompt_toolkit session for the prompt spike.
 
     :param completer: Optional prompt_toolkit completer.
     :param history: Optional prompt_toolkit history object.
     :param input: Optional prompt_toolkit input object for tests.
     :param output: Optional prompt_toolkit output object for tests.
+    :param session_symbols: Optional REPL symbol table for richer highlighting.
+    :param stub_modules: Optional module names discovered from active stubs.
     :return: Prompt session instance.
     """
     bindings = KeyBindings()
@@ -187,7 +195,11 @@ def build_prompt_session(completer=None, history=None, input=None, output=None) 
         buffer.delete_before_cursor(count=1)
 
     return PromptSession(
-        lexer=PygmentsLexer(PythonLexer),
+        lexer=MicroPythonLexer(
+            session_symbols=session_symbols,
+            module_names=stub_modules or (),
+        ),
+        style=build_repl_style(),
         multiline=True,
         prompt_continuation=lambda width, line_number, wrap_count: "... ",
         history=history or InMemoryHistory(),

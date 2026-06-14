@@ -34,11 +34,7 @@ def _resolved_expression(expression: str, session_symbols: ReplSessionSymbols) -
     :param session_symbols: Tracked REPL symbols.
     :return: Expression suitable for `dir()` probing.
     """
-    root, suffix = _split_expression(expression)
-    aliased_module = session_symbols.resolve_module_alias(root)
-    if aliased_module is None:
-        return expression
-    return f"__import__({aliased_module!r}){suffix}"
+    return session_symbols.resolve_runtime_expression(expression)
 
 
 def _build_dir_query_source(expression: str, session_symbols: ReplSessionSymbols) -> str:
@@ -55,7 +51,10 @@ def _build_dir_query_source(expression: str, session_symbols: ReplSessionSymbols
     if root.isidentifier():
         fallback_clause = (
             f"except NameError:\n"
-            f"    _mpy_target = __import__({fallback_name!r}){suffix}\n"
+            f"    try:\n"
+            f"        _mpy_target = __import__({fallback_name!r}){suffix}\n"
+            f"    except Exception:\n"
+            f"        _mpy_target = None\n"
         )
 
     source = (

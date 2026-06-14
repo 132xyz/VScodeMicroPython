@@ -83,6 +83,11 @@ const localization = require('../src/core/localization') as {
   showInfo: jest.Mock;
   showError: jest.Mock;
 };
+const codeCompletion = require('../src/completion/codeCompletion') as {
+  codeCompletionManager: {
+    getActiveStubPath: jest.Mock;
+  };
+};
 
 type MockTerminal = {
   name: string;
@@ -226,12 +231,14 @@ describe('board mpremoteCommands coverage', () => {
     (vscode.window.showInformationMessage as jest.Mock)
       .mockResolvedValueOnce('Install to this Python')
       .mockResolvedValueOnce(undefined);
+    codeCompletion.codeCompletionManager.getActiveStubPath.mockReturnValue('/workspace/stub-overlay');
 
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
     const replTerminal = await commands.getReplTerminal();
 
     expect(mpRemoteManager.MpRemoteManager.installPackages).toHaveBeenCalledWith(['pyserial'], 'python3');
     expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
+    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('--stub-root /workspace/stub-overlay'), true);
   });
 
   test('runActiveFile uses custom repl control exec when experimental repl is enabled', async () => {

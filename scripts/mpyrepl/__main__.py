@@ -626,8 +626,12 @@ async def execute_source_block(
         flush_decoder(sys.stderr, stderr_decoder)
 
     if not result.stderr:
-        session_symbols.record_successful_source(prepared_code)
-        completer.clear_runtime_cache()
+        source_changes = session_symbols.record_successful_source(prepared_code)
+        completer.invalidate_runtime_cache(
+            rebound_roots=source_changes.rebound_roots,
+            mutated_roots=source_changes.mutated_roots,
+            clear_all=source_changes.clear_runtime_cache,
+        )
 
 
 async def watch_control_channel(
@@ -724,15 +728,22 @@ async def run_async_repl(
         completer = ReplCompleter(
             session_symbols,
             stub_root=stub_root,
-            dotted_provider=lambda expression, prefix: query_device_attributes(
+            dotted_provider=lambda expression, prefix, timeout=None: query_device_attributes(
                 transport,
                 gate,
                 session_symbols,
                 expression,
-                timeout=dir_query_timeout,
+                timeout=dir_query_timeout
+                if timeout is None
+                else min(timeout, dir_query_timeout),
             ),
         )
-        session = build_prompt_session(completer=completer)
+        completer_stub_modules = getattr(completer, "stub_modules", lambda: ())()
+        session = build_prompt_session(
+            completer=completer,
+            session_symbols=session_symbols,
+            stub_modules=completer_stub_modules,
+        )
         restore_sigint = install_sigint_forwarder(transport)
         control_task = None
         if control_channel is not None:

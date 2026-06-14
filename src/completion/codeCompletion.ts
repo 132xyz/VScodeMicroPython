@@ -94,7 +94,7 @@ export class CodeCompletionManager {
           const activeBaseStubPath = this.lastBaseStubPath || this.context?.workspaceState.get<string>('mpy.lastBaseStubPath');
           const activeStub = inspectStubRoot(activeBaseStubPath);
           if (activeStub) {
-            void this.updatePythonConfiguration(this.applyExtraStubOverlay(activeStub));
+            void this.refreshAppliedStubOverlay(activeStub);
           }
         }
       })
@@ -427,6 +427,13 @@ export class CodeCompletionManager {
     if (result.settingsChanged) {
       vscode.window.setStatusBarMessage('MPY 补全配置已更新；若提示未立即刷新，请手动执行 Python: Restart Language Server。', 6000);
     }
+  }
+
+  private async refreshAppliedStubOverlay(baseStub: StubInspection): Promise<void> {
+    const appliedStub = this.applyExtraStubOverlay(baseStub);
+    await this.updatePythonConfiguration(appliedStub);
+    await this.persistAppliedStubState(baseStub, appliedStub);
+    this.updateStatusBar();
   }
 
   private getWorkspaceRoot(): string | undefined {
