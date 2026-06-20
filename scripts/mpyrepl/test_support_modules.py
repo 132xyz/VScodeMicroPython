@@ -158,6 +158,45 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(args.op, "write_file")
         self.assertTrue(args.progress)
 
+    def test_cli_manager_and_repl_client_parse_rpc_options(self) -> None:
+        parser = build_parser()
+        manager_args = parser.parse_args(
+            [
+                "--port",
+                "COM21",
+                "manager",
+                "--host",
+                "127.0.0.1",
+                "--manager-port",
+                "50123",
+                "--token",
+                "tok",
+                "--stub-root",
+                "stubs",
+                "--dir-query-timeout",
+                "1.5",
+            ]
+        )
+        client_args = parser.parse_args(
+            [
+                "repl-client",
+                "--endpoint",
+                "127.0.0.1:50123",
+                "--token",
+                "tok",
+            ]
+        )
+
+        self.assertEqual(manager_args.command, "manager")
+        self.assertEqual(manager_args.port, "COM21")
+        self.assertEqual(manager_args.manager_port, 50123)
+        self.assertEqual(manager_args.token, "tok")
+        self.assertEqual(manager_args.stub_root, "stubs")
+        self.assertEqual(manager_args.dir_query_timeout, 1.5)
+        self.assertEqual(client_args.command, "repl-client")
+        self.assertEqual(client_args.endpoint, "127.0.0.1:50123")
+        self.assertEqual(client_args.token, "tok")
+
     def test_completion_state_tracks_symbols_and_aliases(self) -> None:
         symbols = ReplSessionSymbols()
         changes = symbols.record_successful_source(

@@ -7,6 +7,15 @@ import * as mpyClient from "./mpyClient";
 import { MpRemoteManager } from './MpRemoteManager';
 import { showInfo, showError } from "../core/localization";
 import { codeCompletionManager } from '../completion/codeCompletion';
+import {
+  buildReplClientCommand,
+  closeManager,
+  ensureManagerStarted,
+  executeInManager,
+  interruptManager,
+  isSerialManagerActive,
+  softResetManager,
+} from "./serialManager";
 
 let runTerminal: vscode.Terminal | undefined;
 let replTerminal: vscode.Terminal | undefined;
@@ -280,30 +289,15 @@ function resetCustomReplState(): void {
 }
 
 async function runActiveFileInCustomRepl(device: string, filePath: string): Promise<void> {
-  const replOpen = isReplOpen();
-  const hadCustomRepl = replOpen && replUsesCustomClient && !!replControlFile;
-
-  if (replOpen && !hadCustomRepl) {
-    await closeReplTerminal();
-    await sleep(300);
-  }
-
   const source = await fs.promises.readFile(filePath, 'utf8');
+  await ensureManagerStarted(device);
   const terminal = await getReplTerminal(undefined, { interrupt: false });
   terminal.show(true);
-
-  if (!hadCustomRepl) {
-    if (!replControlFile) {
-      throw new Error('Experimental REPL control channel is not active');
-    }
-    await waitForCustomReplReady(replControlFile);
+  const result = await executeInManager(source);
+  if (result.stderr) {
+    throw new Error(result.stderr.trim() || `Failed to run ${path.basename(filePath)}`);
   }
-
-  await sendCustomReplControl('exec', {
-    source,
-    label: path.basename(filePath),
-  });
-  debugLog("Sent active file to custom REPL:", device, filePath);
+  debugLog("Executed active file through serial manager:", device, filePath);
 }
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
@@ -361,6 +355,27 @@ function setReplContext(open: boolean) {
   try { vscode.commands.executeCommand('setContext', 'microPythonWorkBench.replOpen', open); } catch {}
 }
 
+function setSerialContext(open: boolean) {
+  try { vscode.commands.executeCommand('setContext', 'microPythonWorkBench.serialOpen', open); } catch {}
+}
+
+function getReplTerminalIfAlive(): vscode.Terminal | undefined {
+  if (!replTerminal) return undefined;
+  const alive = vscode.window.terminals.some(t => t === replTerminal);
+  if (!alive) {
+    replTerminal = undefined;
+    setReplContext(false);
+    return undefined;
+  }
+  return replTerminal;
+}
+
+export function isReplTerminalOpen(): boolean {
+  const open = !!getReplTerminalIfAlive();
+  setReplContext(open);
+  return open;
+}
+
 export async function restartReplInExistingTerminal(opts: { show?: boolean } = {}) {
   try {
     const connect = mp.getActiveConnect();
@@ -378,20 +393,8 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
       return;
     }
 
-    // Reuse the existing terminal: send connect again
-    let cmd: string;
-    if (useExperimentalCustomRepl()) {
-      const custom = await buildCustomReplCommand(device);
-      replUsesCustomClient = true;
-      replControlFile = custom.controlFile;
-      cmd = custom.command;
-    } else {
-      resetCustomReplState();
-      cmd = await buildLegacyShellCommand(["connect", device]);
-    }
-    logAutoSuspend("Reusing REPL terminal; sending reconnect command:", cmd);
-    replTerminal.sendText(cmd, true);
-    await sleep(200);
+    await ensureManagerStarted(device);
+    setSerialContext(true);
     setReplContext(true);
     if (opts.show !== false) {
       try { replTerminal.show(true); } catch {}
@@ -428,15 +431,16 @@ async function rerunLastRunCommand(info: LastRunCommand): Promise<void> {
 export async function suspendSerialSessionsForAutoSync(): Promise<AutoSuspendSnapshot> {
   const runWasOpen = isRunTerminalOpen();
   const replWasOpen = isReplOpen();
+  const managerOpen = isSerialManagerActive();
   logAutoSuspend("Suspend start — runWasOpen:", runWasOpen, "replWasOpen:", replWasOpen);
   const snapshot: AutoSuspendSnapshot = {
     runWasOpen,
-    replWasOpen,
+    replWasOpen: managerOpen ? false : replWasOpen,
     lastRunCommand: runWasOpen ? lastRunCommand : undefined
   };
 
   if (runWasOpen) await closeRunTerminal();
-  if (replWasOpen) {
+  if (replWasOpen && !managerOpen) {
     await disconnectReplTerminal(); // send Ctrl-X to exit cleanly
     await sleep(120);
     await closeReplTerminal(); // dispose so restore always recreates a fresh REPL terminal
@@ -511,6 +515,10 @@ export async function checkMpremoteAvailability(): Promise<void> {
 }
 
 export async function serialSendCtrlC(): Promise<void> {
+  if (await interruptManager()) {
+    showInfo("messages.interruptSentViaRepl");
+    return;
+  }
   if (await sendCustomReplControlIfActive('interrupt')) {
     showInfo("messages.interruptSentViaRepl");
     return;
@@ -550,6 +558,10 @@ export async function stop(): Promise<void> {
 }
 
 export async function softReset(): Promise<void> {
+  if (await softResetManager()) {
+    showInfo("messages.softResetSentViaRepl");
+    return;
+  }
   if (await sendCustomReplControlIfActive('soft-reset')) {
     showInfo("messages.softResetSentViaRepl");
     return;
@@ -720,23 +732,10 @@ export async function getReplTerminal(
   }
 
   const device = mp.normalizeConnect(connect);
-  const shouldInterrupt = opts?.interrupt ?? vscode.workspace.getConfiguration().get<boolean>(
-    "microPythonWorkBench.interruptOnConnect",
-    true
-  );
-  const useCustomClient = useExperimentalCustomRepl();
-
-  // Build the serial REPL connect command
-  let cmd: string;
-  if (useCustomClient) {
-    const custom = await buildCustomReplCommand(device);
-    replUsesCustomClient = true;
-    replControlFile = custom.controlFile;
-    cmd = custom.command;
-  } else {
-    resetCustomReplState();
-    cmd = await buildShellCommand(["connect", device]);
-  }
+  const runtime = await ensureManagerStarted(device);
+  setSerialContext(true);
+  resetCustomReplState();
+  const cmd = await buildReplClientCommand(runtime.endpoint);
 
   // Create a persistent terminal and send the connect command to it. Using
   // shellArgs to run the command at shell startup causes the underlying
@@ -784,13 +783,13 @@ export async function getReplTerminal(
 }
 
 export function isReplOpen(): boolean {
-  if (!replTerminal) return false;
-  const open = vscode.window.terminals.some(t => t === replTerminal);
-  setReplContext(open);
+  const terminalOpen = isReplTerminalOpen();
+  const open = terminalOpen || isSerialManagerActive();
+  setSerialContext(isSerialManagerActive());
   return open;
 }
 
-export async function closeReplTerminal(userInitiated: boolean = false) {
+export async function closeReplClientTerminal(userInitiated: boolean = false) {
   if (replTerminal) {
     try {
       replTerminal.dispose();
@@ -802,6 +801,23 @@ export async function closeReplTerminal(userInitiated: boolean = false) {
   resetCustomReplState();
   userClosedRepl = userInitiated || userClosedRepl;
   setReplContext(false);
+  setSerialContext(isSerialManagerActive());
+}
+
+export async function closeReplTerminal(userInitiated: boolean = false) {
+  await closeReplClientTerminal(userInitiated);
+  await closeManager();
+  setSerialContext(false);
+}
+
+export async function openSerialConnection(): Promise<void> {
+  const connect = mp.getActiveConnect();
+  if (!connect || connect === "auto") {
+    throw new Error("Select a specific serial port first (not 'auto')");
+  }
+  await ensureManagerStarted(mp.normalizeConnect(connect));
+  setSerialContext(true);
+  setReplContext(isReplTerminalOpen());
 }
 
 export async function openReplTerminal() {
@@ -880,8 +896,13 @@ export function toDevicePath(localRel: string, rootPath: string): string {
 }
 
 export async function robustInterrupt(port?: string): Promise<void> {
-  // If REPL terminal holds the port, send interrupt through it to avoid conflicts
-  if (isReplOpen()) {
+  if (await interruptManager()) {
+    showInfo("messages.interruptSentViaRepl");
+    return;
+  }
+
+  // Legacy terminal-only REPL path.
+  if (isReplOpen() && !isSerialManagerActive()) {
     try {
       const term = await getReplTerminal();
       term.sendText("\x03", false);
@@ -932,7 +953,15 @@ export async function robustInterrupt(port?: string): Promise<void> {
 }
 
 export async function robustInterruptAndReset(port?: string): Promise<void> {
-  // If REPL terminal holds the port, send commands through it to avoid conflicts
+  if (isSerialManagerActive()) {
+    await interruptManager();
+    await sleep(100);
+    await softResetManager();
+    showInfo("messages.interruptAndSoftResetSentViaRepl");
+    return;
+  }
+
+  // Legacy terminal-only REPL path.
   if (isReplOpen()) {
     try {
       const term = await getReplTerminal();
@@ -1018,5 +1047,6 @@ export function handleTerminalClose(closedTerminal: vscode.Terminal): void {
     resetCustomReplState();
     userClosedRepl = true; // Mark as user-closed since they closed the terminal
     setReplContext(false);
+    setSerialContext(isSerialManagerActive());
   }
 }

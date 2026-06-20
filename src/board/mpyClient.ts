@@ -1,14 +1,16 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { MpRemoteManager } from "./MpRemoteManager";
 import {
-  clearCustomReplControlFile,
-  customReplControlFileExists,
-  requestCustomReplRpc,
-  sendCustomReplControl,
-} from "./customReplControl";
+  cancelManagerOperation,
+  ensureManagerStarted,
+  getActiveManagerRuntime,
+  getManagerClient,
+  interruptManager,
+  softResetManager,
+} from "./serialManager";
 
 type HelperResponse<T = unknown> = {
   ok: boolean;
@@ -16,10 +18,6 @@ type HelperResponse<T = unknown> = {
   error?: string;
   code?: string;
 };
-
-const FS_PROGRESS_MARKER = "__MPYFS_PROGRESS__";
-const FS_BUSY_RETRY_DELAY_MS = 150;
-const FS_BUSY_RETRY_ATTEMPTS = 20;
 
 export type FileTransferProgress = {
   localPath: string;
@@ -103,10 +101,6 @@ function getMpyReplScriptPath(): string {
   return candidate;
 }
 
-function getBaudRate(): number {
-  return vscode.workspace.getConfiguration("microPythonWorkBench").get<number>("baudRate", 115200);
-}
-
 async function getPythonCommand(): Promise<{ exe: string; args: string[] }> {
   const pythonPath = await MpRemoteManager.detectPythonPath();
   if (!pythonPath) throw new Error("Python interpreter not found");
@@ -142,11 +136,6 @@ function progressPayloadToEvent(payload: {
     total: Number(payload.total || 0),
     done: Boolean(payload.done),
   };
-}
-
-function parseProgressLine(line: string): FileTransferProgress | null {
-  if (!line.startsWith(FS_PROGRESS_MARKER)) return null;
-  return progressPayloadToEvent(JSON.parse(line.slice(FS_PROGRESS_MARKER.length)));
 }
 
 function createCancelledError(): Error & { code?: string } {
@@ -228,148 +217,83 @@ async function runHelper<T>(
   });
 }
 
-async function runHelperWithProgress<T>(
-  args: string[],
-  onProgress: (event: FileTransferProgress) => void,
-  idleTimeoutMs = 120000,
+function managerMethodForFsOp(op: string): string | undefined {
+  switch (op) {
+    case "stat": return "fs.stat";
+    case "listdir": return "fs.listdir";
+    case "tree": return "fs.tree";
+    case "mkdir": return "fs.mkdir";
+    case "remove": return "fs.remove";
+    case "rename": return "fs.rename";
+    case "write_file": return "fs.writeFile";
+    case "read_file": return "fs.readFile";
+    case "exec": return "fs.exec";
+    default: return undefined;
+  }
+}
+
+function managerParamsForFsPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const params = { ...payload };
+  if (typeof payload.local_path === "string") params.localPath = payload.local_path;
+  if (typeof payload.path === "string") params.devicePath = payload.path;
+  return params;
+}
+
+async function managerCallWithCancellation<T>(
+  manager: NonNullable<ReturnType<typeof getManagerClient>>,
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs: number,
   token?: vscode.CancellationToken,
 ): Promise<T> {
-  if (token?.isCancellationRequested) throw createCancelledError();
-  const python = await getPythonCommand();
-  const script = getMpyReplScriptPath();
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    PYTHONUTF8: "1",
-    PYTHONIOENCODING: "utf-8",
-  };
-  const childArgs = python.args.concat([script]).concat(args);
+  if (token?.isCancellationRequested) {
+    await cancelManagerOperation().catch(() => undefined);
+    throw createCancelledError();
+  }
+  if (!token) {
+    return await manager.call<T>(method, params, timeoutMs);
+  }
 
-  return await new Promise<T>((resolve, reject) => {
-    const child = spawn(python.exe, childArgs, { env, windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    let stdoutRemainder = "";
-    let settled = false;
-    let idleTimer: NodeJS.Timeout | undefined;
-    let cancellation: vscode.Disposable | undefined;
-
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      if (idleTimer) clearTimeout(idleTimer);
-      cancellation?.dispose();
-      callback();
-    };
-
-    const resetIdleTimer = () => {
-      if (idleTimeoutMs <= 0) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        child.kill();
-        finish(() => reject(new Error(`mpyrepl helper timed out after ${Math.round(idleTimeoutMs / 1000)}s without transfer progress`)));
-      }, idleTimeoutMs);
-    };
-
-    const cancel = () => {
-      try {
-        child.kill();
-      } catch {
-        // ignore process termination errors
-      }
-      finish(() => reject(createCancelledError()));
-    };
-
-    if (token) {
-      if (token.isCancellationRequested) {
-        cancel();
-        return;
-      }
-      cancellation = token.onCancellationRequested(cancel);
-    }
-
-    const handleStdoutLine = (rawLine: string) => {
-      const line = rawLine.trim();
-      if (!line) return;
-      try {
-        const progress = parseProgressLine(line);
-        if (progress) {
-          onProgress(progress);
-          resetIdleTimer();
-          return;
-        }
-      } catch {
-        // Keep malformed progress lines in stdout so the final error includes context.
-      }
-      stdout += rawLine + "\n";
-    };
-
-    resetIdleTimer();
-    child.stdout?.on("data", chunk => {
-      stdoutRemainder += String(chunk);
-      const lines = stdoutRemainder.split(/\r?\n/);
-      stdoutRemainder = lines.pop() ?? "";
-      for (const line of lines) handleStdoutLine(line);
-    });
-    child.stderr?.on("data", chunk => {
-      stderr += String(chunk);
-      resetIdleTimer();
-    });
-    child.on("error", error => {
-      finish(() => reject(error));
-    });
-    child.on("close", code => {
-      if (stdoutRemainder) handleStdoutLine(stdoutRemainder);
-      finish(() => {
-        if (code !== 0) {
-          if (stdout.split(/\r?\n/).some(line => line.trim().startsWith("{"))) {
-            try {
-              parseHelperJson<T>(stdout);
-            } catch (parseError) {
-              reject(parseError);
-              return;
-            }
-          }
-          reject(new Error(String(stderr || stdout || `mpyrepl helper exited with code ${code}`)));
-          return;
-        }
-        try {
-          resolve(parseHelperJson<T>(stdout));
-        } catch (parseError) {
-          reject(parseError);
-        }
-      });
+  let cancellation: vscode.Disposable | undefined;
+  let cancelled = false;
+  const transfer = manager.call<T>(method, params, timeoutMs);
+  const cancellationSignal = new Promise<never>((_, reject) => {
+    cancellation = token.onCancellationRequested(() => {
+      cancelled = true;
+      cancelManagerOperation().catch(() => undefined);
+      reject(createCancelledError());
     });
   });
+
+  try {
+    return await Promise.race([transfer, cancellationSignal]);
+  } catch (error) {
+    if (cancelled || token.isCancellationRequested) {
+      await Promise.race([transfer.catch(() => undefined), sleep(5000)]);
+    }
+    throw error;
+  } finally {
+    cancellation?.dispose();
+  }
 }
 
-async function runFsHelper<T>(
+async function getFsManager(
   device: string,
-  payload: Record<string, unknown>,
-  timeoutMs = 30000,
-  token?: vscode.CancellationToken,
-): Promise<T> {
-  return runHelper<T>(buildFsArgs(device, payload), timeoutMs, token);
+  method: string | undefined,
+): Promise<NonNullable<ReturnType<typeof getManagerClient>> | undefined> {
+  if (!method) return undefined;
+  return await getStartedManager(device);
 }
 
-function buildFsArgs(device: string, payload: Record<string, unknown>): string[] {
-  const op = String(payload.op || "");
-  const args = [
-    "--port", device,
-    "--baudrate", String(getBaudRate()),
-    "fs",
-    "--op", op,
-  ];
-
-  const append = (flag: string, value: unknown) => {
-    if (typeof value === "string" && value.length > 0) args.push(flag, value);
-  };
-  append("--path", payload.path);
-  append("--src", payload.src);
-  append("--dst", payload.dst);
-  append("--local-path", payload.local_path);
-  append("--source", payload.source);
-  if (payload.recursive === false) args.push("--no-recursive");
-  return args;
+async function getStartedManager(
+  device: string,
+): Promise<NonNullable<ReturnType<typeof getManagerClient>> | undefined> {
+  const existing = getManagerClient();
+  const runtime = getActiveManagerRuntime();
+  if (existing?.connected && runtime?.device === device) return existing;
+  await ensureManagerStarted(device);
+  const started = getManagerClient();
+  return started?.connected ? started : undefined;
 }
 
 async function runFs<T>(
@@ -379,26 +303,18 @@ async function runFs<T>(
   token?: vscode.CancellationToken,
 ): Promise<T> {
   if (token?.isCancellationRequested) throw createCancelledError();
-  for (let attempt = 0; attempt <= FS_BUSY_RETRY_ATTEMPTS; attempt++) {
-    if (customReplControlFileExists(device)) {
-      try {
-        return await requestCustomReplRpc<T>(device, "fs", payload, {
-          timeoutMs,
-          token,
-          onCancel: () => sendCustomReplControl(device, "interrupt"),
-        });
-      } catch (error: any) {
-        if (error?.code === "busy") {
-          if (attempt >= FS_BUSY_RETRY_ATTEMPTS) throw error;
-          await sleep(FS_BUSY_RETRY_DELAY_MS);
-          continue;
-        }
-        await clearCustomReplControlFile(device);
-      }
-    }
-    return runFsHelper<T>(device, payload, timeoutMs, token);
+  const managerMethod = managerMethodForFsOp(String(payload.op || ""));
+  const manager = await getFsManager(device, managerMethod);
+  if (manager && managerMethod) {
+    return await managerCallWithCancellation<T>(
+      manager,
+      managerMethod,
+      managerParamsForFsPayload(payload),
+      timeoutMs,
+      token,
+    );
   }
-  throw new Error("filesystem operation did not complete");
+  throw new Error(`serial manager is not available for filesystem operation: ${String(payload.op || "")}`);
 }
 
 export async function listSerialPorts(): Promise<{ port: string; name: string }[]> {
@@ -441,22 +357,31 @@ export async function writeFileWithProgress(
   token?: vscode.CancellationToken,
 ): Promise<void> {
   const payload = { op: "write_file", local_path: localPath, path: devicePath };
-  if (customReplControlFileExists(device)) {
+  const manager = await getFsManager(device, "fs.writeFile");
+  if (manager) {
     const total = fs.statSync(localPath).size;
+    const onManagerProgress = (progress: Record<string, unknown>) => {
+      if (progress.path && progress.path !== devicePath) return;
+      if (progress.local_path && progress.local_path !== localPath) return;
+      onProgress(progressPayloadToEvent(progress));
+    };
     onProgress({ localPath, devicePath, bytes: 0, total });
-    await requestCustomReplRpc<void>(device, "fs", payload, {
-      timeoutMs: 30 * 60 * 1000,
-      token,
-      onCancel: () => sendCustomReplControl(device, "interrupt"),
-      onProgress: progress => onProgress(progressPayloadToEvent(progress)),
-    });
-    onProgress({ localPath, devicePath, bytes: total, total, done: true });
-    return;
+    manager.on("progress", onManagerProgress);
+    try {
+      await managerCallWithCancellation<void>(
+        manager,
+        "fs.writeFile",
+        managerParamsForFsPayload(payload),
+        30 * 60 * 1000,
+        token,
+      );
+      onProgress({ localPath, devicePath, bytes: total, total, done: true });
+      return;
+    } finally {
+      manager.off("progress", onManagerProgress);
+    }
   }
-
-  const args = buildFsArgs(device, payload);
-  args.push("--progress");
-  await runHelperWithProgress<void>(args, onProgress, 120000, token);
+  throw new Error("serial manager is not available for filesystem upload");
 }
 
 export async function readFile(
@@ -473,17 +398,15 @@ export async function exec(device: string, source: string): Promise<{ stdout: st
 }
 
 export async function softReset(device: string): Promise<void> {
-  await runHelper([
-    "--port", device,
-    "--baudrate", String(getBaudRate()),
-    "soft-reset",
-  ], 30000);
+  await ensureManagerStarted(device);
+  if (!(await softResetManager())) {
+    throw new Error("serial manager is not available for soft reset");
+  }
 }
 
 export async function interrupt(device: string): Promise<void> {
-  await runHelper([
-    "--port", device,
-    "--baudrate", String(getBaudRate()),
-    "interrupt",
-  ], 10000);
+  await ensureManagerStarted(device);
+  if (!(await interruptManager())) {
+    throw new Error("serial manager is not available for interrupt");
+  }
 }

@@ -91,6 +91,22 @@ class _FakeSerial:
         self.is_open = True
 
 
+class _ResettableFakeSerial(_FakeSerial):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_input_calls = 0
+
+    def reset_input_buffer(self) -> None:
+        self.reset_input_calls += 1
+        self.read_chunks = []
+
+
+class _ClearCommErrorSerial(_FakeSerial):
+    @property
+    def in_waiting(self) -> int:
+        raise transport_module.serial.SerialException("ClearCommError failed")
+
+
 class _LegacyWaitingSerial:
     def __init__(self, pending: int) -> None:
         self._pending = pending
@@ -220,6 +236,14 @@ class TransportBehaviorTests(unittest.TestCase):
                 transport.read_until(b"END", timeout=None, interrupt_timeout=0.0),
                 b"",
             )
+
+    def test_read_until_does_not_poll_windows_in_waiting(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="COM4", read_timeout=0.01))
+        serial_stub = _ClearCommErrorSerial()
+        serial_stub.read_chunks = [b"O", b"K"]
+        transport._serial = serial_stub
+
+        self.assertEqual(transport.read_until(b"OK", timeout=0.01), b"OK")
 
     def test_soft_reset_requires_raw_mode_and_streams_banner(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))
@@ -366,12 +390,11 @@ class TransportBehaviorTests(unittest.TestCase):
         serial_stub.read_chunks = [b"\x01"]
         transport._serial = serial_stub
         transport.read_exact = lambda size, timeout: struct.pack("<H", 2)
-        transport.in_waiting = lambda: 1 if serial_stub.read_chunks else 0
         transport.read_until = lambda *args, **kwargs: b"\x04"
 
         transport.raw_paste_write(b"abcd")
 
-        self.assertEqual(serial_stub.writes, [b"abcd", b"\x04"])
+        self.assertEqual(serial_stub.writes, [b"ab", b"cd", b"\x04"])
 
         broken_header = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
         broken_header._serial = _FakeSerial()
@@ -382,7 +405,6 @@ class TransportBehaviorTests(unittest.TestCase):
         broken_response = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
         broken_response._serial = _FakeSerial()
         broken_response.read_exact = lambda size, timeout: struct.pack("<H", 2)
-        broken_response.in_waiting = lambda: 1
         broken_response._serial.read_chunks = [b"X"]
         with self.assertRaisesRegex(
             transport_module.TransportError, "unexpected raw paste response"
@@ -392,10 +414,9 @@ class TransportBehaviorTests(unittest.TestCase):
         early_eof = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
         early_eof._serial = _FakeSerial()
         early_eof.read_exact = lambda size, timeout: struct.pack("<H", 2)
-        early_eof.in_waiting = lambda: 1
         early_eof._serial.read_chunks = [b"\x04"]
         early_eof.raw_paste_write(b"abc")
-        self.assertEqual(early_eof._serial.writes, [b"\x04"])
+        self.assertEqual(early_eof._serial.writes, [b"ab", b"\x04"])
 
         missing_ack = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=1.0))
         missing_ack._serial = _FakeSerial()
@@ -407,7 +428,6 @@ class TransportBehaviorTests(unittest.TestCase):
         timed_out_credit = SerialReplTransport(ReplConfig(port="COM4", operation_timeout=0.01))
         timed_out_credit._serial = _FakeSerial()
         timed_out_credit.read_exact = lambda size, timeout: struct.pack("<H", 0)
-        timed_out_credit.in_waiting = lambda: 0
         with mock.patch("transport.time.sleep", return_value=None):
             with self.assertRaisesRegex(transport_module.TransportError, "window credit"):
                 timed_out_credit.raw_paste_write(b"abc")
@@ -426,6 +446,13 @@ class TransportBehaviorTests(unittest.TestCase):
         serial_stub.read_chunks = [b"12", b"34"]
         transport.drain_input()
         self.assertEqual(serial_stub.read_chunks, [])
+
+        resettable_serial = _ResettableFakeSerial()
+        resettable_serial.read_chunks = [b"pending"]
+        transport._serial = resettable_serial
+        transport.drain_input()
+        self.assertEqual(resettable_serial.reset_input_calls, 1)
+        self.assertEqual(resettable_serial.read_chunks, [])
 
         continuous_serial = _ContinuousSerial()
         transport._serial = continuous_serial

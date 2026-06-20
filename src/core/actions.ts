@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { isReplOpen } from "../board/mpremoteCommands";
+import { isReplTerminalOpen } from "../board/mpremoteCommands";
+import { isSerialManagerActive } from "../board/serialManager";
 
 let refreshActionsTreeViewHandler: (() => void) | undefined;
 
@@ -45,9 +46,11 @@ export class ActionsTree implements vscode.TreeDataProvider<ActionNode> {
     // Icons for actions
     if (element.id === "runActive") {
       item.iconPath = new vscode.ThemeIcon("play", new vscode.ThemeColor("charts.green"));
-    } else if (element.id === "openRepl") {
+    } else if (element.id === "openRepl" || element.id === "closeRepl") {
       item.iconPath = new vscode.ThemeIcon("terminal");
-    } else if (element.id === "stop") {
+    } else if (element.id === "openSerial") {
+      item.iconPath = new vscode.ThemeIcon("plug");
+    } else if (element.id === "closeSerial") {
       item.iconPath = new vscode.ThemeIcon("debug-stop", new vscode.ThemeColor("charts.red"));
     } else if (element.id === "softReset") {
       item.iconPath = new vscode.ThemeIcon("debug-restart", new vscode.ThemeColor("charts.blue"));
@@ -68,13 +71,19 @@ export class ActionsTree implements vscode.TreeDataProvider<ActionNode> {
   }
 
   async getActionNodes(): Promise<ActionNode[]> {
-    const replOpen = isReplOpen();
+    const replOpen = isReplTerminalOpen();
+    const serialOpen = isSerialManagerActive();
     const nodes: ActionNode[] = [];
     nodes.push({ id: "runActive", label: "Run Active File", command: "microPythonWorkBench.runActiveFile" });
     if (replOpen) {
-      nodes.push({ id: "stop", label: "Close Serial", command: "microPythonWorkBench.stop" });
+      nodes.push({ id: "closeRepl", label: "Close REPL", command: "microPythonWorkBench.closeRepl" });
     } else {
-      nodes.push({ id: "openRepl", label: "Open Repl", command: "microPythonWorkBench.openRepl" });
+      nodes.push({ id: "openRepl", label: "Open REPL", command: "microPythonWorkBench.openRepl" });
+    }
+    if (serialOpen) {
+      nodes.push({ id: "closeSerial", label: "Close Serial", command: "microPythonWorkBench.stopSerial" });
+    } else {
+      nodes.push({ id: "openSerial", label: "Open Serial", command: "microPythonWorkBench.openSerial" });
     }
     nodes.push({ id: "softReset", label: "Soft Reset", command: "microPythonWorkBench.softReset" });
     nodes.push({ id: "sendCtrlC", label: "Interrupt", command: "microPythonWorkBench.serialSendCtrlC" });

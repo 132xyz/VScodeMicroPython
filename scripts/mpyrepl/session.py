@@ -94,6 +94,7 @@ def build_prompt_session(
     output=None,
     session_symbols=None,
     stub_modules=None,
+    complete_while_typing: bool = False,
 ) -> PromptSession:
     """Create the minimal prompt_toolkit session for the prompt spike.
 
@@ -103,6 +104,7 @@ def build_prompt_session(
     :param output: Optional prompt_toolkit output object for tests.
     :param session_symbols: Optional REPL symbol table for richer highlighting.
     :param stub_modules: Optional module names discovered from active stubs.
+    :param complete_while_typing: Whether prompt_toolkit should trigger completion while editing.
     :return: Prompt session instance.
     """
     bindings = KeyBindings()
@@ -205,6 +207,7 @@ def build_prompt_session(
         history=history or InMemoryHistory(),
         key_bindings=bindings,
         completer=completer,
+        complete_while_typing=complete_while_typing,
         complete_in_thread=False,
         input=input,
         output=output,

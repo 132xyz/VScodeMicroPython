@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.98",
+  "version": "0.4.5",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -152,6 +152,11 @@
       {
         "command": "microPythonWorkBench.openRepl",
         "title": "%commands.openRepl.title%",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "microPythonWorkBench.closeRepl",
+        "title": "%commands.closeRepl.title%",
         "icon": "$(terminal)"
       },
       {
@@ -348,14 +353,24 @@
           "group": "navigation@1"
         },
         {
-          "command": "microPythonWorkBench.stopSerial",
+          "command": "microPythonWorkBench.closeRepl",
           "when": "view == microPythonWorkBenchActionsView && microPythonWorkBench.replOpen",
           "group": "navigation@1"
         },
         {
+          "command": "microPythonWorkBench.openSerial",
+          "when": "view == microPythonWorkBenchActionsView && !microPythonWorkBench.serialOpen",
+          "group": "navigation@2"
+        },
+        {
+          "command": "microPythonWorkBench.stopSerial",
+          "when": "view == microPythonWorkBenchActionsView && microPythonWorkBench.serialOpen",
+          "group": "navigation@2"
+        },
+        {
           "command": "microPythonWorkBench.serialSendCtrlC",
           "when": "view == microPythonWorkBenchActionsView",
-          "group": "navigation@2"
+          "group": "navigation@3"
         },
         {
           "command": "microPythonWorkBench.refresh",

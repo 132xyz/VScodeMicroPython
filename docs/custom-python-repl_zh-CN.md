@@ -109,6 +109,12 @@ Python 客户端会对 REPL 输出进行增量解码，并在宿主终端编码�
 
 这使得它在 Windows 和混合编码宿主环境下，比直接依赖普通终端输出更稳妥。
 
+### 5. 失败与诊断行为
+
+设备端代码异常会被当作正常 REPL 输出处理。开发板上运行的代码产生 traceback 时, REPL 会打印 traceback, 然后继续保留提示符等待下一条命令。
+
+如果主机侧 REPL 客户端自身崩溃或以非零状态退出, VS Code 会保留终端, 而不是自动关闭。终端里应能看到 Python traceback 和一行简短的 `mpyrepl` 诊断信息。
+
 ## REPL 内部常用控制
 
 - `Ctrl-D`：请求软重置
@@ -163,6 +169,10 @@ python scripts/mpyrepl/__main__.py --port COM4 async-repl --stub-root .mpy-workb
 - 是否已经选择了固定串口
 - `microPythonWorkBench.pythonPath` 是否指向有效 Python 解释器
 - 该解释器是否能够导入 `serial`
+
+### REPL 报错后终端仍然保留
+
+当主机侧 `mpyrepl` 进程以非零状态退出时, 这是预期行为。请先阅读终端中保留下来的 traceback 和诊断信息, 确认原因后再通过工作台操作关闭或重新打开 REPL。
 
 ### 补全能力太弱
 

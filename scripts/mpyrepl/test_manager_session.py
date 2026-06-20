@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import unittest
+from dataclasses import dataclass
+from unittest import mock
+
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+import bootstrap
+
+bootstrap.configure_import_path()
+
+from manager_session import ManagerSession
+from manager_protocol import RpcMethodError
+from models import ExecResult, ReplConfig
+
+
+@dataclass
+class FakeTransport:
+    config: ReplConfig
+
+    def __post_init__(self) -> None:
+        self.opened = False
+        self.closed = False
+        self.raw = False
+        self.interrupted = False
+        self.executed: list[str] = []
+
+    def open(self) -> None:
+        self.opened = True
+
+    def close(self) -> None:
+        self.closed = True
+
+    def enter_raw_repl(self, soft_reset: bool, operation_timeout=None) -> None:
+        self.raw = True
+
+    def exit_raw_repl(self) -> None:
+        self.raw = False
+
+    def interrupt(self) -> None:
+        self.interrupted = True
+
+    def soft_reset(self, output_consumer=None) -> None:
+        if output_consumer:
+            output_consumer(b"soft reboot\r\n")
+
+    def exec_raw(self, command: str, timeout=None, stdout_consumer=None, stderr_consumer=None) -> ExecResult:
+        self.executed.append(command)
+        if "__mpy_helper" in command:
+            return ExecResult(stdout=b"", stderr=b"")
+        stdout = b"ok\r\n"
+        if stdout_consumer:
+            stdout_consumer(stdout)
+        return ExecResult(stdout=stdout, stderr=b"")
+
+
+class ErrorTransport(FakeTransport):
+    def exec_raw(self, command: str, timeout=None, stdout_consumer=None, stderr_consumer=None) -> ExecResult:
+        is_helper_load = len(self.executed) == 0
+        self.executed.append(command)
+        if is_helper_load:
+            return ExecResult(stdout=b"", stderr=b"")
+        if stderr_consumer:
+            stderr_consumer(b"bad\r\n")
+        return ExecResult(stdout=b"", stderr=b"bad\r\n")
+
+
+class OpenErrorTransport(FakeTransport):
+    def open(self) -> None:
+        raise OSError("port busy")
+
+
+class HelperErrorTransport(FakeTransport):
+    def exec_raw(self, command: str, timeout=None, stdout_consumer=None, stderr_consumer=None) -> ExecResult:
+        self.executed.append(command)
+        return ExecResult(stdout=b"", stderr=b"helper failed")
+
+
+class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+        self.transport: FakeTransport | None = None
+
+        def factory(config: ReplConfig) -> FakeTransport:
+            self.transport = FakeTransport(config)
+            return self.transport
+
+        self.session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+
+    async def test_open_execute_interrupt_soft_reset_and_close(self) -> None:
+        await self.session.open()
+        result = await self.session.execute("value = 1\nprint('ok')")
+        interrupted = await self.session.interrupt()
+        reset = await self.session.soft_reset()
+        status = self.session.status()
+        await self.session.close()
+
+        self.assertEqual(result["stdout"], "ok\r\n")
+        self.assertTrue(interrupted)
+        self.assertTrue(reset)
+        self.assertEqual(status["port"], "COM21")
+        self.assertEqual(self.session.state, "stopped")
+        self.assertIsNotNone(self.transport)
+        assert self.transport is not None
+        self.assertTrue(self.transport.opened)
+        self.assertTrue(self.transport.closed)
+        self.assertTrue(self.transport.interrupted)
+        self.assertTrue(any(event == "stdout" for event, _ in self.events))
+
+    async def test_complete_returns_candidates_from_session_symbols(self) -> None:
+        await self.session.open()
+        await self.session.execute("value = 1")
+        completions = await self.session.complete("val", 3, True)
+        await self.session.close()
+
+        self.assertTrue(any(item["text"] == "value" for item in completions))
+
+    async def test_clear_runtime_cache_is_safe_before_open(self) -> None:
+        self.assertTrue(self.session.clear_runtime_cache())
+        await self.session.close()
+
+    async def test_errors_before_open_are_structured(self) -> None:
+        with self.assertRaisesRegex(RpcMethodError, "not connected"):
+            await self.session.interrupt()
+        with self.assertRaisesRegex(RpcMethodError, "not connected"):
+            await self.session.soft_reset()
+        with self.assertRaisesRegex(RpcMethodError, "not ready"):
+            await self.session.fs_operation("stat", {"path": "/"})
+        with self.assertRaisesRegex(RpcMethodError, "not ready"):
+            await self.session.complete("", 0, True)
+        self.assertEqual(await self.session.execute(""), {"stdout": "", "stderr": ""})
+
+    async def test_execute_with_stderr_does_not_record_symbols(self) -> None:
+        def factory(config: ReplConfig) -> ErrorTransport:
+            self.transport = ErrorTransport(config)
+            return self.transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+        await session.open()
+        result = await session.execute("bad_call()")
+        completions = await session.complete("bad", 3, True)
+        await session.close()
+
+        self.assertEqual(result["stderr"], "bad\r\n")
+        self.assertFalse(any(item["text"] == "bad_call" for item in completions))
+        self.assertTrue(any(event == "stderr" for event, _ in self.events))
+
+    async def test_fs_operation_uses_progress_callback_and_maps_errors(self) -> None:
+        await self.session.open()
+
+        def fake_run(client, op, payload):
+            payload["progress_callback"]({"bytes": 1, "total": 2})
+            return {"ok": op}
+
+        with mock.patch("manager_session.run_fs_operation", side_effect=fake_run):
+            result = await self.session.fs_operation(
+                "write_file",
+                {"request_id": "req-1", "local_path": "a.py", "path": "/a.py"},
+            )
+
+        def fake_error(client, op, payload):
+            from fs_ops import FsOperationError
+
+            raise FsOperationError("boom", "device")
+
+        with mock.patch("manager_session.run_fs_operation", side_effect=fake_error):
+            with self.assertRaisesRegex(RpcMethodError, "boom"):
+                await self.session.fs_operation("stat", {"path": "/"})
+
+        await self.session.close()
+        self.assertEqual(result, {"ok": "write_file"})
+        self.assertTrue(any(event == "progress" for event, _ in self.events))
+
+    async def test_open_failure_sets_failed_state_and_closes_transport(self) -> None:
+        transport_holder: dict[str, OpenErrorTransport] = {}
+
+        def factory(config: ReplConfig) -> OpenErrorTransport:
+            transport = OpenErrorTransport(config)
+            transport_holder["transport"] = transport
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+        with self.assertRaisesRegex(OSError, "port busy"):
+            await session.open()
+
+        self.assertEqual(session.state, "failed")
+        self.assertTrue(transport_holder["transport"].closed)
+
+    async def test_helper_load_failure_sets_failed_state(self) -> None:
+        def factory(config: ReplConfig) -> HelperErrorTransport:
+            self.transport = HelperErrorTransport(config)
+            return self.transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+        with self.assertRaisesRegex(Exception, "failed to inject"):
+            await session.open()
+
+        self.assertEqual(session.state, "failed")
+
+    async def test_cancel_uses_interrupt(self) -> None:
+        await self.session.open()
+        self.assertTrue(await self.session.cancel())
+        await self.session.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,8 +17,11 @@ jest.mock('../src/board/mpremote', () => ({
 }));
 jest.mock('../src/board/mpremoteCommands', () => ({
   isReplOpen: jest.fn(),
+  isReplTerminalOpen: jest.fn(),
   openReplTerminal: jest.fn(),
+  openSerialConnection: jest.fn(),
   disconnectReplTerminal: jest.fn(),
+  closeReplClientTerminal: jest.fn(),
   suspendSerialSessionsForAutoSync: jest.fn(),
   restoreSerialSessionsFromSnapshot: jest.fn(),
   serialSendCtrlC: jest.fn(),
@@ -27,6 +30,9 @@ jest.mock('../src/board/mpremoteCommands', () => ({
   runActiveFile: jest.fn(),
   getReplTerminal: jest.fn(),
   closeReplTerminal: jest.fn(),
+}));
+jest.mock('../src/board/serialManager', () => ({
+  isSerialManagerActive: jest.fn(),
 }));
 jest.mock('../src/core/utilityOperations', () => ({
   rebuildManifest: jest.fn(),
@@ -49,18 +55,27 @@ const mpremote = require('../src/board/mpremote') as {
 };
 const mpremoteCommands = require('../src/board/mpremoteCommands') as {
   isReplOpen: jest.Mock;
+  isReplTerminalOpen: jest.Mock;
   openReplTerminal: jest.Mock;
+  openSerialConnection: jest.Mock;
   disconnectReplTerminal: jest.Mock;
+  closeReplClientTerminal: jest.Mock;
   serialSendCtrlC: jest.Mock;
   stop: jest.Mock;
   softReset: jest.Mock;
   runActiveFile: jest.Mock;
   closeReplTerminal: jest.Mock;
 };
+const serialManager = require('../src/board/serialManager') as {
+  isSerialManagerActive: jest.Mock;
+};
 const {
   isReplOpen,
+  isReplTerminalOpen,
   openReplTerminal,
+  openSerialConnection,
   disconnectReplTerminal,
+  closeReplClientTerminal,
   serialSendCtrlC,
   stop,
   softReset,
@@ -174,7 +189,8 @@ describe('small core utilities coverage', () => {
   });
 
   test('ActionsTree switches between open repl and stop based on repl state', async () => {
-    isReplOpen.mockReturnValue(false);
+    isReplTerminalOpen.mockReturnValue(false);
+    serialManager.isSerialManagerActive.mockReturnValue(false);
     const { ActionsTree, registerActionsTreeRefresh, refreshActionsTreeView } = require('../src/core/actions') as typeof import('../src/core/actions');
     const tree = new ActionsTree();
     const changed: boolean[] = [];
@@ -195,6 +211,7 @@ describe('small core utilities coverage', () => {
     expect(closedNodes.map(node => node.id)).toEqual([
       'runActive',
       'openRepl',
+      'openSerial',
       'softReset',
       'sendCtrlC',
     ]);
@@ -220,11 +237,13 @@ describe('small core utilities coverage', () => {
     });
     expect((syncCurrentItem.iconPath as MockThemeIcon).id).toBe('repo-push');
 
-    isReplOpen.mockReturnValue(true);
+    isReplTerminalOpen.mockReturnValue(true);
+    serialManager.isSerialManagerActive.mockReturnValue(true);
     const openNodes = await tree.getActionNodes();
     expect(openNodes.map(node => node.id)).toEqual([
       'runActive',
-      'stop',
+      'closeRepl',
+      'closeSerial',
       'softReset',
       'sendCtrlC',
     ]);
@@ -370,10 +389,15 @@ describe('small core utilities coverage', () => {
     expect(openReplTerminal).toHaveBeenCalled();
 
     isReplOpen.mockReturnValue(true);
+    isReplTerminalOpen.mockReturnValue(true);
     await replCommands.stopSerial();
-    expect(disconnectReplTerminal).toHaveBeenCalled();
+    expect(closeReplTerminal).toHaveBeenCalledWith(true);
+
+    await replCommands.closeRepl();
+    expect(closeReplClientTerminal).toHaveBeenCalledWith(true);
 
     isReplOpen.mockReturnValue(false);
+    isReplTerminalOpen.mockReturnValue(false);
     await replCommands.stopSerial();
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'No REPL terminal is currently open'
@@ -387,7 +411,7 @@ describe('small core utilities coverage', () => {
 
     expect(replCommands.serialSendCtrlC).toBe(serialSendCtrlC);
     expect(replCommands.runActiveFile).toBe(runActiveFile);
-    expect(replCommands.openSerial).toBe(openReplTerminal);
+    expect(replCommands.openSerial).toBe(openSerialConnection);
     expect(replCommands.softReset).toBe(softReset);
   });
 

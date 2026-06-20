@@ -653,7 +653,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("microPythonWorkBench.openSerial", async () => {
       try {
-        await openReplTerminal();
+        await replCommands.openSerial();
       } finally {
         refreshActionsTree();
       }
@@ -663,6 +663,13 @@ export async function activate(context: vscode.ExtensionContext) {
         await openReplTerminal();
       } catch (error: any) {
         Localization.showError("messages.boardCommandFailed", error?.message ?? String(error));
+      } finally {
+        refreshActionsTree();
+      }
+    }),
+    vscode.commands.registerCommand("microPythonWorkBench.closeRepl", async () => {
+      try {
+        await replCommands.closeRepl();
       } finally {
         refreshActionsTree();
       }

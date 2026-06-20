@@ -96,6 +96,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for device-backed dir() completion queries",
     )
 
+    manager_parser = subparsers.add_parser(
+        "manager",
+        help="Run the hidden serial manager RPC server",
+    )
+    manager_parser.add_argument("--host", default="127.0.0.1", help="Manager bind host")
+    manager_parser.add_argument(
+        "--manager-port",
+        dest="manager_port",
+        type=int,
+        default=0,
+        help="Manager bind port, or 0 for an OS-assigned port",
+    )
+    manager_parser.add_argument("--token", default="", help="Manager authentication token")
+    manager_parser.add_argument(
+        "--follow-timeout",
+        type=float,
+        default=10.0,
+        help="Timeout while waiting for stdout and stderr EOF markers",
+    )
+    manager_parser.add_argument(
+        "--stub-root",
+        default="",
+        help="Optional stub root used for completion",
+    )
+    manager_parser.add_argument(
+        "--dir-query-timeout",
+        type=float,
+        default=2.0,
+        help="Timeout in seconds for device-backed dir() completion queries",
+    )
+
+    repl_client_parser = subparsers.add_parser(
+        "repl-client",
+        help="Run a terminal client connected to a hidden serial manager",
+    )
+    repl_client_parser.add_argument(
+        "--endpoint",
+        required=True,
+        help="Manager endpoint, for example 127.0.0.1:50000",
+    )
+    repl_client_parser.add_argument("--token", required=True, help="Manager authentication token")
+
     subparsers.add_parser("ports", help="List host serial ports as JSON")
 
     fs_parser = subparsers.add_parser("fs", help="Run one filesystem operation as JSON")

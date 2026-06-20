@@ -74,6 +74,8 @@ python -m pip install --user pyserial
 
 - 默认 REPL 终端通过内置 `scripts/mpyrepl/__main__.py` 客户端打开。
 - `MicroPython 工作台：运行活动文件` 会把当前文件发送到该 REPL 会话执行, 输出结束后回到同一个提示符。
+- 设备端代码异常会打印在 REPL 中, 不会关闭当前提示符。
+- 如果主机侧 REPL 客户端自身以非零状态退出, VS Code 会保留终端, 便于查看 traceback 和诊断信息。
 - 在 Windows 上，扩展会为 REPL 和 Run 终端注入更偏向 UTF-8 的环境变量与 PowerShell 输出编码设置。
 - `microPythonWorkBench.serialAutoSuspend` 会在同步前关闭 REPL / Run 终端，避免串口冲突，并在同步后恢复原来的串口会话状态。
 - `microPythonWorkBench.replRestoreBehavior` 用于控制自动恢复 REPL 后的行为：

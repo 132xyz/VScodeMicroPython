@@ -10,10 +10,12 @@ import {
   stop,
   softReset,
   runActiveFile,
-  getReplTerminal,
   isReplOpen,
+  isReplTerminalOpen,
+  closeReplClientTerminal,
   closeReplTerminal,
-  openReplTerminal
+  openReplTerminal,
+  openSerialConnection
 } from "../board/mpremoteCommands";
 
 // REPL commands implementation
@@ -24,7 +26,15 @@ export const replCommands = {
 
   stopSerial: async () => {
     if (isReplOpen()) {
-      await disconnectReplTerminal();
+      await closeReplTerminal(true);
+    } else {
+      vscode.window.showInformationMessage("No REPL terminal is currently open");
+    }
+  },
+
+  closeRepl: async () => {
+    if (isReplTerminalOpen()) {
+      await closeReplClientTerminal(true);
     } else {
       vscode.window.showInformationMessage("No REPL terminal is currently open");
     }
@@ -34,7 +44,7 @@ export const replCommands = {
 
   runActiveFile: runActiveFile,
 
-  openSerial: openReplTerminal,
+  openSerial: openSerialConnection,
 
   stop: async () => {
     try {

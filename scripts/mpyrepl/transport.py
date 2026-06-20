@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import struct
 import time
 from typing import Callable, Optional
@@ -135,17 +136,6 @@ class SerialReplTransport:
                         consumer(data[emitted_length:limit])
                 return data
 
-            if self.in_waiting() > 0:
-                new_data = self._ensure_serial().read(1)
-                data += new_data
-                if consumer is not None:
-                    safe_limit = len(data) - max(0, len(ending) - 1)
-                    if emitted_length < safe_limit:
-                        consumer(data[emitted_length:safe_limit])
-                        emitted_length = safe_limit
-                last_char_at = time.monotonic()
-                continue
-
             now = time.monotonic()
             if timeout is not None and now >= last_char_at + timeout:
                 return data
@@ -157,6 +147,18 @@ class SerialReplTransport:
                 and now >= max(self._interrupt_requested_at, last_char_at) + interrupt_timeout
             ):
                 return data
+
+            new_data = self._read_serial(1)
+            if new_data:
+                data += new_data
+                if consumer is not None:
+                    safe_limit = len(data) - max(0, len(ending) - 1)
+                    if emitted_length < safe_limit:
+                        consumer(data[emitted_length:safe_limit])
+                        emitted_length = safe_limit
+                last_char_at = time.monotonic()
+                continue
+
             time.sleep(0.01)
 
     def enter_raw_repl(self, soft_reset: bool, operation_timeout: Optional[float] = None) -> None:
@@ -409,11 +411,12 @@ class SerialReplTransport:
         deadline = time.monotonic() + self._config.operation_timeout
 
         while offset < len(command_bytes):
-            while window_remaining == 0 or self.in_waiting() > 0:
-                response = serial_port.read(1)
+            while window_remaining == 0:
+                response = self._read_serial(1)
                 if response == b"":
                     if time.monotonic() >= deadline:
                         raise TransportError("timed out waiting for raw paste window credit")
+                    time.sleep(0.01)
                     continue
                 if response == b"\x01":
                     window_remaining += window_size
@@ -444,14 +447,22 @@ class SerialReplTransport:
         :param max_duration: Maximum seconds to spend draining, or None for no bound.
         :return: None
         """
-        deadline = None if max_duration is None else time.monotonic() + max_duration
-        pending = self.in_waiting()
         serial_port = self._ensure_serial()
+        reset_input = getattr(serial_port, "reset_input_buffer", None)
+        if callable(reset_input):
+            try:
+                reset_input()
+                return
+            except (OSError, serial.SerialException):
+                pass
+
+        deadline = None if max_duration is None else time.monotonic() + max_duration
+        pending = self._safe_in_waiting()
         while pending > 0:
-            serial_port.read(pending)
+            self._read_serial(pending)
             if deadline is not None and time.monotonic() >= deadline:
                 break
-            pending = self.in_waiting()
+            pending = self._safe_in_waiting()
 
     def in_waiting(self) -> int:
         """Return the number of bytes available from the serial port.
@@ -463,6 +474,16 @@ class SerialReplTransport:
             return int(serial_port.in_waiting)
         return int(serial_port.inWaiting())
 
+    def _safe_in_waiting(self) -> int:
+        """Return pending bytes when supported, suppressing serial status failures.
+
+        :return: Count of pending bytes, or 0 when unavailable.
+        """
+        try:
+            return self.in_waiting()
+        except (OSError, serial.SerialException):
+            return 0
+
     def read_exact(self, size: int, timeout: float) -> bytes:
         """Read exactly the requested number of bytes or fail on timeout.
 
@@ -472,10 +493,9 @@ class SerialReplTransport:
         """
         deadline = time.monotonic() + timeout
         data = bytearray()
-        serial_port = self._ensure_serial()
 
         while len(data) < size:
-            chunk = serial_port.read(size - len(data))
+            chunk = self._read_serial(size - len(data))
             if chunk:
                 data.extend(chunk)
                 continue
@@ -483,6 +503,67 @@ class SerialReplTransport:
                 break
 
         return bytes(data)
+
+    def _read_serial(self, size: int) -> bytes:
+        """Read bytes without pyserial's Windows ClearCommError polling path.
+
+        :param size: Maximum bytes to read.
+        :return: Bytes returned by the serial backend.
+        """
+        if size <= 0:
+            return b""
+
+        serial_port = self._ensure_serial()
+        try:
+            win32_data = self._read_serial_win32(serial_port, size)
+            if win32_data is not None:
+                return win32_data
+            return serial_port.read(size)
+        except (OSError, serial.SerialException) as exc:
+            raise TransportError(str(exc)) from exc
+
+    def _read_serial_win32(self, serial_port: object, size: int) -> Optional[bytes]:
+        """Read from pyserial's Windows handle without calling ClearCommError.
+
+        :param serial_port: pyserial serial object.
+        :param size: Maximum bytes to read.
+        :return: Bytes when the Windows backend is detected, otherwise None.
+        """
+        win32 = getattr(getattr(serial, "serialwin32", None), "win32", None)
+        port_handle = getattr(serial_port, "_port_handle", None)
+        overlapped_read = getattr(serial_port, "_overlapped_read", None)
+        if win32 is None or port_handle is None or overlapped_read is None:
+            return None
+        if not getattr(serial_port, "is_open", False):
+            raise serial.PortNotOpenError()
+
+        win32.ResetEvent(overlapped_read.hEvent)
+        buffer = ctypes.create_string_buffer(size)
+        read_count = win32.DWORD()
+        read_ok = win32.ReadFile(
+            port_handle,
+            buffer,
+            size,
+            ctypes.byref(read_count),
+            ctypes.byref(overlapped_read),
+        )
+        if not read_ok and win32.GetLastError() not in (
+            win32.ERROR_SUCCESS,
+            win32.ERROR_IO_PENDING,
+        ):
+            raise serial.SerialException("ReadFile failed ({!r})".format(ctypes.WinError()))
+
+        result_ok = win32.GetOverlappedResult(
+            port_handle,
+            ctypes.byref(overlapped_read),
+            ctypes.byref(read_count),
+            True,
+        )
+        if not result_ok and win32.GetLastError() != win32.ERROR_OPERATION_ABORTED:
+            raise serial.SerialException(
+                "GetOverlappedResult failed ({!r})".format(ctypes.WinError())
+            )
+        return bytes(buffer.raw[: read_count.value])
 
     def _ensure_serial(self) -> serial.Serial:
         """Return the opened serial object or raise.

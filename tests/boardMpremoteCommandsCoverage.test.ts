@@ -26,6 +26,15 @@ jest.mock('../src/board/mpyClient', () => ({
   interrupt: jest.fn(),
   softReset: jest.fn(),
 }));
+jest.mock('../src/board/serialManager', () => ({
+  buildReplClientCommand: jest.fn(),
+  closeManager: jest.fn(),
+  ensureManagerStarted: jest.fn(),
+  executeInManager: jest.fn(),
+  interruptManager: jest.fn(),
+  isSerialManagerActive: jest.fn(),
+  softResetManager: jest.fn(),
+}));
 jest.mock('../src/board/MpRemoteManager', () => ({
   MpRemoteManager: {
     isModuleAvailable: jest.fn(),
@@ -78,6 +87,15 @@ const fs = require('node:fs') as {
 const mpyClient = require('../src/board/mpyClient') as {
   interrupt: jest.Mock;
   softReset: jest.Mock;
+};
+const serialManager = require('../src/board/serialManager') as {
+  buildReplClientCommand: jest.Mock;
+  closeManager: jest.Mock;
+  ensureManagerStarted: jest.Mock;
+  executeInManager: jest.Mock;
+  interruptManager: jest.Mock;
+  isSerialManagerActive: jest.Mock;
+  softResetManager: jest.Mock;
 };
 const localization = require('../src/core/localization') as {
   showInfo: jest.Mock;
@@ -150,6 +168,16 @@ describe('board mpremoteCommands coverage', () => {
     mpRemoteManager.MpRemoteManager.detectPythonPath.mockResolvedValue('python3');
     mpyClient.interrupt.mockResolvedValue(undefined);
     mpyClient.softReset.mockResolvedValue(undefined);
+    serialManager.ensureManagerStarted.mockResolvedValue({
+      device: 'COM4',
+      endpoint: { host: '127.0.0.1', port: 50123, token: 'tok' },
+    });
+    serialManager.buildReplClientCommand.mockResolvedValue('python repl-client --endpoint 127.0.0.1:50123 --token tok');
+    serialManager.closeManager.mockResolvedValue(undefined);
+    serialManager.executeInManager.mockResolvedValue({ stdout: '', stderr: '' });
+    serialManager.interruptManager.mockResolvedValue(false);
+    serialManager.isSerialManagerActive.mockReturnValue(false);
+    serialManager.softResetManager.mockResolvedValue(false);
     fs.existsSync.mockReturnValue(true);
     childProcess.exec.mockImplementation((_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       callback(null, '', '');
@@ -194,7 +222,8 @@ describe('board mpremoteCommands coverage', () => {
 
     const replTerminal = await commands.getReplTerminal();
     expect(vscode.window.createTerminal).toHaveBeenCalledWith(expect.objectContaining({ name: 'ESP32 REPL' }));
-    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
+    expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
+    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('repl-client'), true);
     expect(commands.isReplOpen()).toBe(true);
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', true);
 
@@ -213,10 +242,11 @@ describe('board mpremoteCommands coverage', () => {
     await jest.runOnlyPendingTimersAsync();
     await closePromise;
     expect(replTerminal.dispose).toHaveBeenCalled();
+    expect(serialManager.closeManager).toHaveBeenCalled();
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', false);
   });
 
-  test('experimental custom repl prompts to install pyserial when serial module is missing', async () => {
+  test('repl terminal starts hidden manager client command', async () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
@@ -242,9 +272,9 @@ describe('board mpremoteCommands coverage', () => {
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
     const replTerminal = await commands.getReplTerminal();
 
-    expect(mpRemoteManager.MpRemoteManager.installPackages).toHaveBeenCalledWith(['pyserial'], 'python3');
-    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('async-repl'), true);
-    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('--stub-root /workspace/stub-overlay'), true);
+    expect(mpRemoteManager.MpRemoteManager.installPackages).not.toHaveBeenCalled();
+    expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('repl-client'), true);
+    expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
   });
 
   test('runActiveFile uses custom repl control exec when experimental repl is enabled', async () => {
@@ -284,20 +314,14 @@ describe('board mpremoteCommands coverage', () => {
     );
     expect(replTerminal.show).toHaveBeenCalled();
 
-    const writeCalls = fs.promises.writeFile.mock.calls;
-    const writeCall = writeCalls[writeCalls.length - 1];
-    expect(writeCall).toBeDefined();
-    const payload = JSON.parse(writeCall[1]);
-    expect(payload.command).toBe('exec');
-    expect(payload.source).toBe('print("中文")\n');
-    expect(payload.label).toBe('main.py');
+    expect(serialManager.executeInManager).toHaveBeenCalledWith('print("中文")\n');
 
     const closePromise = commands.closeReplTerminal();
     await jest.runOnlyPendingTimersAsync();
     await closePromise;
   });
 
-  test('softReset reattaches to existing custom repl control file after extension reload', async () => {
+  test('softReset uses active serial manager when available', async () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
@@ -308,18 +332,15 @@ describe('board mpremoteCommands coverage', () => {
     }));
     fs.existsSync.mockReturnValue(true);
     fs.promises.readFile.mockResolvedValue(JSON.stringify({ sequence: 7, command: 'ready' }));
+    serialManager.softResetManager.mockResolvedValueOnce(true);
 
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
     try {
       await commands.softReset();
 
       expect(childProcess.exec).not.toHaveBeenCalled();
-      const writeCalls = fs.promises.writeFile.mock.calls;
-      const writeCall = writeCalls[writeCalls.length - 1];
-      expect(writeCall).toBeDefined();
-      const payload = JSON.parse(writeCall[1]);
-      expect(payload.sequence).toBe(8);
-      expect(payload.command).toBe('soft-reset');
+      expect(serialManager.softResetManager).toHaveBeenCalled();
+      expect(fs.promises.writeFile).not.toHaveBeenCalled();
       expect(localization.showInfo).toHaveBeenCalledWith('messages.softResetSentViaRepl');
     } finally {
       const closePromise = commands.closeReplTerminal();
@@ -375,8 +396,7 @@ describe('board mpremoteCommands coverage', () => {
       await commands.runActiveFile();
       const runTerminal = ((vscode.window.terminals as unknown) as MockTerminal[]).find(t => t.name === 'ESP32 Run File');
       expect(runTerminal).toBeUndefined();
-      const writeCall = fs.promises.writeFile.mock.calls.find(call => String(call[1]).includes('"command":"exec"'));
-      expect(writeCall).toBeDefined();
+      expect(serialManager.executeInManager).toHaveBeenCalledWith('print("run")\n');
       await commands.closeReplTerminal();
     } finally {
       jest.useFakeTimers();

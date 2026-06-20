@@ -33,6 +33,7 @@ npm run compile
 npm run package
 ```
 
+
 2. Install `pyserial` into the Python environment used by the extension:
 
 ```bash
@@ -75,6 +76,8 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 
 - The default REPL terminal opens the bundled `scripts/mpyrepl/__main__.py` client in a persistent VS Code terminal.
 - `MicroPython WorkBench: Run Active File` sends the current file to that REPL session, streams output, then returns to the same prompt.
+- Device-side exceptions are printed in the REPL and do not close the prompt.
+- If the host-side REPL client itself exits with a non-zero code, VS Code keeps the terminal open so the traceback and diagnostic message remain visible.
 - On Windows, the extension initializes REPL and Run terminals with UTF-8-oriented environment settings and PowerShell output encoding.
 - `microPythonWorkBench.serialAutoSuspend` closes REPL/Run terminals before sync operations to avoid serial-port conflicts, then restores the previous session state afterward.
 - `microPythonWorkBench.replRestoreBehavior` controls what happens after auto-suspend restores the REPL:

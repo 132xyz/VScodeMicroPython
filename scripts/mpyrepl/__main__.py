@@ -10,9 +10,8 @@ import json
 import os
 import signal
 import sys
-import threading
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +38,10 @@ from fs_ops import (
     response_payload,
     run_fs_operation,
 )
+from manager_server import run_manager
 from models import ReplConfig
+from operation_gate import SerialOperationGate
+from repl_client import run_repl_client
 from repl_semantics import build_helper_source, instrument_source
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
 from transport import SerialReplTransport, TransportError, TransportInterrupted
@@ -48,7 +50,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 MIN_PYTHON = (3, 9)
 PROMPT_CONTROL_EXIT = "__mpyrepl_prompt_control_exit__"
-ResultT = TypeVar("ResultT")
 
 
 class AsyncReplState:
@@ -67,95 +68,6 @@ class AsyncReplState:
         self.pending_action = ""
         self.pending_exec_source = ""
         self.pending_exec_label = ""
-
-
-class SerialOperationGate:
-    """Serialize raw REPL protocol operations on one transport.
-
-    :return: None
-    """
-
-    def __init__(self) -> None:
-        """Initialize an idle gate.
-
-        :return: None
-        """
-        self._lock = threading.Lock()
-        self._current_operation = ""
-
-    @property
-    def busy(self) -> bool:
-        """Return whether a serialized operation is running.
-
-        :return: True when the transport gate is occupied.
-        """
-        return self._lock.locked()
-
-    @property
-    def current_operation(self) -> str:
-        """Return the label of the current serialized operation.
-
-        :return: Operation label or an empty string.
-        """
-        return self._current_operation
-
-    async def run(
-        self,
-        operation: str,
-        func: Callable[..., ResultT],
-        *args,
-    ) -> ResultT:
-        """Run one blocking transport operation through the shared gate.
-
-        :param operation: Human-readable operation label.
-        :param func: Blocking function executed in a worker thread.
-        :param args: Positional arguments forwarded to func.
-        :return: Function return value.
-        """
-        return await asyncio.to_thread(self.run_blocking, operation, func, *args)
-
-    def run_blocking(
-        self,
-        operation: str,
-        func: Callable[..., ResultT],
-        *args,
-    ) -> ResultT:
-        """Run one blocking transport operation while holding the gate.
-
-        :param operation: Human-readable operation label.
-        :param func: Blocking function.
-        :param args: Positional arguments forwarded to func.
-        :return: Function return value.
-        """
-        with self._lock:
-            self._current_operation = operation
-            try:
-                return func(*args)
-            finally:
-                self._current_operation = ""
-
-    def try_run_blocking(
-        self,
-        operation: str,
-        func: Callable[..., ResultT],
-        *args,
-    ) -> ResultT | None:
-        """Try to run one blocking operation without waiting for the gate.
-
-        :param operation: Human-readable operation label.
-        :param func: Blocking function.
-        :param args: Positional arguments forwarded to func.
-        :return: Function return value, or None when the gate is busy.
-        """
-        if not self._lock.acquire(blocking=False):
-            return None
-
-        self._current_operation = operation
-        try:
-            return func(*args)
-        finally:
-            self._current_operation = ""
-            self._lock.release()
 
 
 class ReplInputBuffer:
@@ -980,6 +892,8 @@ def main() -> int:
     args = parse_args()
     if args.command == "ports":
         return run_ports()
+    if args.command == "repl-client":
+        return run_repl_client(args.endpoint, args.token)
     if not args.port:
         sys.stderr.write("[mpyrepl] --port is required for %s\n" % (args.command,))
         sys.stderr.flush()
@@ -1008,6 +922,16 @@ def main() -> int:
                     args.stub_root,
                     args.dir_query_timeout,
                 )
+            )
+        if args.command == "manager":
+            return run_manager(
+                config,
+                host=args.host,
+                port=args.manager_port,
+                token=args.token,
+                follow_timeout=args.follow_timeout,
+                stub_root=args.stub_root,
+                dir_query_timeout=args.dir_query_timeout,
             )
         if args.command == "soft-reset":
             return run_soft_reset(config)

@@ -109,6 +109,12 @@ The Python client incrementally decodes REPL output and uses a Unicode-safe stre
 
 That makes the custom REPL more robust on hosts where direct console output can still fail, especially older Windows console code-page setups.
 
+### 5. Failure and diagnostics behavior
+
+Device-side exceptions are treated as normal REPL output. A traceback from code running on the board is printed and the prompt remains open for the next command.
+
+If the host-side REPL client itself crashes or exits with a non-zero code, VS Code keeps the terminal open instead of closing it automatically. The terminal should contain the Python traceback and a short `mpyrepl` diagnostic line.
+
 ## Key controls inside the REPL
 
 - `Ctrl-D`: request a soft reset
@@ -163,6 +169,10 @@ Check:
 - a fixed serial port is selected
 - `microPythonWorkBench.pythonPath` points to a valid Python interpreter
 - that interpreter can import `serial`
+
+### REPL terminal stays open after an error
+
+This is intentional when the host-side `mpyrepl` process exits with a non-zero code. Read the traceback and diagnostic line left in the terminal, then close or reopen the REPL from the Workbench actions when finished.
 
 ### Completion is too limited
 
