@@ -9,3 +9,5 @@ dist/
 /node_modules
 __pycache__/
 coverage/
+release/
+*.cover

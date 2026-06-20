@@ -18,7 +18,6 @@ import { Esp32DecorationProvider } from "../ui/decorations";
 import { listDirPyRaw } from "../python/pyraw";
 import { BoardOperations } from "../board/boardOperations";
 import { PythonInterpreterManager } from "../python/pythonInterpreter";
-// import { monitor } from "../board/monitor"; // switched to auto-suspend REPL strategy
 import { refresh, rebuildManifest, cancelAllTasks } from "./utilityOperations";
 import {
   disconnectReplTerminal,

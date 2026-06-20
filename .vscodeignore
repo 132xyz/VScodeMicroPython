@@ -1,19 +1,35 @@
-# Fuentes y configs que no necesita el usuario
+# Development-only sources and local workspace metadata.
 src/**
-tsconfig.json
-.vscode/**
+tests/**
+qzplans/**
 .git/**
 .github/**
+.vscode/**
 .vscodeignore
-.vscodelocal/**
-node_modules/**
+.gitattributes
+.gitignore
+.gitmodules
+.mpyignore
+tsconfig.json
+jest.config.js
 
-# Mantén solo lo necesario
-!dist/**
-!media/**
-!assets/**
-!code_completion/**
-!scripts/**
-!readme.md
-!changelog.md
-!license*
+# Dependencies, build/test output, and release artifacts.
+node_modules/**
+coverage/**
+release/**
+*.vsix
+*.log
+*.cover
+dist/core/test.js
+dist/core/test.js.map
+
+# Python test and coverage artifacts are not needed at runtime.
+scripts/**/*.cover
+scripts/mpyrepl/test_*.py
+scripts/mpyrepl/run_python_tests_with_coverage.py
+scripts/mpyrepl/requirements-test.txt
+
+# Developer-only helper scripts and notes.
+scripts/bench_upload.py
+scripts/check_python_deps.py
+docs/llm.md
