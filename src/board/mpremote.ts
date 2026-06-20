@@ -1132,11 +1132,15 @@ export async function mkdir(p: string): Promise<void> {
   clearFileTreeCache();
 }
 
-export async function cpFromDevice(devicePath: string, localPath: string): Promise<void> {
+export async function cpFromDevice(
+  devicePath: string,
+  localPath: string,
+  opts: { token?: vscode.CancellationToken } = {},
+): Promise<void> {
   const connect = normalizeConnect(getActiveConnect());
   if (!connect || connect === "auto") throw new Error("Select a specific serial port first");
   try {
-    await mpyClient.readFile(connect, devicePath, localPath);
+    await mpyClient.readFile(connect, devicePath, localPath, opts.token);
   } catch (error: any) {
     throw new Error(`Failed to copy from device: ${error?.message || error}\nDevice path: ${devicePath}\nLocal path: ${localPath}`);
   }
@@ -1149,6 +1153,7 @@ export async function cpToDevice(localPath: string, devicePath: string): Promise
     await mpyClient.writeFile(connect, localPath, devicePath);
     clearFileTreeCache();
   } catch (error: any) {
+    await cleanupUploadTemp(connect, devicePath);
     console.error(`[DEBUG] cpToDevice: Upload failed:`, error);
     throw error;
   }
@@ -1157,12 +1162,43 @@ export async function cpToDevice(localPath: string, devicePath: string): Promise
 export async function uploadReplacing(localPath: string, devicePath: string, opts: { skipMkdir?: boolean } = {}): Promise<void> {
   const connect = normalizeConnect(getActiveConnect());
   if (!connect || connect === "auto") throw new Error("Select a specific serial port first");
-  if (!opts.skipMkdir) {
-    await mpyClient.writeFile(connect, localPath, devicePath);
-  } else {
-    await mpyClient.writeFile(connect, localPath, devicePath);
+  try {
+    if (!opts.skipMkdir) {
+      await mpyClient.writeFile(connect, localPath, devicePath);
+    } else {
+      await mpyClient.writeFile(connect, localPath, devicePath);
+    }
+    clearFileTreeCache();
+  } catch (error) {
+    await cleanupUploadTemp(connect, devicePath);
+    throw error;
   }
-  clearFileTreeCache();
+}
+
+export async function uploadReplacingWithProgress(
+  localPath: string,
+  devicePath: string,
+  onProgress: (event: mpyClient.FileTransferProgress) => void,
+  opts: { skipMkdir?: boolean; token?: vscode.CancellationToken } = {},
+): Promise<void> {
+  const connect = normalizeConnect(getActiveConnect());
+  if (!connect || connect === "auto") throw new Error("Select a specific serial port first");
+  try {
+    await mpyClient.writeFileWithProgress(connect, localPath, devicePath, onProgress, opts.token);
+    clearFileTreeCache();
+  } catch (error) {
+    await cleanupUploadTemp(connect, devicePath);
+    throw error;
+  }
+}
+
+async function cleanupUploadTemp(connect: string, devicePath: string): Promise<void> {
+  try {
+    await mpyClient.remove(connect, `${devicePath}.mpyupload`, false);
+    clearFileTreeCache();
+  } catch {
+    // Best effort only. The original upload error is more useful to callers.
+  }
 }
 
 export async function deleteFile(p: string): Promise<void> {

@@ -31,7 +31,14 @@ from completion_engine import ReplCompleter
 from completion_state import ReplSessionSymbols
 from control import FileControlChannel
 from decode import Utf8StreamDecoder
-from fs_ops import DeviceFsClient, FsOperationError, list_serial_ports, response_payload, run_fs_operation
+from fs_ops import (
+    PROGRESS_MARKER,
+    DeviceFsClient,
+    FsOperationError,
+    list_serial_ports,
+    response_payload,
+    run_fs_operation,
+)
 from models import ReplConfig
 from repl_semantics import build_helper_source, instrument_source
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
@@ -506,8 +513,9 @@ async def handle_fs_control_request(
     """
     request_id = request.request_id or str(request.sequence)
     response_file = request.response_file
-    payload = request.payload or {}
+    payload = dict(request.payload or {})
     op = str(payload.get("op") or "")
+    progress_file = getattr(request, "progress_file", "")
 
     if state.executing:
         write_json_file(
@@ -517,6 +525,8 @@ async def handle_fs_control_request(
         return
 
     try:
+        if progress_file and op == "write_file":
+            payload["progress_callback"] = lambda event: write_json_file(progress_file, event)
         data = await gate.run("fs-" + op, run_fs_operation, fs_client, op, payload)
     except FsOperationError as exc:
         write_json_file(
@@ -650,7 +660,15 @@ async def watch_control_channel(
     :param transport: Active serial transport.
     :return: None
     """
+    active_fs_task: asyncio.Task | None = None
     while True:
+        if active_fs_task is not None and active_fs_task.done():
+            try:
+                active_fs_task.result()
+            except Exception as exc:
+                write_text(sys.stderr, "\n[mpyrepl] filesystem request task failed: %s\n" % exc)
+            active_fs_task = None
+
         request = channel.read_next()
         if request is None:
             await asyncio.sleep(0.05)
@@ -696,7 +714,21 @@ async def watch_control_channel(
             continue
 
         if command == "fs":
-            await handle_fs_control_request(request, gate, state, fs_client)
+            if active_fs_task is not None:
+                write_json_file(
+                    request.response_file,
+                    response_payload(
+                        request.request_id or str(request.sequence),
+                        False,
+                        error="device is busy running filesystem operation",
+                        code="busy",
+                    ),
+                )
+                continue
+            active_fs_task = asyncio.create_task(
+                handle_fs_control_request(request, gate, state, fs_client)
+            )
+            await asyncio.sleep(0)
             continue
 
 
@@ -906,6 +938,8 @@ def run_fs_cli(config: ReplConfig, args) -> int:
         "source": args.source,
         "recursive": not args.no_recursive,
     }
+    if getattr(args, "progress", False) and args.op == "write_file":
+        payload["progress_callback"] = write_fs_progress_event
     transport = SerialReplTransport(config)
     try:
         transport.open()
@@ -926,6 +960,15 @@ def run_fs_cli(config: ReplConfig, args) -> int:
         except Exception:
             pass
         transport.close()
+
+
+def write_fs_progress_event(event: dict) -> None:
+    """Write one machine-readable filesystem progress event.
+
+    :param event: Progress payload.
+    :return: None
+    """
+    print(PROGRESS_MARKER + json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def main() -> int:

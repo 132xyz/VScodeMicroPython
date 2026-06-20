@@ -3,6 +3,8 @@ export const window = {
   showWarningMessage: jest.fn(),
   showErrorMessage: jest.fn(),
   showInformationMessage: jest.fn(),
+  showOpenDialog: jest.fn(),
+  showQuickPick: jest.fn(),
   withProgress: jest.fn(),
   createStatusBarItem: jest.fn(),
 };
@@ -10,6 +12,10 @@ export const window = {
 export const commands = {
   executeCommand: jest.fn(),
 };
+
+export const Disposable = jest.fn().mockImplementation((dispose: () => void) => ({
+  dispose,
+}));
 
 export const env = {
   clipboard: {

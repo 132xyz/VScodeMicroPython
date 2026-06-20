@@ -203,6 +203,12 @@ describe('board mpremoteCommands coverage', () => {
     await openPromise;
     expect(replTerminal.show).toHaveBeenCalled();
 
+    (vscode.commands.executeCommand as jest.Mock).mockClear();
+    const restartPromise = commands.restartReplInExistingTerminal({ show: false });
+    await jest.runOnlyPendingTimersAsync();
+    await restartPromise;
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', true);
+
     const closePromise = commands.closeReplTerminal(true);
     await jest.runOnlyPendingTimersAsync();
     await closePromise;

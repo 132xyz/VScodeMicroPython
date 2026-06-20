@@ -47,6 +47,38 @@ class FakeTransport:
         return ExecResult(stdout=_json_stdout(response), stderr=b"")
 
 
+class FakeStreamingTransport(FakeTransport):
+    def __init__(self, responses, follow_responses=None, short_write: bool = False):
+        super().__init__(responses)
+        self.follow_responses = list(follow_responses or [])
+        self.short_write = short_write
+        self.no_follow_commands = []
+        self.writes = []
+        self.flushes = 0
+        self.interrupts = 0
+
+    def exec_raw_no_follow(self, command: bytes):
+        self.no_follow_commands.append(command)
+
+    def write_bytes(self, data: bytes) -> int:
+        self.writes.append(data)
+        if self.short_write:
+            return max(0, len(data) - 1)
+        return len(data)
+
+    def flush_output(self) -> None:
+        self.flushes += 1
+
+    def follow(self, timeout: float):
+        self.timeouts.append(timeout)
+        if not self.follow_responses:
+            raise AssertionError("unexpected follow call")
+        return self.follow_responses.pop(0)
+
+    def interrupt(self) -> None:
+        self.interrupts += 1
+
+
 def _json_stdout(data, ok: bool = True, error: str = "") -> bytes:
     payload = {"ok": ok, "data": data} if ok else {"ok": False, "error": error}
     return (JSON_MARKER + json.dumps(payload) + "\n").encode("utf-8")
@@ -119,7 +151,7 @@ class FsOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source = Path(tmp_dir) / "data.bin"
             source.write_bytes(b"abcdef")
-            transport = FakeTransport([True, True, 3, 3, True])
+            transport = FakeTransport([True, True, 3, 3, 6])
             client = DeviceFsClient(transport)
 
             client.write_file(str(source), "/lib/data.bin", chunk_size=3)
@@ -128,7 +160,194 @@ class FsOpsTests(unittest.TestCase):
         self.assertIn('path = "/lib/data.bin.mpyupload"', joined)
         self.assertIn(base64.b64encode(b"abc").decode("ascii"), joined)
         self.assertIn(base64.b64encode(b"def").decode("ascii"), joined)
+        self.assertIn("open(path, 'wb')", joined)
+        self.assertIn("f.write(chunk)", joined)
+        self.assertNotIn("open(path, 'ab')", joined)
+        self.assertIn("f.close()", transport.commands[-1])
         self.assertIn("os.rename(tmp, target)", joined)
+
+    def test_write_file_uses_stdin_base64_stream_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abcdefg")
+            events = []
+            transport = FakeStreamingTransport(
+                [True],
+                [ExecResult(stdout=_json_stdout(7), stderr=b"")],
+            )
+            client = DeviceFsClient(transport, timeout=4.0)
+
+            client.write_file(str(source), "/data.bin", chunk_size=6, progress=events.append)
+
+        self.assertEqual(b"".join(transport.writes), base64.b64encode(b"abcdefg"))
+        self.assertEqual(len(transport.no_follow_commands), 1)
+        receiver = transport.no_follow_commands[0].decode("utf-8")
+        self.assertIn("sys.stdin", receiver)
+        self.assertIn("readinto", receiver)
+        self.assertIn("binascii.a2b_base64", receiver)
+        self.assertEqual(transport.flushes, 1)
+        self.assertEqual([event["bytes"] for event in events], [0, 6, 7, 7])
+        self.assertTrue(events[-1]["done"])
+
+    def test_write_file_falls_back_when_stdin_readinto_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            transport = FakeStreamingTransport([False, True, 3, 3])
+            client = DeviceFsClient(transport)
+
+            client.write_file(str(source), "/data.bin", chunk_size=3)
+
+        self.assertEqual(transport.no_follow_commands, [])
+        joined = "\n".join(transport.commands)
+        self.assertIn("stream = getattr(sys.stdin, 'buffer', sys.stdin)", joined)
+        self.assertIn("binascii.a2b_base64(encoded)", joined)
+        self.assertEqual(transport.writes, [])
+
+    def test_write_file_stdin_short_host_write_interrupts_and_cleans_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abcdef")
+            transport = FakeStreamingTransport(
+                [True, True],
+                [ExecResult(stdout=b"", stderr=b"")],
+                short_write=True,
+            )
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "host wrote"):
+                client.write_file(str(source), "/data.bin", chunk_size=6)
+
+        self.assertEqual(transport.interrupts, 1)
+        self.assertIn("rm(path)", transport.commands[-1])
+        self.assertIn("os.remove(p)", transport.commands[-1])
+
+    def test_write_file_stdin_ignores_recovery_and_cleanup_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abcdef")
+            transport = FakeStreamingTransport([True], short_write=True)
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "host wrote"):
+                client.write_file(str(source), "/data.bin", chunk_size=6)
+
+        self.assertEqual(transport.interrupts, 1)
+
+    def test_write_file_stdin_surfaces_device_stderr_and_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            stderr_transport = FakeStreamingTransport(
+                [True, True],
+                [ExecResult(stdout=b"", stderr=b"device stderr")],
+            )
+            with self.assertRaisesRegex(FsOperationError, "device stderr"):
+                DeviceFsClient(stderr_transport).write_file(str(source), "/data.bin", chunk_size=3)
+            self.assertIn("os.remove(p)", stderr_transport.commands[-1])
+
+            error_transport = FakeStreamingTransport(
+                [True, True],
+                [ExecResult(stdout=_json_stdout(None, ok=False, error="device failed"), stderr=b"")],
+            )
+            with self.assertRaisesRegex(FsOperationError, "device failed"):
+                DeviceFsClient(error_transport).write_file(str(source), "/data.bin", chunk_size=3)
+
+    def test_write_file_stdin_probe_failure_falls_back_and_probe_is_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            probe_failure = ExecResult(stdout=_json_stdout(None, ok=False, error="probe failed"), stderr=b"")
+            transport = FakeStreamingTransport([probe_failure, True, 3, 3])
+            client = DeviceFsClient(transport)
+
+            client.write_file(str(source), "/data.bin", chunk_size=3)
+
+        self.assertEqual(transport.no_follow_commands, [])
+        self.assertEqual(transport.writes, [])
+
+        cached_transport = FakeStreamingTransport([True])
+        cached_client = DeviceFsClient(cached_transport)
+        self.assertTrue(cached_client._supports_stdin_readinto())
+        self.assertTrue(cached_client._supports_stdin_readinto())
+        self.assertEqual(len(cached_transport.commands), 1)
+
+    def test_write_file_stdin_rejects_final_size_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            transport = FakeStreamingTransport(
+                [True, True],
+                [ExecResult(stdout=_json_stdout(2), stderr=b"")],
+            )
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "uploaded size mismatch"):
+                client.write_file(str(source), "/data.bin", chunk_size=3)
+
+        self.assertIn('path = "/data.bin"', transport.commands[-1])
+        self.assertIn("os.remove(p)", transport.commands[-1])
+
+    def test_write_file_reports_progress_and_cleans_temp_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abcdef")
+            events = []
+            transport = FakeTransport(
+                [
+                    True,
+                    True,
+                    ExecResult(stdout=_json_stdout(None, ok=False, error="write failed"), stderr=b""),
+                    True,
+                ]
+            )
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "write failed"):
+                client.write_file(str(source), "/lib/data.bin", chunk_size=3, progress=events.append)
+
+        self.assertEqual([event["bytes"] for event in events], [0])
+        self.assertEqual(events[0]["total"], 6)
+        self.assertIn('path = "/lib/data.bin.mpyupload"', transport.commands[-1])
+        self.assertIn("f.close()", transport.commands[-1])
+        self.assertIn("os.remove(path)", transport.commands[-1])
+
+    def test_write_file_reports_chunk_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abcdef")
+            events = []
+            transport = FakeTransport([True, True, 3, 3, 6])
+            client = DeviceFsClient(transport)
+
+            client.write_file(str(source), "/lib/data.bin", chunk_size=3, progress=events.append)
+
+        self.assertEqual([event["bytes"] for event in events], [0, 3, 6, 6])
+        self.assertTrue(events[-1]["done"])
+
+    def test_write_file_rejects_short_chunk_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            transport = FakeTransport([True, True, 2, True])
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "device wrote 2 of 3 bytes"):
+                client.write_file(str(source), "/lib/data.bin", chunk_size=3)
+
+        self.assertIn("os.remove(path)", transport.commands[-1])
+
+    def test_write_file_rejects_final_size_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "data.bin"
+            source.write_bytes(b"abc")
+            transport = FakeTransport([True, True, 3, 2, True, True])
+            client = DeviceFsClient(transport)
+
+            with self.assertRaisesRegex(FsOperationError, "uploaded size mismatch"):
+                client.write_file(str(source), "/lib/data.bin", chunk_size=3)
+
+        self.assertIn("os.remove(p)", transport.commands[-1])
 
     def test_read_file_downloads_chunks_to_local_temp_then_replaces(self) -> None:
         encoded = base64.b64encode(b"hello").decode("ascii")
@@ -182,7 +401,7 @@ class FsOpsTests(unittest.TestCase):
         )
 
     def test_default_chunk_size_is_positive(self) -> None:
-        self.assertGreater(DEFAULT_CHUNK_SIZE, 0)
+        self.assertEqual(DEFAULT_CHUNK_SIZE, 4096)
 
 
 if __name__ == "__main__":

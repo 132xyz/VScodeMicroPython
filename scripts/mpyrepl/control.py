@@ -38,6 +38,7 @@ class ControlRequest:
     label: str = ""
     request_id: str = ""
     response_file: str = ""
+    progress_file: str = ""
     payload: dict | None = None
 
 
@@ -114,6 +115,7 @@ class FileControlChannel:
         label = payload.get("label", "")
         request_id = payload.get("request_id", "")
         response_file = payload.get("response_file", "")
+        progress_file = payload.get("progress_file", "")
         request_payload = payload.get("payload") if "payload" in payload else None
         if source is not None and not isinstance(source, str):
             self._last_sequence = sequence
@@ -125,6 +127,9 @@ class FileControlChannel:
             self._last_sequence = sequence
             return None
         if response_file is not None and not isinstance(response_file, str):
+            self._last_sequence = sequence
+            return None
+        if progress_file is not None and not isinstance(progress_file, str):
             self._last_sequence = sequence
             return None
         if request_payload is not None and not isinstance(request_payload, dict):
@@ -145,5 +150,6 @@ class FileControlChannel:
             label=label or "",
             request_id=request_id or "",
             response_file=response_file or "",
+            progress_file=progress_file or "",
             payload=request_payload,
         )

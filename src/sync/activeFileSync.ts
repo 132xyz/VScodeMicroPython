@@ -149,7 +149,7 @@ export async function resolveActiveFileSyncTarget(document: vscode.TextDocument)
   const replBehavior = normalizeReplBehavior(
     vscode.workspace
       .getConfiguration(undefined, workspaceFolder.uri)
-      .get<string>("microPythonWorkBench.replRestoreBehavior", "none")
+      .get<string>("microPythonWorkBench.replRestoreBehavior", "openReplEmpty")
   );
   const devicePath = toConfiguredSyncDevicePath(relativePath, rootPath);
   const resumeReplCommand = buildResumeReplCommand(devicePath, replBehavior);

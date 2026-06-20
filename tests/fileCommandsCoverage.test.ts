@@ -6,6 +6,8 @@ jest.mock('node:fs/promises', () => ({
   writeFile: jest.fn().mockResolvedValue(undefined),
   rm: jest.fn().mockResolvedValue(undefined),
   rename: jest.fn().mockResolvedValue(undefined),
+  stat: jest.fn(),
+  readdir: jest.fn(),
 }));
 jest.mock('../src/board/mpremote', () => ({
   cpToDevice: jest.fn().mockResolvedValue(undefined),
@@ -15,6 +17,9 @@ jest.mock('../src/board/mpremote', () => ({
   listTreeStats: jest.fn().mockResolvedValue([]),
   deleteAllInPath: jest.fn().mockResolvedValue({ deleted: [], errors: [] }),
   uploadReplacing: jest.fn().mockResolvedValue(undefined),
+  uploadReplacingWithProgress: jest.fn(async (_localPath: string, _devicePath: string, onProgress: (event: { bytes: number; total: number; done?: boolean }) => void) => {
+    onProgress({ bytes: 10, total: 10, done: true });
+  }),
   mvOnDevice: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../src/core/localization', () => ({
@@ -31,6 +36,8 @@ jest.mock('../src/sync/sync', () => ({
   loadManifest: jest.fn(),
 }));
 jest.mock('../src/board/mpremoteCommands', () => ({
+  restoreSerialSessionsFromSnapshot: jest.fn().mockResolvedValue(undefined),
+  suspendSerialSessionsForAutoSync: jest.fn().mockResolvedValue({ runWasOpen: false, replWasOpen: false }),
   toLocalRelative: jest.fn(),
   toDevicePath: jest.fn(),
 }));
@@ -54,6 +61,9 @@ jest.mock('../src/sync/activeFileSync', () => {
 jest.mock('../src/core/workspaceUtils', () => ({
   getLocalSyncRoot: jest.fn(() => '/workspace/mpy'),
 }));
+jest.mock('../src/core/actions', () => ({
+  refreshActionsTreeView: jest.fn(),
+}));
 
 const path = require('node:path') as typeof import('node:path');
 const vscode = require('vscode') as typeof import('vscode');
@@ -63,6 +73,8 @@ const fs = require('node:fs/promises') as {
   writeFile: jest.Mock;
   rm: jest.Mock;
   rename: jest.Mock;
+  stat: jest.Mock;
+  readdir: jest.Mock;
 };
 const mp = require('../src/board/mpremote') as {
   cpToDevice: jest.Mock;
@@ -72,6 +84,7 @@ const mp = require('../src/board/mpremote') as {
   listTreeStats: jest.Mock;
   deleteAllInPath: jest.Mock;
   uploadReplacing: jest.Mock;
+  uploadReplacingWithProgress: jest.Mock;
   mvOnDevice: jest.Mock;
 };
 const localization = require('../src/core/localization') as {
@@ -85,11 +98,16 @@ const syncModule = require('../src/sync/sync') as {
   createIgnoreMatcher: jest.Mock;
 };
 const pathMapping = require('../src/board/mpremoteCommands') as {
+  restoreSerialSessionsFromSnapshot: jest.Mock;
+  suspendSerialSessionsForAutoSync: jest.Mock;
   toLocalRelative: jest.Mock;
 };
 const activeFileSync = require('../src/sync/activeFileSync') as {
   ActiveFileSyncError: new (code: string, detail?: string) => Error & { code: string; detail?: string };
   syncActiveEditorToBoard: jest.Mock;
+};
+const actions = require('../src/core/actions') as {
+  refreshActionsTreeView: jest.Mock;
 };
 
 function configureWorkspace(rootPath: string = '/') {
@@ -112,6 +130,8 @@ describe('fileCommands coverage', () => {
     (vscode.window as any).showInformationMessage = jest.fn().mockResolvedValue(undefined);
     (vscode.window as any).showWarningMessage = jest.fn().mockResolvedValue(undefined);
     (vscode.window as any).showInputBox = jest.fn().mockResolvedValue(undefined);
+    (vscode.window as any).showOpenDialog = jest.fn().mockResolvedValue(undefined);
+    (vscode.window as any).showQuickPick = jest.fn().mockResolvedValue({ label: 'Files', sourceKind: 'files' });
     (vscode.window as any).showTextDocument = jest.fn().mockResolvedValue(undefined);
     (vscode.window as any).withProgress = jest.fn(async (_options: unknown, task: (progress: { report: jest.Mock }, token: unknown) => Promise<void>) => {
       await task({ report: jest.fn() }, {});
@@ -124,6 +144,8 @@ describe('fileCommands coverage', () => {
     (vscode.Uri as any).file = jest.fn((fsPath: string) => ({ fsPath }));
 
     fs.access.mockResolvedValue(undefined);
+    fs.stat.mockReset();
+    fs.readdir.mockReset();
     pathMapping.toLocalRelative.mockImplementation((devicePath: string) => devicePath.replace(/^\//, ''));
     activeFileSync.syncActiveEditorToBoard.mockResolvedValue({ relativePath: 'main.py' });
     syncModule.createIgnoreMatcher.mockResolvedValue(() => false);
@@ -196,6 +218,102 @@ describe('fileCommands coverage', () => {
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(path.join('/workspace/mpy', 'boot.py')), { recursive: true });
     expect(mp.cpFromDevice).toHaveBeenCalledWith('/boot.py', path.join('/workspace/mpy', 'boot.py'));
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Downloaded board → local: boot.py');
+    expect(pathMapping.restoreSerialSessionsFromSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      { replBehavior: 'openReplEmpty' },
+    );
+    expect(actions.refreshActionsTreeView).toHaveBeenCalled();
+  });
+
+  test('uploadToBoardHere uploads selected files into the selected board directory', async () => {
+    const { fileCommands } = require('../src/commands/fileCommands') as typeof import('../src/commands/fileCommands');
+    const pickedFile = path.join('/external', 'boot.py');
+
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([
+      { fsPath: pickedFile },
+    ]);
+    fs.stat.mockImplementation(async (target: string) => ({
+      isDirectory: () => false,
+      isFile: () => target === pickedFile,
+      size: 10,
+    }));
+
+    await fileCommands.uploadToBoardHere({ kind: 'dir', path: '/sd' } as any);
+
+    expect(vscode.window.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+    }));
+    expect(mp.uploadReplacingWithProgress).toHaveBeenCalledWith(pickedFile, '/sd/boot.py', expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('microPythonWorkBench.refresh');
+  });
+
+  test('uploadToBoardHere stops when progress notification is cancelled', async () => {
+    const { fileCommands } = require('../src/commands/fileCommands') as typeof import('../src/commands/fileCommands');
+    const pickedFile = path.join('/external', 'boot.py');
+
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([
+      { fsPath: pickedFile },
+    ]);
+    (vscode.window.withProgress as jest.Mock).mockImplementationOnce(async (_options: unknown, task: (progress: { report: jest.Mock }, token: { isCancellationRequested: boolean }) => Promise<void>) => {
+      await task({ report: jest.fn() }, { isCancellationRequested: true });
+    });
+    fs.stat.mockImplementation(async () => ({
+      isDirectory: () => false,
+      isFile: () => true,
+      size: 10,
+    }));
+
+    await fileCommands.uploadToBoardHere({ kind: 'dir', path: '/sd' } as any);
+
+    expect(mp.uploadReplacingWithProgress).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Upload cancelled.');
+  });
+
+  test('uploadToBoardHere uploads selected folders recursively into the selected board directory', async () => {
+    const { fileCommands } = require('../src/commands/fileCommands') as typeof import('../src/commands/fileCommands');
+    const pickedDir = path.join('/external', 'assets');
+    const nestedDir = path.join(pickedDir, 'icons');
+    const imageFile = path.join(pickedDir, 'logo.bin');
+    const nestedFile = path.join(nestedDir, 'wifi.bin');
+
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce({ label: 'Folders', sourceKind: 'folders' });
+    (vscode.window.showOpenDialog as jest.Mock).mockResolvedValueOnce([
+      { fsPath: pickedDir },
+    ]);
+    fs.stat.mockImplementation(async (target: string) => ({
+      isDirectory: () => target === pickedDir || target === nestedDir,
+      isFile: () => target === imageFile || target === nestedFile,
+      size: 10,
+    }));
+    fs.readdir.mockImplementation(async (target: string) => {
+      if (target === pickedDir) {
+        return [
+          { name: 'logo.bin', isDirectory: () => false, isFile: () => true },
+          { name: 'icons', isDirectory: () => true, isFile: () => false },
+        ];
+      }
+      if (target === nestedDir) {
+        return [
+          { name: 'wifi.bin', isDirectory: () => false, isFile: () => true },
+        ];
+      }
+      return [];
+    });
+
+    await fileCommands.uploadToBoardHere({ kind: 'dir', path: '/sd' } as any);
+
+    expect(vscode.window.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: true,
+    }));
+    expect(mp.mkdir).toHaveBeenCalledWith('/sd/assets');
+    expect(mp.mkdir).toHaveBeenCalledWith('/sd/assets/icons');
+    expect(mp.uploadReplacingWithProgress).toHaveBeenCalledWith(imageFile, '/sd/assets/logo.bin', expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(mp.uploadReplacingWithProgress).toHaveBeenCalledWith(nestedFile, '/sd/assets/icons/wifi.bin', expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('microPythonWorkBench.refresh');
   });
 
   test('openFile copies from board when local file is missing', async () => {
@@ -206,7 +324,20 @@ describe('fileCommands coverage', () => {
 
     await fileCommands.openFile(node);
 
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'));
+    expect(mp.cpFromDevice).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'), expect.objectContaining({ token: expect.any(Object) }));
+    expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith({ fsPath: path.join('/workspace/mpy', 'main.py') });
+  });
+
+  test('openFileFromTree only opens on a second click of the same file', async () => {
+    const { fileCommands } = require('../src/commands/fileCommands') as typeof import('../src/commands/fileCommands');
+    const node = { kind: 'file', path: '/main.py' } as any;
+    pathMapping.toLocalRelative.mockReturnValue('main.py');
+    fs.access.mockResolvedValue(undefined);
+
+    await fileCommands.openFileFromTree(node);
+    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
+
+    await fileCommands.openFileFromTree(node);
     expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith({ fsPath: path.join('/workspace/mpy', 'main.py') });
   });
 

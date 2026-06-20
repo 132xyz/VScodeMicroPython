@@ -9,13 +9,17 @@ import base64
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from transport import SerialReplTransport, TransportError
+from transport import SerialReplTransport
 
 
 JSON_MARKER = "__MPYFS_JSON__"
-DEFAULT_CHUNK_SIZE = 1536
+PROGRESS_MARKER = "__MPYFS_PROGRESS__"
+DEFAULT_CHUNK_SIZE = 4096
+UPLOAD_HANDLE_VAR = "__mpy_upload_file"
+UPLOAD_PATH_VAR = "__mpy_upload_path"
+STDIN_UPLOAD_MIN_CHUNK_SIZE = 3
 
 
 class FsOperationError(RuntimeError):
@@ -136,6 +140,7 @@ class DeviceFsClient:
         """
         self._transport = transport
         self._timeout = timeout
+        self._stdin_readinto_supported: bool | None = None
 
     def execute(self, body: str) -> Any:
         """Execute a wrapped device-side operation and return its data.
@@ -318,72 +323,372 @@ class DeviceFsClient:
         device_path: str,
         *,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        """Upload one local file to the device using base64 chunks.
+        """Upload one local file to the device.
 
         :param local_path: Local source file.
         :param device_path: Device destination path.
         :param chunk_size: Raw bytes per chunk.
+        :param progress: Optional callback receiving byte-level upload progress.
         :return: None
         """
         source = Path(local_path)
+        total_size = source.stat().st_size
         target = _normalize_device_path(device_path)
         temp_target = target + ".mpyupload"
         for parent in _parent_paths(target):
             self.mkdir(parent, parents=False)
 
-        self._start_write(temp_target)
-        with source.open("rb") as handle:
-            while True:
-                chunk = handle.read(chunk_size)
-                if not chunk:
-                    break
-                encoded = base64.b64encode(chunk).decode("ascii")
-                self._append_write_chunk(temp_target, encoded)
-        self._finish_write(temp_target, target)
+        self._emit_write_progress(progress, source, target, 0, total_size)
+        if self._supports_stdin_readinto():
+            final_size = self._write_file_stdin_base64(
+                source,
+                target,
+                temp_target,
+                total_size,
+                chunk_size,
+                progress,
+            )
+        else:
+            final_size = self._write_file_base64_chunks(
+                source,
+                target,
+                temp_target,
+                total_size,
+                chunk_size,
+                progress,
+            )
+
+        if final_size != total_size:
+            try:
+                self.remove(target, recursive=False)
+            except Exception:
+                pass
+            raise FsOperationError(
+                "uploaded size mismatch for %s: expected %d bytes, got %d bytes"
+                % (target, total_size, final_size),
+                "size_mismatch",
+            )
+        self._emit_write_progress(progress, source, target, total_size, total_size, done=True)
+
+    def _write_file_base64_chunks(
+        self,
+        source: Path,
+        target: str,
+        temp_target: str,
+        total_size: int,
+        chunk_size: int,
+        progress: Callable[[dict[str, Any]], None] | None,
+    ) -> int:
+        """Upload a file using the legacy per-chunk raw REPL path."""
+        bytes_written = 0
+        try:
+            self._start_write(temp_target)
+            with source.open("rb") as handle:
+                while True:
+                    chunk = handle.read(chunk_size)
+                    if not chunk:
+                        break
+                    encoded = base64.b64encode(chunk).decode("ascii")
+                    written = self._append_write_chunk(temp_target, encoded)
+                    if written != len(chunk):
+                        raise FsOperationError(
+                            "device wrote %d of %d bytes to %s" % (written, len(chunk), target),
+                            "short_write",
+                        )
+                    bytes_written += written
+                    self._emit_write_progress(progress, source, target, bytes_written, total_size)
+            return self._finish_write(temp_target, target)
+        except Exception:
+            try:
+                self._discard_write_temp(temp_target)
+            except Exception:
+                pass
+            raise
+
+    def _write_file_stdin_base64(
+        self,
+        source: Path,
+        target: str,
+        temp_target: str,
+        total_size: int,
+        chunk_size: int,
+        progress: Callable[[dict[str, Any]], None] | None,
+    ) -> int:
+        """Upload a file through one stdin-reading receiver program.
+
+        The stream is base64 encoded even though stdin is binary-capable. Raw
+        binary data can contain Ctrl-C/Ctrl-D bytes, which MicroPython's REPL
+        may treat as control input before user code sees them.
+        """
+        raw_chunk_size = max(STDIN_UPLOAD_MIN_CHUNK_SIZE, int(chunk_size))
+        raw_chunk_size -= raw_chunk_size % 3
+        raw_chunk_size = max(STDIN_UPLOAD_MIN_CHUNK_SIZE, raw_chunk_size)
+        encoded_total = ((int(total_size) + 2) // 3) * 4
+        receiver_started = False
+        receiver_finished = False
+        bytes_sent = 0
+
+        try:
+            self._transport.exec_raw_no_follow(
+                _wrap_device_code(
+                    self._stdin_base64_receiver_code(
+                        temp_target,
+                        target,
+                        total_size,
+                        encoded_total,
+                        ((raw_chunk_size + 2) // 3) * 4,
+                    )
+                ).encode("utf-8")
+            )
+            receiver_started = True
+            with source.open("rb") as handle:
+                while True:
+                    chunk = handle.read(raw_chunk_size)
+                    if not chunk:
+                        break
+                    encoded = base64.b64encode(chunk)
+                    written = self._transport.write_bytes(encoded)
+                    if written != len(encoded):
+                        raise FsOperationError(
+                            "host wrote %d of %d encoded bytes for %s"
+                            % (written, len(encoded), target),
+                            "short_write",
+                        )
+                    bytes_sent += len(chunk)
+                    self._emit_write_progress(progress, source, target, bytes_sent, total_size)
+            self._transport.flush_output()
+            result = self._transport.follow(self._timeout)
+            receiver_finished = True
+            if result.stderr:
+                raise FsOperationError(
+                    result.stderr.decode("utf-8", errors="replace").strip() or "device stderr",
+                    "stderr",
+                )
+            payload = _parse_json_result(result.stdout)
+            if not payload.get("ok"):
+                raise FsOperationError(str(payload.get("error") or "device operation failed"))
+            return int(payload.get("data") or 0)
+        except Exception:
+            if receiver_started and not receiver_finished:
+                try:
+                    self._transport.interrupt()
+                    self._transport.follow(1.0)
+                except Exception:
+                    pass
+            try:
+                self.remove(temp_target, recursive=False)
+            except Exception:
+                pass
+            raise
+
+    def _supports_stdin_readinto(self) -> bool:
+        """Return whether this device can receive streamed stdin bytes."""
+        if self._stdin_readinto_supported is not None:
+            return self._stdin_readinto_supported
+        if not hasattr(self._transport, "write_bytes"):
+            self._stdin_readinto_supported = False
+            return False
+        try:
+            supported = bool(
+                self.execute(
+                    "import sys\n"
+                    "stream = getattr(sys.stdin, 'buffer', sys.stdin)\n"
+                    "data = bool(getattr(stream, 'readinto', None))\n"
+                )
+            )
+        except Exception:
+            supported = False
+        self._stdin_readinto_supported = supported
+        return supported
+
+    def _stdin_base64_receiver_code(
+        self,
+        temp_path: str,
+        target_path: str,
+        total_size: int,
+        encoded_total: int,
+        encoded_chunk_size: int,
+    ) -> str:
+        """Build device-side code for the stdin base64 upload receiver."""
+        return (
+            "import binascii, os, sys\n"
+            f"tmp = {_device_string(temp_path)}\n"
+            f"target = {_device_string(target_path)}\n"
+            f"total = {int(total_size)}\n"
+            f"encoded_remaining = {int(encoded_total)}\n"
+            f"buffer_size = {max(4, int(encoded_chunk_size))}\n"
+            "stream = getattr(sys.stdin, 'buffer', sys.stdin)\n"
+            "readinto = getattr(stream, 'readinto', None)\n"
+            "if readinto is None:\n"
+            "    raise OSError('stdin readinto is not available')\n"
+            "f = None\n"
+            "ok = False\n"
+            "written_total = 0\n"
+            "pending = bytearray()\n"
+            "try:\n"
+            "    try:\n"
+            "        os.remove(tmp)\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    f = open(tmp, 'wb')\n"
+            "    buf = bytearray(buffer_size)\n"
+            "    mv = memoryview(buf)\n"
+            "    while encoded_remaining:\n"
+            "        want = min(encoded_remaining, buffer_size)\n"
+            "        got = readinto(mv[:want])\n"
+            "        if got is None:\n"
+            "            got = 0\n"
+            "        if got <= 0:\n"
+            "            raise OSError('stdin upload ended early')\n"
+            "        encoded_remaining -= got\n"
+            "        pending.extend(mv[:got])\n"
+            "        ready = (len(pending) // 4) * 4\n"
+            "        if ready:\n"
+            "            decoded = binascii.a2b_base64(pending[:ready])\n"
+            "            pending = pending[ready:]\n"
+            "            if decoded:\n"
+            "                offset = 0\n"
+            "                while offset < len(decoded):\n"
+            "                    count = f.write(decoded[offset:])\n"
+            "                    if count is None:\n"
+            "                        count = len(decoded) - offset\n"
+            "                    if count <= 0:\n"
+            "                        raise OSError('file write returned no bytes')\n"
+            "                    offset += count\n"
+            "                written_total += len(decoded)\n"
+            "                if written_total > total:\n"
+            "                    raise OSError('decoded more bytes than expected')\n"
+            "    if pending:\n"
+            "        raise OSError('incomplete base64 upload stream')\n"
+            "    if written_total != total:\n"
+            "        raise OSError('uploaded size mismatch')\n"
+            "    f.close()\n"
+            "    f = None\n"
+            "    try:\n"
+            "        os.remove(target)\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    os.rename(tmp, target)\n"
+            "    st = os.stat(target)\n"
+            "    data = int(st[6]) if len(st) > 6 else 0\n"
+            "    ok = True\n"
+            "finally:\n"
+            "    if f is not None:\n"
+            "        try:\n"
+            "            f.close()\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    if not ok:\n"
+            "        try:\n"
+            "            os.remove(tmp)\n"
+            "        except OSError:\n"
+            "            pass\n"
+        )
+
+    def _emit_write_progress(
+        self,
+        progress: Callable[[dict[str, Any]], None] | None,
+        source: Path,
+        target: str,
+        bytes_written: int,
+        total_size: int,
+        *,
+        done: bool = False,
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "op": "write_file",
+                "path": target,
+                "local_path": str(source),
+                "bytes": int(bytes_written),
+                "total": int(total_size),
+                "done": bool(done),
+            }
+        )
 
     def _start_write(self, temp_path: str) -> None:
         body = (
+            "import os\n"
             f"path = {_device_string(temp_path)}\n"
+            f"old = globals().get({_device_string(UPLOAD_HANDLE_VAR)})\n"
+            "if old is not None:\n"
+            "    try:\n"
+            "        old.close()\n"
+            "    except Exception:\n"
+            "        pass\n"
+            f"globals()[{_device_string(UPLOAD_HANDLE_VAR)}] = None\n"
+            f"globals()[{_device_string(UPLOAD_PATH_VAR)}] = path\n"
             "try:\n"
-            "    import os\n"
             "    os.remove(path)\n"
             "except OSError:\n"
             "    pass\n"
-            "f = open(path, 'wb')\n"
-            "f.close()\n"
+            f"globals()[{_device_string(UPLOAD_HANDLE_VAR)}] = open(path, 'wb')\n"
             "data = True\n"
         )
         self.execute(body)
 
-    def _append_write_chunk(self, temp_path: str, encoded: str) -> None:
+    def _append_write_chunk(self, temp_path: str, encoded: str) -> int:
         body = (
             "import binascii\n"
             f"path = {_device_string(temp_path)}\n"
             f"encoded = {_device_string(encoded)}\n"
             "chunk = binascii.a2b_base64(encoded)\n"
-            "f = open(path, 'ab')\n"
+            f"f = globals().get({_device_string(UPLOAD_HANDLE_VAR)})\n"
+            f"current_path = globals().get({_device_string(UPLOAD_PATH_VAR)})\n"
+            "if f is None or current_path != path:\n"
+            "    raise OSError('upload file is not open')\n"
+            "written = f.write(chunk)\n"
+            "data = len(chunk) if written is None else written\n"
+        )
+        return int(self.execute(body) or 0)
+
+    def _discard_write_temp(self, temp_path: str) -> None:
+        body = (
+            "import os\n"
+            f"path = {_device_string(temp_path)}\n"
+            f"f = globals().get({_device_string(UPLOAD_HANDLE_VAR)})\n"
+            "if f is not None:\n"
+            "    try:\n"
+            "        f.close()\n"
+            "    except Exception:\n"
+            "        pass\n"
+            f"globals()[{_device_string(UPLOAD_HANDLE_VAR)}] = None\n"
+            f"globals()[{_device_string(UPLOAD_PATH_VAR)}] = None\n"
             "try:\n"
-            "    f.write(chunk)\n"
-            "finally:\n"
-            "    f.close()\n"
-            "data = len(chunk)\n"
+            "    os.remove(path)\n"
+            "except OSError:\n"
+            "    pass\n"
+            "data = True\n"
         )
         self.execute(body)
 
-    def _finish_write(self, temp_path: str, target_path: str) -> None:
+    def _finish_write(self, temp_path: str, target_path: str) -> int:
         body = (
             "import os\n"
             f"tmp = {_device_string(temp_path)}\n"
             f"target = {_device_string(target_path)}\n"
+            f"f = globals().get({_device_string(UPLOAD_HANDLE_VAR)})\n"
+            f"current_path = globals().get({_device_string(UPLOAD_PATH_VAR)})\n"
+            "if f is None or current_path != tmp:\n"
+            "    raise OSError('upload file is not open')\n"
+            "try:\n"
+            "    f.close()\n"
+            "finally:\n"
+            f"    globals()[{_device_string(UPLOAD_HANDLE_VAR)}] = None\n"
+            f"    globals()[{_device_string(UPLOAD_PATH_VAR)}] = None\n"
             "try:\n"
             "    os.remove(target)\n"
             "except OSError:\n"
             "    pass\n"
             "os.rename(tmp, target)\n"
-            "data = True\n"
+            "st = os.stat(target)\n"
+            "data = int(st[6]) if len(st) > 6 else 0\n"
         )
-        self.execute(body)
+        return int(self.execute(body) or 0)
 
     def read_file(
         self,
@@ -490,7 +795,12 @@ def run_fs_operation(client: DeviceFsClient, op: str, payload: dict[str, Any]) -
         client.rename(str(payload.get("src") or ""), str(payload.get("dst") or ""))
         return True
     if op == "write_file":
-        client.write_file(str(payload.get("local_path") or ""), str(payload.get("path") or ""))
+        progress_callback = payload.get("progress_callback")
+        client.write_file(
+            str(payload.get("local_path") or ""),
+            str(payload.get("path") or ""),
+            progress=progress_callback if callable(progress_callback) else None,
+        )
         return True
     if op == "read_file":
         client.read_file(str(payload.get("path") or ""), str(payload.get("local_path") or ""))

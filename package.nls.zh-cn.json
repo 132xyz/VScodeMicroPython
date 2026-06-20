@@ -67,6 +67,7 @@
   "configuration.autoSyncOnSave.description": "保存时自动同步：启用时，保存本地文件也会将其上传到开发板；禁用时，仅本地保存。此开关修改扩展在当前工作区的默认行为（保存在扩展的工作区状态），并不会直接写入用户或工作区的 settings.json。工作区覆盖可在 .mpystudio/config.json 中设置。",
   "commands.syncFileBoardToLocal.title": "MicroPython 工作台：同步文件 开发板 → 本地",
   "commands.syncActiveFileLocalToBoard.title": "MicroPython 工作台：同步活动文件 本地 → 开发板",
+  "commands.uploadToBoardHere.title": "MicroPython 工作台：上传文件/文件夹到此处",
   "messages.directSerialInterruptFailed": "开发板：直接串口中断失败，正在尝试 mpyrepl helper 后备方案...",
   "messages.mpremoteTestFailed": "Python 传输测试失败。请检查 pyserial 安装。",
   "messages.uploadFailed": "上传失败：{0}",

@@ -1,6 +1,21 @@
 import * as vscode from "vscode";
 import { isReplOpen } from "../board/mpremoteCommands";
 
+let refreshActionsTreeViewHandler: (() => void) | undefined;
+
+export function registerActionsTreeRefresh(handler: () => void): vscode.Disposable {
+  refreshActionsTreeViewHandler = handler;
+  return new vscode.Disposable(() => {
+    if (refreshActionsTreeViewHandler === handler) {
+      refreshActionsTreeViewHandler = undefined;
+    }
+  });
+}
+
+export function refreshActionsTreeView(): void {
+  refreshActionsTreeViewHandler?.();
+}
+
 export interface ActionNode {
   id: string;
   label: string;

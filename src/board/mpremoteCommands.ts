@@ -372,6 +372,7 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
       logAutoSuspend("REPL terminal missing/closed, creating new instance");
       const term = await getReplTerminal();
       if (opts.show !== false) term.show(true);
+      setReplContext(true);
       // give it a moment to connect
       await sleep(250);
       return;
@@ -391,6 +392,7 @@ export async function restartReplInExistingTerminal(opts: { show?: boolean } = {
     logAutoSuspend("Reusing REPL terminal; sending reconnect command:", cmd);
     replTerminal.sendText(cmd, true);
     await sleep(200);
+    setReplContext(true);
     if (opts.show !== false) {
       try { replTerminal.show(true); } catch {}
     }
@@ -705,7 +707,10 @@ export async function getReplTerminal(
 ): Promise<vscode.Terminal> {
   if (replTerminal) {
     const alive = vscode.window.terminals.some(t => t === replTerminal);
-    if (alive) return replTerminal;
+    if (alive) {
+      setReplContext(true);
+      return replTerminal;
+    }
     replTerminal = undefined;
   }
 

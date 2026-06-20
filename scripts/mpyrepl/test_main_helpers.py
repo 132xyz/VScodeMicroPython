@@ -483,6 +483,37 @@ class MainHelperTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertEqual(payload["code"], expected_code)
 
+    def test_run_fs_cli_write_file_progress_adds_callback(self) -> None:
+        config = ReplConfig(port="COM4")
+        args = SimpleNamespace(
+            op="write_file",
+            path="/main.py",
+            src="",
+            dst="",
+            local_path="main.py",
+            source="",
+            no_recursive=False,
+            progress=True,
+        )
+        captured_payload = {}
+
+        def fake_run_fs_operation(_client, _op, payload):
+            captured_payload.update(payload)
+            payload["progress_callback"]({"bytes": 1, "total": 2})
+            return True
+
+        stdout_stream = io.StringIO()
+        with mock.patch.object(mpyrepl_main, "SerialReplTransport", FakeContextTransport):
+            with mock.patch.object(mpyrepl_main, "DeviceFsClient"):
+                with mock.patch.object(mpyrepl_main, "run_fs_operation", side_effect=fake_run_fs_operation):
+                    with mock.patch.object(mpyrepl_main.sys, "stdout", stdout_stream):
+                        self.assertEqual(mpyrepl_main.run_fs_cli(config, args), 0)
+
+        self.assertTrue(callable(captured_payload["progress_callback"]))
+        stdout_lines = [line for line in stdout_stream.getvalue().splitlines() if line]
+        self.assertTrue(stdout_lines[0].startswith(mpyrepl_main.PROGRESS_MARKER))
+        self.assertTrue(stdout_lines[-1].startswith("{"))
+
     def test_run_session_probe_returns_error_when_any_block_fails(self) -> None:
         config = ReplConfig(port="COM4")
 
@@ -850,6 +881,33 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
             error_payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
             self.assertFalse(error_payload["ok"])
             self.assertEqual(error_payload["code"], "error")
+
+    async def test_handle_fs_control_request_writes_progress_file(self) -> None:
+        state = mpyrepl_main.AsyncReplState()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            response_file = str(Path(tmp_dir) / "response.json")
+            progress_file = str(Path(tmp_dir) / "progress.json")
+            request = SimpleNamespace(
+                sequence=4,
+                request_id="req-4",
+                response_file=response_file,
+                progress_file=progress_file,
+                payload={"op": "write_file", "path": "/main.py", "local_path": "main.py"},
+            )
+
+            def fake_run_fs_operation(_client, _op, payload):
+                payload["progress_callback"]({"bytes": 4, "total": 8})
+                return True
+
+            with mock.patch.object(mpyrepl_main, "run_fs_operation", side_effect=fake_run_fs_operation):
+                await mpyrepl_main.handle_fs_control_request(request, FakeGate(), state, mock.Mock())
+
+            progress_payload = json.loads(Path(progress_file).read_text(encoding="utf-8"))
+            response_payload = json.loads(Path(response_file).read_text(encoding="utf-8"))
+
+            self.assertEqual(progress_payload, {"bytes": 4, "total": 8})
+            self.assertTrue(response_payload["ok"])
 
     async def test_watch_control_channel_handles_fs_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -23,6 +23,31 @@ function Invoke-PythonTests {
     exit 1
 }
 
+function Get-NpmCommand {
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($npmCmd) {
+        return $npmCmd.Source
+    }
+
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npmCommand) {
+        return $npmCommand.Source
+    }
+
+    Write-Host "Error: npm was not found. Install Node.js or ensure npm is on PATH." -ForegroundColor Red
+    exit 1
+}
+
+function Invoke-Npm {
+    param(
+        [Parameter(ValueFromRemainingArguments=$true)]
+        [string[]]$Arguments
+    )
+
+    $npm = Get-NpmCommand
+    & $npm @Arguments
+}
+
 function Get-PackageJsonVersion {
     $version = node -p "require('./package.json').version"
     if ($LASTEXITCODE -ne 0) {
@@ -34,7 +59,7 @@ function Get-PackageJsonVersion {
 
 # 先编译，只有编译成功才会考虑增加版本号和打包
 Write-Host "Compiling..." -ForegroundColor Green
-npm run compile
+Invoke-Npm run compile
 
 # 检查编译结果，失败则退出（不增加版本号、不打包）
 if ($LASTEXITCODE -ne 0) {
@@ -43,7 +68,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Running JavaScript tests..." -ForegroundColor Green
-npm test
+Invoke-Npm test
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: JavaScript tests failed. Aborting version bump and packaging." -ForegroundColor Red
@@ -69,7 +94,7 @@ if (-not $S) {
 
     # Let npm update package.json and package-lock.json together without creating a git tag.
     Write-Host "Incrementing version ($VersionType)..." -ForegroundColor Green
-    npm version $VersionType --no-git-tag-version
+    Invoke-Npm version $VersionType --no-git-tag-version
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Error: version bump failed. Aborting packaging." -ForegroundColor Red
@@ -89,7 +114,7 @@ Write-Host "Cleaning old .vsix files from root directory..." -ForegroundColor Ye
 Get-ChildItem -Path "." -Filter "*.vsix" | Remove-Item -Force
 
 Write-Host "Packaging..." -ForegroundColor Green
-npm run package
+Invoke-Npm run package
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: packaging failed. Aborting output organization." -ForegroundColor Red

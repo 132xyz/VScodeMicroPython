@@ -23,6 +23,8 @@ jest.mock('../src/core/actions', () => ({
   ActionsTree: jest.fn().mockImplementation(() => ({
     refreshTree: jest.fn(),
   })),
+  registerActionsTreeRefresh: jest.fn(() => ({ dispose: jest.fn() })),
+  refreshActionsTreeView: jest.fn(),
 }));
 jest.mock('../src/sync/syncView', () => ({
   SyncTree: jest.fn().mockImplementation(() => ({

@@ -110,6 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not recursively remove directories",
     )
+    fs_parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Emit JSONL progress events for write_file operations",
+    )
 
     subparsers.add_parser("interrupt", help="Send Ctrl-C to the configured serial port")
     subparsers.add_parser("soft-reset", help="Trigger a raw-mode soft reset")

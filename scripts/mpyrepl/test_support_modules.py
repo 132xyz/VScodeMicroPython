@@ -137,6 +137,27 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(args.code, "print(1)")
         self.assertEqual(args.follow_timeout, 4.25)
 
+    def test_cli_fs_parses_progress_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--port",
+                "COM4",
+                "fs",
+                "--op",
+                "write_file",
+                "--path",
+                "/main.py",
+                "--local-path",
+                "main.py",
+                "--progress",
+            ]
+        )
+
+        self.assertEqual(args.command, "fs")
+        self.assertEqual(args.op, "write_file")
+        self.assertTrue(args.progress)
+
     def test_completion_state_tracks_symbols_and_aliases(self) -> None:
         symbols = ReplSessionSymbols()
         changes = symbols.record_successful_source(
@@ -1485,19 +1506,44 @@ delattr(items, 'value')
             )
 
             control_path.write_text(
-                json.dumps({"sequence": 4, "command": "exec", "source": 1}),
+                json.dumps(
+                    {
+                        "sequence": 4,
+                        "command": "fs",
+                        "request_id": "req-4",
+                        "response_file": "response.json",
+                        "progress_file": "progress.json",
+                        "payload": {"op": "write_file"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                channel.read_next(),
+                ControlRequest(
+                    sequence=4,
+                    command="fs",
+                    request_id="req-4",
+                    response_file="response.json",
+                    progress_file="progress.json",
+                    payload={"op": "write_file"},
+                ),
+            )
+
+            control_path.write_text(
+                json.dumps({"sequence": 5, "command": "exec", "source": 1}),
                 encoding="utf-8",
             )
             self.assertIsNone(channel.read_next())
 
             control_path.write_text(
-                json.dumps({"sequence": "5", "command": "exit"}),
+                json.dumps({"sequence": "6", "command": "exit"}),
                 encoding="utf-8",
             )
             self.assertIsNone(channel.read_next())
 
             control_path.write_text(
-                json.dumps({"sequence": 5}),
+                json.dumps({"sequence": 6}),
                 encoding="utf-8",
             )
             self.assertIsNone(channel.read_next())

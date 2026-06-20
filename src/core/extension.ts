@@ -1,7 +1,7 @@
 
 import * as vscode from "vscode";
 import { Esp32Tree } from "../board/esp32Fs";
-import { ActionsTree } from "./actions";
+import { ActionsTree, registerActionsTreeRefresh } from "./actions";
 import { SyncTree } from "../sync/syncView";
 import { getLocalSyncRoot } from "./workspaceUtils";
 import { Esp32Node } from "./types";
@@ -311,6 +311,7 @@ export async function activate(context: vscode.ExtensionContext) {
   } else {
     console.error('[Extension] View not contributed: microPythonWorkBenchActionsView');
   }
+  context.subscriptions.push(registerActionsTreeRefresh(refreshActionsTree));
   const syncTree = new SyncTree();
   let syncView: vscode.TreeView<any> | undefined = undefined;
   try {
@@ -495,6 +496,8 @@ export async function activate(context: vscode.ExtensionContext) {
           // restoreSerialSessionsFromSnapshot done
         } catch (err) {
           console.error("[DEBUG] restoreSerialSessionsFromSnapshot failed:", err);
+        } finally {
+          refreshActionsTree();
         }
       }
     });
@@ -636,6 +639,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.openFileFromLocal", fileCommands.openFileFromLocal),
     vscode.commands.registerCommand("microPythonWorkBench.syncActiveFileLocalToBoard", fileCommands.syncActiveFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileLocalToBoard", fileCommands.syncFileLocalToBoard),
+    vscode.commands.registerCommand("microPythonWorkBench.uploadToBoardHere", fileCommands.uploadToBoardHere),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
     vscode.commands.registerCommand("microPythonWorkBench.setPort", async (port: string) => {
       const selected = await boardCommands.setPort(port);
@@ -715,6 +719,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncDiffsBoardToLocalFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.syncDiffsBoardToLocal"); }),
     vscode.commands.registerCommand("microPythonWorkBench.runActiveFileFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.runActiveFile"); }),
     vscode.commands.registerCommand("microPythonWorkBench.openReplFromView", async () => { await vscode.commands.executeCommand("microPythonWorkBench.openRepl"); }),
+    vscode.commands.registerCommand("microPythonWorkBench.openFileFromTree", fileCommands.openFileFromTree),
     vscode.commands.registerCommand("microPythonWorkBench.newFileInTree", fileCommands.newFileInTree),
     vscode.commands.registerCommand("microPythonWorkBench.newFolderInTree", fileCommands.newFolderInTree),
     vscode.commands.registerCommand("microPythonWorkBench.renameNode", fileCommands.renameNode)
@@ -759,7 +764,7 @@ export async function activate(context: vscode.ExtensionContext) {
         } catch {}
         const normalizedRootPath = rootPath === "/" ? "" : rootPath.replace(/\/$/, "");
         const deviceDest = `${normalizedRootPath}/${rel}`;
-      const rawBehavior = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.replRestoreBehavior", "none");
+      const rawBehavior = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.replRestoreBehavior", "openReplEmpty");
       const behavior = normalizeReplBehavior(rawBehavior);
       let resumeCmd: string | undefined;
       if (behavior === "runChanged") {

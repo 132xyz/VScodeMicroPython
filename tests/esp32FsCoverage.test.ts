@@ -103,6 +103,11 @@ describe('Esp32Tree coverage', () => {
     expect(tree.getTreeItemForNode({ kind: 'file', name: 'main.py', path: '/main.py' })).toMatchObject({
       label: 'main.py',
       contextValue: 'file',
+      command: {
+        command: 'microPythonWorkBench.openFileFromTree',
+        title: 'Open',
+        arguments: [{ kind: 'file', name: 'main.py', path: '/main.py' }],
+      },
     });
 
     tree.addNode('/pkg/file.py', false);

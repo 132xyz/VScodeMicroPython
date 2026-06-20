@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -7,6 +7,7 @@ import {
   clearCustomReplControlFile,
   customReplControlFileExists,
   requestCustomReplRpc,
+  sendCustomReplControl,
 } from "./customReplControl";
 
 type HelperResponse<T = unknown> = {
@@ -14,6 +15,18 @@ type HelperResponse<T = unknown> = {
   data?: T;
   error?: string;
   code?: string;
+};
+
+const FS_PROGRESS_MARKER = "__MPYFS_PROGRESS__";
+const FS_BUSY_RETRY_DELAY_MS = 150;
+const FS_BUSY_RETRY_ATTEMPTS = 20;
+
+export type FileTransferProgress = {
+  localPath: string;
+  devicePath: string;
+  bytes: number;
+  total: number;
+  done?: boolean;
 };
 
 export type DeviceEntry = {
@@ -115,7 +128,41 @@ function parseHelperJson<T>(stdout: string): T {
   return parsed.data as T;
 }
 
-async function runHelper<T>(args: string[], timeoutMs = 30000): Promise<T> {
+function progressPayloadToEvent(payload: {
+    local_path?: unknown;
+    path?: unknown;
+    bytes?: unknown;
+    total?: unknown;
+    done?: unknown;
+  }): FileTransferProgress {
+  return {
+    localPath: String(payload.local_path || ""),
+    devicePath: String(payload.path || ""),
+    bytes: Number(payload.bytes || 0),
+    total: Number(payload.total || 0),
+    done: Boolean(payload.done),
+  };
+}
+
+function parseProgressLine(line: string): FileTransferProgress | null {
+  if (!line.startsWith(FS_PROGRESS_MARKER)) return null;
+  return progressPayloadToEvent(JSON.parse(line.slice(FS_PROGRESS_MARKER.length)));
+}
+
+function createCancelledError(): Error & { code?: string } {
+  const error = new Error("Upload cancelled") as Error & { code?: string };
+  error.code = "cancelled";
+  return error;
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function runHelper<T>(
+  args: string[],
+  timeoutMs = 30000,
+  token?: vscode.CancellationToken,
+): Promise<T> {
+  if (token?.isCancellationRequested) throw createCancelledError();
   const python = await getPythonCommand();
   const script = getMpyReplScriptPath();
   const env: NodeJS.ProcessEnv = {
@@ -125,22 +172,173 @@ async function runHelper<T>(args: string[], timeoutMs = 30000): Promise<T> {
   };
 
   return await new Promise<T>((resolve, reject) => {
-    execFile(
+    let settled = false;
+    let cancellation: vscode.Disposable | undefined;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cancellation?.dispose();
+      callback();
+    };
+
+    const child = execFile(
       python.exe,
       python.args.concat([script]).concat(args),
       { env, timeout: timeoutMs },
       (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(String(stderr || error.message || error)));
+          const stdoutText = String(stdout || "");
+          if (stdoutText.split(/\r?\n/).some(line => line.trim().startsWith("{"))) {
+            try {
+              parseHelperJson<T>(stdoutText);
+            } catch (parseError) {
+              finish(() => reject(parseError));
+              return;
+            }
+          }
+          finish(() => reject(new Error(String(stderr || error.message || error))));
           return;
         }
         try {
-          resolve(parseHelperJson<T>(String(stdout || "")));
+          const result = parseHelperJson<T>(String(stdout || ""));
+          finish(() => resolve(result));
         } catch (parseError) {
-          reject(parseError);
+          finish(() => reject(parseError));
         }
       },
     );
+
+    const cancel = () => {
+      try {
+        child.kill();
+      } catch {
+        // ignore process termination errors
+      }
+      finish(() => reject(createCancelledError()));
+    };
+
+    if (token) {
+      if (token.isCancellationRequested) {
+        cancel();
+        return;
+      }
+      cancellation = token.onCancellationRequested(cancel);
+    }
+  });
+}
+
+async function runHelperWithProgress<T>(
+  args: string[],
+  onProgress: (event: FileTransferProgress) => void,
+  idleTimeoutMs = 120000,
+  token?: vscode.CancellationToken,
+): Promise<T> {
+  if (token?.isCancellationRequested) throw createCancelledError();
+  const python = await getPythonCommand();
+  const script = getMpyReplScriptPath();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+  };
+  const childArgs = python.args.concat([script]).concat(args);
+
+  return await new Promise<T>((resolve, reject) => {
+    const child = spawn(python.exe, childArgs, { env, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let stdoutRemainder = "";
+    let settled = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let cancellation: vscode.Disposable | undefined;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      cancellation?.dispose();
+      callback();
+    };
+
+    const resetIdleTimer = () => {
+      if (idleTimeoutMs <= 0) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        child.kill();
+        finish(() => reject(new Error(`mpyrepl helper timed out after ${Math.round(idleTimeoutMs / 1000)}s without transfer progress`)));
+      }, idleTimeoutMs);
+    };
+
+    const cancel = () => {
+      try {
+        child.kill();
+      } catch {
+        // ignore process termination errors
+      }
+      finish(() => reject(createCancelledError()));
+    };
+
+    if (token) {
+      if (token.isCancellationRequested) {
+        cancel();
+        return;
+      }
+      cancellation = token.onCancellationRequested(cancel);
+    }
+
+    const handleStdoutLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      try {
+        const progress = parseProgressLine(line);
+        if (progress) {
+          onProgress(progress);
+          resetIdleTimer();
+          return;
+        }
+      } catch {
+        // Keep malformed progress lines in stdout so the final error includes context.
+      }
+      stdout += rawLine + "\n";
+    };
+
+    resetIdleTimer();
+    child.stdout?.on("data", chunk => {
+      stdoutRemainder += String(chunk);
+      const lines = stdoutRemainder.split(/\r?\n/);
+      stdoutRemainder = lines.pop() ?? "";
+      for (const line of lines) handleStdoutLine(line);
+    });
+    child.stderr?.on("data", chunk => {
+      stderr += String(chunk);
+      resetIdleTimer();
+    });
+    child.on("error", error => {
+      finish(() => reject(error));
+    });
+    child.on("close", code => {
+      if (stdoutRemainder) handleStdoutLine(stdoutRemainder);
+      finish(() => {
+        if (code !== 0) {
+          if (stdout.split(/\r?\n/).some(line => line.trim().startsWith("{"))) {
+            try {
+              parseHelperJson<T>(stdout);
+            } catch (parseError) {
+              reject(parseError);
+              return;
+            }
+          }
+          reject(new Error(String(stderr || stdout || `mpyrepl helper exited with code ${code}`)));
+          return;
+        }
+        try {
+          resolve(parseHelperJson<T>(stdout));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      });
+    });
   });
 }
 
@@ -148,7 +346,12 @@ async function runFsHelper<T>(
   device: string,
   payload: Record<string, unknown>,
   timeoutMs = 30000,
+  token?: vscode.CancellationToken,
 ): Promise<T> {
+  return runHelper<T>(buildFsArgs(device, payload), timeoutMs, token);
+}
+
+function buildFsArgs(device: string, payload: Record<string, unknown>): string[] {
   const op = String(payload.op || "");
   const args = [
     "--port", device,
@@ -166,24 +369,36 @@ async function runFsHelper<T>(
   append("--local-path", payload.local_path);
   append("--source", payload.source);
   if (payload.recursive === false) args.push("--no-recursive");
-
-  return runHelper<T>(args, timeoutMs);
+  return args;
 }
 
 async function runFs<T>(
   device: string,
   payload: Record<string, unknown>,
   timeoutMs = 30000,
+  token?: vscode.CancellationToken,
 ): Promise<T> {
-  if (customReplControlFileExists(device)) {
-    try {
-      return await requestCustomReplRpc<T>(device, "fs", payload, timeoutMs);
-    } catch (error: any) {
-      if (error?.code === "busy") throw error;
-      await clearCustomReplControlFile(device);
+  if (token?.isCancellationRequested) throw createCancelledError();
+  for (let attempt = 0; attempt <= FS_BUSY_RETRY_ATTEMPTS; attempt++) {
+    if (customReplControlFileExists(device)) {
+      try {
+        return await requestCustomReplRpc<T>(device, "fs", payload, {
+          timeoutMs,
+          token,
+          onCancel: () => sendCustomReplControl(device, "interrupt"),
+        });
+      } catch (error: any) {
+        if (error?.code === "busy") {
+          if (attempt >= FS_BUSY_RETRY_ATTEMPTS) throw error;
+          await sleep(FS_BUSY_RETRY_DELAY_MS);
+          continue;
+        }
+        await clearCustomReplControlFile(device);
+      }
     }
+    return runFsHelper<T>(device, payload, timeoutMs, token);
   }
-  return runFsHelper<T>(device, payload, timeoutMs);
+  throw new Error("filesystem operation did not complete");
 }
 
 export async function listSerialPorts(): Promise<{ port: string; name: string }[]> {
@@ -218,8 +433,39 @@ export async function writeFile(device: string, localPath: string, devicePath: s
   await runFs(device, { op: "write_file", local_path: localPath, path: devicePath }, 120000);
 }
 
-export async function readFile(device: string, devicePath: string, localPath: string): Promise<void> {
-  await runFs(device, { op: "read_file", path: devicePath, local_path: localPath }, 120000);
+export async function writeFileWithProgress(
+  device: string,
+  localPath: string,
+  devicePath: string,
+  onProgress: (event: FileTransferProgress) => void,
+  token?: vscode.CancellationToken,
+): Promise<void> {
+  const payload = { op: "write_file", local_path: localPath, path: devicePath };
+  if (customReplControlFileExists(device)) {
+    const total = fs.statSync(localPath).size;
+    onProgress({ localPath, devicePath, bytes: 0, total });
+    await requestCustomReplRpc<void>(device, "fs", payload, {
+      timeoutMs: 30 * 60 * 1000,
+      token,
+      onCancel: () => sendCustomReplControl(device, "interrupt"),
+      onProgress: progress => onProgress(progressPayloadToEvent(progress)),
+    });
+    onProgress({ localPath, devicePath, bytes: total, total, done: true });
+    return;
+  }
+
+  const args = buildFsArgs(device, payload);
+  args.push("--progress");
+  await runHelperWithProgress<void>(args, onProgress, 120000, token);
+}
+
+export async function readFile(
+  device: string,
+  devicePath: string,
+  localPath: string,
+  token?: vscode.CancellationToken,
+): Promise<void> {
+  await runFs(device, { op: "read_file", path: devicePath, local_path: localPath }, 120000, token);
 }
 
 export async function exec(device: string, source: string): Promise<{ stdout: string; stderr: string }> {

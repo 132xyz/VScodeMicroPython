@@ -40,6 +40,7 @@ class _FakeSerial:
         self.read_chunks: list[bytes] = []
         self.is_open = True
         self.closed = False
+        self.flushes = 0
 
     @property
     def in_waiting(self) -> int:
@@ -56,6 +57,9 @@ class _FakeSerial:
         :return: None
         """
         self.writes.append(data)
+
+    def flush(self) -> None:
+        self.flushes += 1
 
     def read(self, size: int) -> bytes:
         """Return queued bytes.
@@ -428,6 +432,17 @@ class TransportBehaviorTests(unittest.TestCase):
         with mock.patch("transport.time.monotonic", side_effect=[0.0, 0.1, 0.3]):
             transport.drain_input(max_duration=0.2)
         self.assertEqual(continuous_serial.read_calls, 2)
+
+    def test_write_bytes_and_flush_output_delegate_to_serial(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="COM4"))
+        serial_stub = _FakeSerial()
+        transport._serial = serial_stub
+
+        self.assertEqual(transport.write_bytes(b"abc"), 3)
+        transport.flush_output()
+
+        self.assertEqual(serial_stub.writes, [b"abc"])
+        self.assertEqual(serial_stub.flushes, 1)
 
     def test_interrupt_exit_and_describe_bytes(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))

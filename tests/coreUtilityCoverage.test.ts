@@ -175,13 +175,21 @@ describe('small core utilities coverage', () => {
 
   test('ActionsTree switches between open repl and stop based on repl state', async () => {
     isReplOpen.mockReturnValue(false);
-    const { ActionsTree } = require('../src/core/actions') as typeof import('../src/core/actions');
+    const { ActionsTree, registerActionsTreeRefresh, refreshActionsTreeView } = require('../src/core/actions') as typeof import('../src/core/actions');
     const tree = new ActionsTree();
     const changed: boolean[] = [];
     tree.onDidChangeTreeData(() => changed.push(true));
 
     tree.refreshTree();
     expect(changed).toEqual([true]);
+
+    const globalRefresh = jest.fn();
+    const disposable = registerActionsTreeRefresh(globalRefresh);
+    refreshActionsTreeView();
+    expect(globalRefresh).toHaveBeenCalledTimes(1);
+    disposable.dispose();
+    refreshActionsTreeView();
+    expect(globalRefresh).toHaveBeenCalledTimes(1);
 
     const closedNodes = await tree.getActionNodes();
     expect(closedNodes.map(node => node.id)).toEqual([

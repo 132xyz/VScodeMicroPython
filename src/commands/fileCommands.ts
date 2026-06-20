@@ -6,9 +6,16 @@ import { Esp32Tree } from "../board/esp32Fs";
 import { Esp32Node } from "../core/types";
 import { Localization } from "../core/localization";
 import { createIgnoreMatcher, buildManifest, saveManifest, loadManifest, Manifest } from "../sync/sync";
-import { toLocalRelative, toDevicePath } from "../board/mpremoteCommands";
+import {
+  restoreSerialSessionsFromSnapshot,
+  suspendSerialSessionsForAutoSync,
+  toLocalRelative,
+  toDevicePath,
+} from "../board/mpremoteCommands";
 import { ActiveFileSyncError, syncActiveEditorToBoard } from "../sync/activeFileSync";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
+import { uploadToBoardHere } from "./uploadToBoard";
+import { refreshActionsTreeView } from "../core/actions";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -17,10 +24,44 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder {
   return ws;
 }
 
-// Helper function for auto-suspend wrapper (assuming it's defined elsewhere)
-function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
-  // Placeholder - implement based on extension logic
-  return fn();
+async function withAutoSuspend<T>(fn: () => Promise<T>): Promise<T> {
+  const enabled = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.serialAutoSuspend", true);
+  if (!enabled) {
+    return fn();
+  }
+
+  const snapshot = await suspendSerialSessionsForAutoSync();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    return await fn();
+  } finally {
+    try {
+      await restoreSerialSessionsFromSnapshot(snapshot, { replBehavior: "openReplEmpty" });
+    } catch (error) {
+      console.error("[fileCommands] Failed to restore serial sessions:", error);
+    } finally {
+      refreshActionsTreeView();
+    }
+  }
+}
+
+const TREE_OPEN_DOUBLE_CLICK_MS = 650;
+let lastTreeOpenClick: { path: string; at: number } | undefined;
+
+function createCancelledError(): Error & { code?: string } {
+  const error = new Error("Open file cancelled") as Error & { code?: string };
+  error.code = "cancelled";
+  return error;
+}
+
+function throwIfCancelled(token: vscode.CancellationToken): void {
+  if (token.isCancellationRequested) throw createCancelledError();
+}
+
+function isCancelledError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | undefined;
+  const message = String(candidate?.message ?? "");
+  return candidate?.code === "cancelled" || message === "Upload cancelled" || message === "Open file cancelled";
 }
 
 async function refreshBoardTree(): Promise<void> {
@@ -47,6 +88,21 @@ async function ensureWorkbenchIgnoreFile(wsPath: string): Promise<void> {
 
 // File commands implementation
 export const fileCommands = {
+  uploadToBoardHere,
+
+  openFileFromTree: async (node: Esp32Node) => {
+    if (node.kind !== "file") return;
+
+    const now = Date.now();
+    if (lastTreeOpenClick?.path === node.path && now - lastTreeOpenClick.at <= TREE_OPEN_DOUBLE_CLICK_MS) {
+      lastTreeOpenClick = undefined;
+      await fileCommands.openFile(node);
+      return;
+    }
+
+    lastTreeOpenClick = { path: node.path, at: now };
+  },
+
   syncActiveFileLocalToBoard: async () => {
     try {
       const target = await syncActiveEditorToBoard();
@@ -226,8 +282,22 @@ export const fileCommands = {
         const fileExistsLocally = await fs.access(abs).then(() => true).catch(() => false);
         if (!fileExistsLocally) {
           try {
-            await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+            await vscode.window.withProgress({
+              location: vscode.ProgressLocation.Notification,
+              title: `Opening ${node.path}...`,
+              cancellable: true
+            }, async (progress, token) => {
+              progress.report({ increment: 0, message: "Downloading from board..." });
+              throwIfCancelled(token);
+              await withAutoSuspend(() => mp.cpFromDevice(node.path, abs, { token }));
+              throwIfCancelled(token);
+              progress.report({ increment: 100, message: "Download complete." });
+            });
           } catch (copyError: any) {
+            if (isCancelledError(copyError)) {
+              vscode.window.showInformationMessage("Open file cancelled.");
+              return;
+            }
             console.error(`openFile (extension) failed to copy from board:`, copyError);
             vscode.window.showErrorMessage(`Failed to copy file from board: ${copyError?.message || copyError}`);
             return; // Don't try to open the file if copy failed

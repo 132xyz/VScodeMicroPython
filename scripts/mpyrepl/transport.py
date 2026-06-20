@@ -373,6 +373,25 @@ class SerialReplTransport:
         self.clear_interrupt_request()
         return ExecResult(stdout=stdout_data[:-1], stderr=stderr_data[:-1])
 
+    def write_bytes(self, data: bytes) -> int:
+        """Write raw bytes to the open serial stream.
+
+        :param data: Bytes to write.
+        :return: Number of bytes accepted by pyserial.
+        """
+        written = self._ensure_serial().write(data)
+        return len(data) if written is None else int(written)
+
+    def flush_output(self) -> None:
+        """Flush pending serial output bytes when the backend supports it.
+
+        :return: None
+        """
+        serial_port = self._ensure_serial()
+        flush = getattr(serial_port, "flush", None)
+        if callable(flush):
+            flush()
+
     def raw_paste_write(self, command_bytes: bytes) -> None:
         """Write source bytes using raw-paste window flow control.
 

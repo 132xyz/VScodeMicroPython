@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.91",
+  "version": "0.3.98",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -210,6 +210,11 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "microPythonWorkBench.uploadToBoardHere",
+        "title": "%commands.uploadToBoardHere.title%",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "microPythonWorkBench.syncActiveFileLocalToBoard",
         "title": "%commands.syncActiveFileLocalToBoard.title%",
         "icon": "$(repo-push)"
@@ -405,6 +410,11 @@
           "group": "0_create@1"
         },
         {
+          "command": "microPythonWorkBench.uploadToBoardHere",
+          "when": "view == microPythonWorkBenchFsView && viewItem == dir",
+          "group": "1_sync@0"
+        },
+        {
           "command": "microPythonWorkBench.delete",
           "when": "view == microPythonWorkBenchFsView && (viewItem == file || viewItem == dir)",
           "group": "3_delete@1"
@@ -458,7 +468,7 @@
             "openReplEmpty",
             "none"
           ],
-          "default": "none",
+          "default": "openReplEmpty",
           "description": "%configuration.replRestoreBehavior.description%"
         },
         "microPythonWorkBench.interruptOnConnect": {
