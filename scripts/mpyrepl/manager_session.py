@@ -52,7 +52,7 @@ class ManagerSession:
     def __init__(
         self,
         config: ReplConfig,
-        follow_timeout: float = 10.0,
+        follow_timeout: float | None = None,
         stub_root: str = "",
         dir_query_timeout: float = 2.0,
         emit_event: EventCallback | None = None,
@@ -61,7 +61,7 @@ class ManagerSession:
         """Store session configuration without opening the serial port.
 
         :param config: Serial runtime configuration.
-        :param follow_timeout: Default execution follow timeout.
+        :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
         :param stub_root: Optional completion stub root.
         :param dir_query_timeout: Device-backed completion timeout.
         :param emit_event: Event callback used by the manager server.
@@ -189,8 +189,12 @@ class ManagerSession:
 
         :return: True when an interrupt was sent.
         """
+        await self._ensure_open()
         transport = self._require_transport()
-        await asyncio.to_thread(transport.interrupt)
+        try:
+            await asyncio.to_thread(transport.interrupt)
+        except TransportError as exc:
+            await self._mark_transport_lost(exc)
         self._emit_event("status", self.status())
         return True
 
@@ -206,6 +210,7 @@ class ManagerSession:
 
         :return: True on success.
         """
+        await self._ensure_open()
         transport = self._require_transport()
         decoder = Utf8StreamDecoder()
 
@@ -216,6 +221,8 @@ class ManagerSession:
 
         try:
             await self._gate.run("soft-reset", transport.soft_reset, _consumer)
+        except TransportError as exc:
+            await self._mark_transport_lost(exc)
         finally:
             text = decoder.flush()
             if text:
@@ -236,6 +243,7 @@ class ManagerSession:
         if not prepared:
             return {"stdout": "", "stderr": ""}
 
+        await self._ensure_open()
         transport = self._require_transport()
         stdout_decoder = Utf8StreamDecoder()
         stderr_decoder = Utf8StreamDecoder()
@@ -266,6 +274,8 @@ class ManagerSession:
         except TransportInterrupted:
             await self._gate.run("interrupt-recover", transport.enter_raw_repl, False, 2.0)
             raise RpcMethodError("execution interrupted", "cancelled")
+        except TransportError as exc:
+            await self._mark_transport_lost(exc)
         finally:
             stdout_tail = stdout_decoder.flush()
             stderr_tail = stderr_decoder.flush()
@@ -295,6 +305,7 @@ class ManagerSession:
         :param payload: Operation payload.
         :return: Operation result.
         """
+        await self._ensure_open()
         client = self._require_fs_client()
         request_id = str(payload.get("request_id") or "")
         operation_payload = dict(payload)
@@ -307,6 +318,8 @@ class ManagerSession:
             return await self._gate.run("fs." + op, run_fs_operation, client, op, operation_payload)
         except FsOperationError as exc:
             raise RpcMethodError(str(exc), exc.code or "device") from exc
+        except TransportError as exc:
+            await self._mark_transport_lost(exc)
 
     async def complete(self, text: str, cursor: int | None = None, requested: bool = True) -> list[dict[str, Any]]:
         """Return completion candidates for one prompt document.
@@ -316,6 +329,8 @@ class ManagerSession:
         :param requested: Whether completion was explicitly requested.
         :return: Completion candidate payloads.
         """
+        if self._completer is None:
+            await self._ensure_open()
         if self._completer is None:
             raise RpcMethodError("completion is not ready", "not_ready")
         return await asyncio.to_thread(self._complete_blocking, text, cursor, requested)
@@ -355,8 +370,29 @@ class ManagerSession:
         while self._gate.busy and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.05)
 
+    async def _ensure_open(self) -> None:
+        if self._transport is None:
+            await self.open()
+
+    async def _mark_transport_lost(self, exc: TransportError) -> None:
+        transport = self._transport
+        self._transport = None
+        self._fs_client = None
+        self._completer = None
+        self._state = "stopped"
+        if transport is not None:
+            try:
+                await asyncio.to_thread(transport.close)
+            except Exception:
+                pass
+        self._emit_status()
+        raise RpcMethodError(
+            "serial connection lost; retry the command to reconnect (%s)" % exc,
+            "transport_lost",
+        ) from exc
+
     def _ensure_helper_loaded(self, transport: SerialReplTransport) -> None:
-        result = transport.exec_raw(build_helper_source(), timeout=self._follow_timeout)
+        result = transport.exec_raw(build_helper_source(), timeout=self._config.operation_timeout)
         if result.stderr:
             raise TransportError("failed to inject repl helper")
 

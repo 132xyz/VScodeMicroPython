@@ -1,13 +1,14 @@
 
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 
 export interface SyncActionNode { id: string; label: string; command: string }
 
 export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
   private _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  constructor(private readonly getAutoSyncEnabled: () => boolean | Thenable<boolean> = () => false) {}
+
   refreshTree(): void { this._onDidChangeTreeData.fire(); }
   // Diagnostic helper: log when the view is asked to refresh
   logRefresh(): void { /* debug log removed */ }
@@ -43,27 +44,8 @@ export class SyncTree implements vscode.TreeDataProvider<SyncActionNode> {
     // Determina el estado actual de autosync para mostrarlo en el label
     let autoSyncLabel = "Toggle AutoSync";
     try {
-      const ws = vscode.workspace.workspaceFolders?.[0];
-      if (ws) {
-        const inspected = vscode.workspace
-          .getConfiguration(undefined, ws.uri)
-          .inspect<boolean>('microPythonWorkBench.autoSyncOnSave');
-        const settingValue =
-          typeof inspected?.workspaceFolderValue === 'boolean' ? inspected.workspaceFolderValue :
-          typeof inspected?.workspaceValue === 'boolean' ? inspected.workspaceValue :
-          typeof inspected?.globalValue === 'boolean' ? inspected.globalValue :
-          undefined;
-        const legacyPath = path.join(ws.uri.fsPath, '.mpy-workbench', 'config.json');
-        const legacyCfg = fs.existsSync(legacyPath)
-          ? JSON.parse(fs.readFileSync(legacyPath, 'utf8'))
-          : {};
-        const enabled = typeof settingValue === 'boolean'
-          ? settingValue
-          : typeof legacyCfg.autoSyncOnSave === 'boolean'
-            ? legacyCfg.autoSyncOnSave
-            : inspected?.defaultValue ?? false;
-        autoSyncLabel = enabled ? 'AutoSync: ON (click to disable)' : 'AutoSync: OFF (click to enable)';
-      }
+      const enabled = await Promise.resolve(this.getAutoSyncEnabled());
+      autoSyncLabel = enabled ? 'AutoSync: ON (click to disable)' : 'AutoSync: OFF (click to enable)';
     } catch {}
     // action nodes ready
     return [

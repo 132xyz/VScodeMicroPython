@@ -99,7 +99,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Workspace-level config and manifest stored in .mpy-workbench/
   const MPY_WORKBENCH_DIR = '.mpy-workbench';
-  const MPY_CONFIG_FILE = 'config.json';
   const MPY_MANIFEST_FILE = 'esp32sync.json';
 
   async function ensureMpyWorkbenchDir(wsPath: string) {
@@ -183,53 +182,14 @@ export async function activate(context: vscode.ExtensionContext) {
     ].join('\n');
   }
 
-
-  async function readWorkspaceConfig(wsPath: string): Promise<any> {
-    try {
-      const p = path.join(wsPath, MPY_WORKBENCH_DIR, MPY_CONFIG_FILE);
-      const txt = await fs.readFile(p, 'utf8');
-      return JSON.parse(txt);
-    } catch {
-      return {};
-    }
-  }
-
-  async function writeWorkspaceConfig(wsPath: string, obj: any) {
-    try {
-      await ensureMpyWorkbenchDir(wsPath);
-      const p = path.join(wsPath, MPY_WORKBENCH_DIR, MPY_CONFIG_FILE);
-      await fs.writeFile(p, JSON.stringify(obj, null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to write .mpy-workbench config', e);
-    }
-  }
-
-  function readAutoSyncSettingFromVsCode(wsPath: string): { value: boolean | undefined; defaultValue: boolean } {
-    const inspected = vscode.workspace
-      .getConfiguration(undefined, vscode.Uri.file(wsPath))
-      .inspect<boolean>('microPythonWorkBench.autoSyncOnSave');
-    const value =
-      typeof inspected?.workspaceFolderValue === 'boolean' ? inspected.workspaceFolderValue :
-      typeof inspected?.workspaceValue === 'boolean' ? inspected.workspaceValue :
-      typeof inspected?.globalValue === 'boolean' ? inspected.globalValue :
-      undefined;
-    return { value, defaultValue: inspected?.defaultValue ?? false };
-  }
-
-  // Returns true if autosync should run for this workspace (VS Code setting wins, legacy .mpy-workbench fallback)
-  async function workspaceAutoSyncEnabled(wsPath: string): Promise<boolean> {
-    // First check extension workspaceState (session/workspace-scoped storage)
+  // Returns true if autosync should run for this workspace. This is intentionally
+  // stored in extension workspaceState and not exposed as a VS Code setting.
+  async function workspaceAutoSyncEnabled(_wsPath: string): Promise<boolean> {
     try {
       const wsStateVal = context.workspaceState.get<boolean>('autoSyncOnSave');
       if (typeof wsStateVal === 'boolean') return wsStateVal;
     } catch {}
-    const { value: settingValue, defaultValue } = readAutoSyncSettingFromVsCode(wsPath);
-    if (typeof settingValue === 'boolean') return settingValue;
-
-    const cfg = await readWorkspaceConfig(wsPath);
-    if (typeof cfg.autoSyncOnSave === 'boolean') return cfg.autoSyncOnSave;
-
-    return defaultValue;
+    return false;
   }
 
   // Context key for welcome UI when no port is selected
@@ -311,7 +271,10 @@ export async function activate(context: vscode.ExtensionContext) {
     console.error('[Extension] View not contributed: microPythonWorkBenchActionsView');
   }
   context.subscriptions.push(registerActionsTreeRefresh(refreshActionsTree));
-  const syncTree = new SyncTree();
+  const syncTree = new SyncTree(async () => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    return ws ? workspaceAutoSyncEnabled(ws.uri.fsPath) : false;
+  });
   let syncView: vscode.TreeView<any> | undefined = undefined;
   try {
     // Try to create the view regardless of package.json state. If the view is
@@ -398,30 +361,6 @@ export async function activate(context: vscode.ExtensionContext) {
     await refreshAutoSyncStatus();
     try { syncTree.refreshTree(); } catch {}
   }
-
-  // Watch for workspace config changes in auto-sync config files to update the status
-  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-    const wsPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    const patterns = [
-      new vscode.RelativePattern(wsPath, '.mpy-workbench/config.json'),
-      new vscode.RelativePattern(wsPath, '.mpystudio/config.json') // legacy
-    ];
-    for (const cfgGlob of patterns) {
-      const watcher = vscode.workspace.createFileSystemWatcher(cfgGlob);
-      watcher.onDidChange(refreshAutoSyncUi);
-      watcher.onDidCreate(refreshAutoSyncUi);
-      watcher.onDidDelete(refreshAutoSyncUi);
-      context.subscriptions.push(watcher);
-    }
-  }
-  // Keep status/toggle in sync if user edits VS Code settings.json directly
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('microPythonWorkBench.autoSyncOnSave')) {
-        refreshAutoSyncUi().catch(() => {});
-      }
-    })
-  );
 
   // Initialize status bar on activation
   refreshAutoSyncUi();

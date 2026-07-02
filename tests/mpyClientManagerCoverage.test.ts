@@ -4,19 +4,23 @@ jest.mock("node:fs", () => ({
 }));
 jest.mock("../src/board/serialManager", () => ({
   cancelManagerOperation: jest.fn(),
+  closeManager: jest.fn(),
   ensureManagerStarted: jest.fn(),
   getActiveManagerRuntime: jest.fn(),
   getManagerClient: jest.fn(),
   interruptManager: jest.fn(),
+  isRecoverableSerialManagerError: jest.fn((error: any) => error?.code === "transport_lost"),
   softResetManager: jest.fn(),
 }));
 
 import {
   cancelManagerOperation,
+  closeManager,
   ensureManagerStarted,
   getActiveManagerRuntime,
   getManagerClient,
   interruptManager,
+  isRecoverableSerialManagerError,
 } from "../src/board/serialManager";
 import * as mpyClient from "../src/board/mpyClient";
 
@@ -24,10 +28,12 @@ describe("mpyClient manager-backed operations", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (cancelManagerOperation as jest.Mock).mockReset();
+    (closeManager as jest.Mock).mockReset();
     (ensureManagerStarted as jest.Mock).mockReset();
     (getActiveManagerRuntime as jest.Mock).mockReset();
     (getManagerClient as jest.Mock).mockReset();
     (interruptManager as jest.Mock).mockReset();
+    (isRecoverableSerialManagerError as jest.Mock).mockImplementation((error: any) => error?.code === "transport_lost");
   });
 
   test("listdir routes through active serial manager", async () => {
@@ -71,6 +77,36 @@ describe("mpyClient manager-backed operations", () => {
       expect.objectContaining({ op: "listdir", path: "/", devicePath: "/" }),
       30000,
     );
+  });
+
+  test("listdir closes stale manager and retries once after transport loss", async () => {
+    const staleManager = {
+      connected: true,
+      call: jest.fn().mockRejectedValue(Object.assign(new Error("ReadFile failed"), { code: "transport_lost" })),
+    };
+    const restartedManager = {
+      connected: true,
+      call: jest.fn().mockResolvedValue([{ name: "after.py" }]),
+    };
+    (getActiveManagerRuntime as jest.Mock)
+      .mockReturnValueOnce({ device: "COM21" })
+      .mockReturnValueOnce(undefined);
+    (ensureManagerStarted as jest.Mock).mockResolvedValue({
+      device: "COM21",
+      endpoint: { host: "127.0.0.1", port: 5000, token: "tok" },
+    });
+    (getManagerClient as jest.Mock)
+      .mockReturnValueOnce(staleManager)
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce(restartedManager);
+
+    const result = await mpyClient.listdir("COM21", "/");
+
+    expect(result).toEqual([{ name: "after.py" }]);
+    expect(closeManager).toHaveBeenCalled();
+    expect(ensureManagerStarted).toHaveBeenCalledWith("COM21");
+    expect(staleManager.call).toHaveBeenCalledTimes(1);
+    expect(restartedManager.call).toHaveBeenCalledTimes(1);
   });
 
   test("listdir restarts manager when active runtime is for another device", async () => {

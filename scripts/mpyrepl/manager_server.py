@@ -301,7 +301,7 @@ async def run_manager_async(
     host: str = DEFAULT_HOST,
     port: int = 0,
     token: str = "",
-    follow_timeout: float = 10.0,
+    follow_timeout: float | None = None,
     stub_root: str = "",
     dir_query_timeout: float = 2.0,
     ready_stream: TextIO = sys.stdout,
@@ -312,7 +312,7 @@ async def run_manager_async(
     :param host: Bind host.
     :param port: Bind port, or zero for random.
     :param token: Optional authentication token.
-    :param follow_timeout: Default execution follow timeout.
+    :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
     :param stub_root: Optional completion stub root.
     :param dir_query_timeout: Device completion timeout.
     :param ready_stream: Stream for the ready line.
@@ -338,7 +338,7 @@ def run_manager(
     host: str = DEFAULT_HOST,
     port: int = 0,
     token: str = "",
-    follow_timeout: float = 10.0,
+    follow_timeout: float | None = None,
     stub_root: str = "",
     dir_query_timeout: float = 2.0,
 ) -> int:
@@ -348,7 +348,7 @@ def run_manager(
     :param host: Bind host.
     :param port: Bind port, or zero for random.
     :param token: Optional authentication token.
-    :param follow_timeout: Default execution follow timeout.
+    :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
     :param stub_root: Optional completion stub root.
     :param dir_query_timeout: Device completion timeout.
     :return: Process exit code.

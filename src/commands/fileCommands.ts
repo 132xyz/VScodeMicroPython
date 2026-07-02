@@ -306,7 +306,6 @@ export const fileCommands = {
       }
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
-      // await context.workspaceState.update("microPythonWorkBench.lastOpenedPath", abs);
     } else {
       // Fallback: no workspace, use temp
       // const temp = vscode.Uri.joinPath(context.globalStorageUri, node.path.replace(/\//g, "_"));
@@ -315,7 +314,6 @@ export const fileCommands = {
       //   await withAutoSuspend(() => mp.cpFromDevice(node.path, temp.fsPath));
       //   const doc = await vscode.workspace.openTextDocument(temp);
       //   await vscode.window.showTextDocument(doc, { preview: true });
-      //   await context.workspaceState.update("microPythonWorkBench.lastOpenedPath", temp.fsPath);
       // } catch (copyError: any) {
       //   console.error(`[DEBUG] openFile (extension fallback): Failed to copy file to temp location:`, copyError);
       //   vscode.window.showErrorMessage(`Failed to copy file from board to temp location: ${copyError?.message || copyError}`);

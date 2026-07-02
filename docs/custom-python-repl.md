@@ -15,7 +15,7 @@ This path exists to avoid the limitations of a plain terminal running `mpremote 
 
 ## Scope
 
-`microPythonWorkBench.experimentalCustomRepl` is enabled by default. REPL, Run Active File, interrupt/reset, port listing, board file browsing, and sync use the `mpyrepl` helper path.
+REPL, Run Active File, interrupt/reset, port listing, board file browsing, and sync use the bundled `mpyrepl` helper path. There is no separate opt-in setting for the old experimental REPL path.
 
 ## Requirements
 
@@ -30,15 +30,7 @@ Recommended installation for the shared Python environment:
 python -m pip install --user pyserial
 ```
 
-## How to enable it in VS Code
-
-Enable the setting in workspace settings or user settings:
-
-```json
-{
-  "microPythonWorkBench.experimentalCustomRepl": true
-}
-```
+## How to use it in VS Code
 
 Recommended companion settings:
 

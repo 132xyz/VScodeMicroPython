@@ -19,6 +19,7 @@ bootstrap.configure_import_path()
 from manager_session import ManagerSession
 from manager_protocol import RpcMethodError
 from models import ExecResult, ReplConfig
+from transport import TransportError
 
 
 @dataclass
@@ -83,6 +84,32 @@ class HelperErrorTransport(FakeTransport):
         return ExecResult(stdout=b"", stderr=b"helper failed")
 
 
+class RecoveringTransport(FakeTransport):
+    fail_user_exec_once = True
+
+    def exec_raw(self, command: str, timeout=None, stdout_consumer=None, stderr_consumer=None) -> ExecResult:
+        self.executed.append(command)
+        if len(self.executed) == 1:
+            return ExecResult(stdout=b"", stderr=b"")
+        if RecoveringTransport.fail_user_exec_once:
+            RecoveringTransport.fail_user_exec_once = False
+            raise TransportError("ReadFile failed (PermissionError(13, 'device rejected command'))")
+        stdout = b"ok\r\n"
+        if stdout_consumer:
+            stdout_consumer(stdout)
+        return ExecResult(stdout=stdout, stderr=b"")
+
+
+class InterruptErrorTransport(FakeTransport):
+    def interrupt(self) -> None:
+        raise TransportError("WriteFile failed")
+
+
+class SoftResetErrorTransport(FakeTransport):
+    def soft_reset(self, output_consumer=None) -> None:
+        raise TransportError("ReadFile failed")
+
+
 class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.events: list[tuple[str, dict]] = []
@@ -130,16 +157,11 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session.clear_runtime_cache())
         await self.session.close()
 
-    async def test_errors_before_open_are_structured(self) -> None:
-        with self.assertRaisesRegex(RpcMethodError, "not connected"):
-            await self.session.interrupt()
-        with self.assertRaisesRegex(RpcMethodError, "not connected"):
-            await self.session.soft_reset()
-        with self.assertRaisesRegex(RpcMethodError, "not ready"):
-            await self.session.fs_operation("stat", {"path": "/"})
-        with self.assertRaisesRegex(RpcMethodError, "not ready"):
-            await self.session.complete("", 0, True)
+    async def test_operations_before_open_initialize_transport(self) -> None:
+        self.assertTrue(await self.session.interrupt())
+        self.assertTrue(await self.session.soft_reset())
         self.assertEqual(await self.session.execute(""), {"stdout": "", "stderr": ""})
+        await self.session.close()
 
     async def test_execute_with_stderr_does_not_record_symbols(self) -> None:
         def factory(config: ReplConfig) -> ErrorTransport:
@@ -224,6 +246,76 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.session.open()
         self.assertTrue(await self.session.cancel())
         await self.session.close()
+
+    async def test_transport_error_drops_connection_and_next_execute_reopens(self) -> None:
+        RecoveringTransport.fail_user_exec_once = True
+        transports: list[RecoveringTransport] = []
+
+        def factory(config: ReplConfig) -> RecoveringTransport:
+            transport = RecoveringTransport(config)
+            transports.append(transport)
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+
+        with self.assertRaises(RpcMethodError) as raised:
+            await session.execute("1")
+
+        self.assertEqual(raised.exception.code, "transport_lost")
+        self.assertEqual(session.state, "stopped")
+        self.assertTrue(transports[0].closed)
+
+        result = await session.execute("2")
+
+        self.assertEqual(result["stdout"], "ok\r\n")
+        self.assertEqual(len(transports), 2)
+        await session.close()
+
+    async def test_interrupt_transport_error_marks_connection_lost(self) -> None:
+        transport_holder: dict[str, InterruptErrorTransport] = {}
+
+        def factory(config: ReplConfig) -> InterruptErrorTransport:
+            transport = InterruptErrorTransport(config)
+            transport_holder["transport"] = transport
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+
+        with self.assertRaises(RpcMethodError) as raised:
+            await session.interrupt()
+
+        self.assertEqual(raised.exception.code, "transport_lost")
+        self.assertEqual(session.state, "stopped")
+        self.assertTrue(transport_holder["transport"].closed)
+
+    async def test_soft_reset_transport_error_flushes_output_and_marks_lost(self) -> None:
+        transport_holder: dict[str, SoftResetErrorTransport] = {}
+
+        def factory(config: ReplConfig) -> SoftResetErrorTransport:
+            transport = SoftResetErrorTransport(config)
+            transport_holder["transport"] = transport
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+
+        with self.assertRaises(RpcMethodError) as raised:
+            await session.soft_reset()
+
+        self.assertEqual(raised.exception.code, "transport_lost")
+        self.assertEqual(session.state, "stopped")
+        self.assertTrue(transport_holder["transport"].closed)
 
 
 if __name__ == "__main__":

@@ -112,8 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     manager_parser.add_argument(
         "--follow-timeout",
         type=float,
-        default=10.0,
-        help="Timeout while waiting for stdout and stderr EOF markers",
+        default=None,
+        help="Timeout while waiting for stdout and stderr EOF markers; defaults to no timeout for user code",
     )
     manager_parser.add_argument(
         "--stub-root",

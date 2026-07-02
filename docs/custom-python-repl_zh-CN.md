@@ -15,7 +15,7 @@ MicroPython 工作台默认使用位于 `scripts/mpyrepl` 下的内置 Python �
 
 ## 作用范围
 
-`microPythonWorkBench.experimentalCustomRepl` 默认开启。REPL, 运行活动文件, 中断/重置, 串口列表, 开发板文件浏览和同步都会走 `mpyrepl` helper 路径。
+REPL, 运行活动文件, 中断/重置, 串口列表, 开发板文件浏览和同步都会走内置 `mpyrepl` helper 路径。旧的实验 REPL 路径已经不是单独可开启的设置项。
 
 ## 使用要求
 
@@ -30,15 +30,7 @@ MicroPython 工作台默认使用位于 `scripts/mpyrepl` 下的内置 Python �
 python -m pip install --user pyserial
 ```
 
-## 在 VS Code 中启用
-
-你可以在工作区设置或用户设置中开启：
-
-```json
-{
-  "microPythonWorkBench.experimentalCustomRepl": true
-}
-```
+## 在 VS Code 中使用
 
 推荐同时搭配以下设置：
 

@@ -132,9 +132,6 @@ describe('board mpremoteCommands coverage', () => {
     const globalConfig = {
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
-        if (key === 'microPythonWorkBench.interruptOnConnect') return true;
-        if (key === 'microPythonWorkBench.strictConnect') return true;
-        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
         if (key === 'microPythonWorkBench.baudRate') return 115200;
         if (key === 'microPythonWorkBench.debug') return false;
         return defaultValue;
@@ -250,9 +247,6 @@ describe('board mpremoteCommands coverage', () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
-        if (key === 'microPythonWorkBench.interruptOnConnect') return true;
-        if (key === 'microPythonWorkBench.strictConnect') return true;
-        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
         if (key === 'microPythonWorkBench.baudRate') return 115200;
         if (key === 'microPythonWorkBench.debug') return false;
         return defaultValue;
@@ -277,13 +271,10 @@ describe('board mpremoteCommands coverage', () => {
     expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
   });
 
-  test('runActiveFile uses custom repl control exec when experimental repl is enabled', async () => {
+  test('runActiveFile uses serial manager exec through the built-in repl transport', async () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
-        if (key === 'microPythonWorkBench.interruptOnConnect') return true;
-        if (key === 'microPythonWorkBench.strictConnect') return true;
-        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
         if (key === 'microPythonWorkBench.baudRate') return 115200;
         if (key === 'microPythonWorkBench.debug') return false;
         return defaultValue;
@@ -325,7 +316,6 @@ describe('board mpremoteCommands coverage', () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
-        if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
         if (key === 'microPythonWorkBench.debug') return false;
         return defaultValue;
       }),
@@ -378,9 +368,6 @@ describe('board mpremoteCommands coverage', () => {
       (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
         get: jest.fn((key: string, defaultValue: unknown) => {
           if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
-          if (key === 'microPythonWorkBench.interruptOnConnect') return true;
-          if (key === 'microPythonWorkBench.strictConnect') return true;
-          if (key === 'microPythonWorkBench.experimentalCustomRepl') return true;
           if (key === 'microPythonWorkBench.baudRate') return 115200;
           if (key === 'microPythonWorkBench.debug') return false;
           return defaultValue;

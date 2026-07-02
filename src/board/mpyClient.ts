@@ -5,10 +5,12 @@ import * as vscode from "vscode";
 import { MpRemoteManager } from "./MpRemoteManager";
 import {
   cancelManagerOperation,
+  closeManager,
   ensureManagerStarted,
   getActiveManagerRuntime,
   getManagerClient,
   interruptManager,
+  isRecoverableSerialManagerError,
   softResetManager,
 } from "./serialManager";
 
@@ -306,13 +308,28 @@ async function runFs<T>(
   const managerMethod = managerMethodForFsOp(String(payload.op || ""));
   const manager = await getFsManager(device, managerMethod);
   if (manager && managerMethod) {
-    return await managerCallWithCancellation<T>(
-      manager,
-      managerMethod,
-      managerParamsForFsPayload(payload),
-      timeoutMs,
-      token,
-    );
+    const params = managerParamsForFsPayload(payload);
+    try {
+      return await managerCallWithCancellation<T>(
+        manager,
+        managerMethod,
+        params,
+        timeoutMs,
+        token,
+      );
+    } catch (error) {
+      if (token?.isCancellationRequested || !isRecoverableSerialManagerError(error)) throw error;
+      await closeManager();
+      const restarted = await getFsManager(device, managerMethod);
+      if (!restarted) throw error;
+      return await managerCallWithCancellation<T>(
+        restarted,
+        managerMethod,
+        params,
+        timeoutMs,
+        token,
+      );
+    }
   }
   throw new Error(`serial manager is not available for filesystem operation: ${String(payload.op || "")}`);
 }
@@ -368,13 +385,28 @@ export async function writeFileWithProgress(
     onProgress({ localPath, devicePath, bytes: 0, total });
     manager.on("progress", onManagerProgress);
     try {
-      await managerCallWithCancellation<void>(
-        manager,
-        "fs.writeFile",
-        managerParamsForFsPayload(payload),
-        30 * 60 * 1000,
-        token,
-      );
+      const params = managerParamsForFsPayload(payload);
+      try {
+        await managerCallWithCancellation<void>(
+          manager,
+          "fs.writeFile",
+          params,
+          30 * 60 * 1000,
+          token,
+        );
+      } catch (error) {
+        if (token?.isCancellationRequested || !isRecoverableSerialManagerError(error)) throw error;
+        await closeManager();
+        const restarted = await getFsManager(device, "fs.writeFile");
+        if (!restarted) throw error;
+        await managerCallWithCancellation<void>(
+          restarted,
+          "fs.writeFile",
+          params,
+          30 * 60 * 1000,
+          token,
+        );
+      }
       onProgress({ localPath, devicePath, bytes: total, total, done: true });
       return;
     } finally {

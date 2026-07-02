@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.5",
+  "version": "0.4.9",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -74,9 +74,6 @@
       ]
     },
     "customEditors": [],
-    "css": [
-      "./media/esp32fs.css"
-    ],
     "views": {
       "microPythonWorkBenchFs": [
         {
@@ -460,15 +457,15 @@
       "type": "object",
       "title": "%configuration.title%",
       "properties": {
-        "microPythonWorkBench.autoSyncOnSave": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.autoSyncOnSave.description%"
-        },
         "microPythonWorkBench.connect": {
           "type": "string",
           "default": "auto",
           "description": "%configuration.connect.description%"
+        },
+        "microPythonWorkBench.connectOnActivate": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.connectOnActivate.description%"
         },
         "microPythonWorkBench.serialAutoSuspend": {
           "type": "boolean",
@@ -485,21 +482,6 @@
           ],
           "default": "openReplEmpty",
           "description": "%configuration.replRestoreBehavior.description%"
-        },
-        "microPythonWorkBench.interruptOnConnect": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.interruptOnConnect.description%"
-        },
-        "microPythonWorkBench.strictConnect": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.strictConnect.description%"
-        },
-        "microPythonWorkBench.experimentalCustomRepl": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.experimentalCustomRepl.description%"
         },
         "microPythonWorkBench.preListDelayMs": {
           "type": "number",
@@ -554,35 +536,10 @@
           "default": true,
           "description": "启用时在连接设备并开启代码补全时自动选择并应用最佳的 pyi。"
         },
-        "microPythonWorkBench.stubFallbackPolicy": {
-          "type": "string",
-          "enum": [
-            "latest",
-            "previous",
-            "manual"
-          ],
-          "default": "latest",
-          "description": "当设备 mpy 版本高于已安装/可用的 stub 时的回退策略。"
-        },
-        "microPythonWorkBench.stubRepoSource": {
-          "type": "string",
-          "enum": [
-            "pip",
-            "bundled",
-            "custom"
-          ],
-          "default": "pip",
-          "description": "%configuration.stubRepoSource.description%"
-        },
         "microPythonWorkBench.debug": {
           "type": "boolean",
           "default": false,
           "description": "Enable debug logging from the Micro Python Work Bench extension (verbose internal logs)."
-        },
-        "microPythonWorkBench.verboseFileTree": {
-          "type": "boolean",
-          "default": false,
-          "description": "When true, enable ultra-verbose file-tree parsing logs (for debugging tree parsing and cache)."
         }
       }
     }

@@ -43,7 +43,6 @@ python -m pip install --user pyserial
 4. 可选但推荐：
    - 安装 Python 与 Pylance 扩展，以获得更好的补全体验。
    - 开启 `microPythonWorkBench.enableCodeCompletion`，为当前工作区启用 MicroPython IntelliSense。
-   - `microPythonWorkBench.experimentalCustomRepl` 默认开启, 使用内置主机侧客户端。
 
 ## 使用要求
 
@@ -63,6 +62,7 @@ python -m pip install --user pyserial
 - `MicroPython 工作台：同步已更改文件 本地 → 开发板` 与 `MicroPython 工作台：同步已更改文件 开发板 → 本地`：只传输变更文件
 - `MicroPython 工作台：同步所有文件（本地 → 开发板）` 与 `MicroPython 工作台：同步所有文件（开发板 → 本地）`：执行完整基线同步
 - `MicroPython 工作台：同步活动文件 本地 → 开发板`：仅上传当前编辑器文件，但要求该文件位于配置的同步根目录内
+- `MicroPython 工作台：切换工作区保存时自动同步`：将保存时自动上传开关存入 VS Code workspaceState, 不写入 `settings.json`
 
 工作区级别的元数据保存在 `.mpy-workbench/` 下：
 
@@ -94,8 +94,8 @@ python -m pip install --user pyserial
 
 ### 内置 Python REPL
 
-- `microPythonWorkBench.experimentalCustomRepl` 默认开启, 使用内置 `mpyrepl` Python 客户端。
-- REPL, 运行活动文件, 串口检测, 文件浏览和同步都使用同一套自定义传输栈。
+- 内置 `mpyrepl` Python 客户端是当前开发板传输路径。
+- REPL, 运行活动文件, 串口检测, 文件浏览和同步都使用同一套传输栈。
 - Python 客户端提供：
   - 主机侧多行编辑
   - prompt_toolkit 补全
@@ -110,18 +110,18 @@ python -m pip install --user pyserial
 以下设置最值得优先关注：
 
 - `microPythonWorkBench.connect`：固定串口，例如 `COM3` 或 `/dev/ttyUSB0`
+- `microPythonWorkBench.connectOnActivate`：允许扩展激活时自动从开发板填充文件树；默认关闭，避免意外占用串口
 - `microPythonWorkBench.syncLocalRoot`：本地同步根目录，可为工作区相对路径或绝对路径
 - `microPythonWorkBench.rootPath`：开发板侧根路径，例如 `/` 或 `/lib`
-- `microPythonWorkBench.autoSyncOnSave`：保存时自动上传
+- `MicroPython 工作台：切换工作区保存时自动同步`：保存时自动上传的命令/视图开关，按工作区保存在扩展状态中
 - `microPythonWorkBench.serialAutoSuspend`：同步前后自动挂起并恢复串口会话
 - `microPythonWorkBench.replRestoreBehavior`：自动恢复 REPL 后的行为
-- `microPythonWorkBench.experimentalCustomRepl`：兼容性设置；内置 mpyrepl 传输保持启用
 - `microPythonWorkBench.pythonPath`：为辅助脚本指定解释器
 - `microPythonWorkBench.enableCodeCompletion`：启用工作区级别的 MicroPython 补全
 - `microPythonWorkBench.stubInstallPath`：工作区内 stub 安装目录
 - `microPythonWorkBench.stubAutoSelect`：自动选择最合适的已安装 stub
 - `microPythonWorkBench.codeCompletionExtraPaths`：向当前 stub 根目录合并额外 `.pyi` 路径
-- `microPythonWorkBench.usePyRawList`：改用 Python raw REPL 辅助脚本列目录
+- `microPythonWorkBench.usePyRawList`：高级兼容/调试开关，改用旧的 Python raw REPL 列目录 helper, 而不是 serial manager 文件树/缓存路径
 
 完整配置项请查看 `package.json` 中的 `contributes.configuration`。
 

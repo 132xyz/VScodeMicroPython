@@ -47,6 +47,13 @@ export function isSerialManagerActive(): boolean {
   return !!activeRuntime && !!activeClient?.connected;
 }
 
+export function isRecoverableSerialManagerError(error: unknown): boolean {
+  const anyError = error as { code?: unknown; message?: unknown };
+  if (anyError?.code === "transport_lost") return true;
+  const message = String(anyError?.message || error || "");
+  return /ReadFile failed|WriteFile failed|GetOverlappedResult failed|PortNotOpen|serial connection lost/i.test(message);
+}
+
 export async function ensureManagerStarted(device: string): Promise<SerialManagerRuntime> {
   if (activeRuntime?.device === device && activeClient?.connected) {
     return activeRuntime;
@@ -133,7 +140,16 @@ export function wrapReplClientCommand(base: string): string {
 
 export async function executeInManager(source: string): Promise<{ stdout: string; stderr: string }> {
   if (!activeClient) throw new Error("serial manager is not active");
-  return await activeClient.call<{ stdout: string; stderr: string }>("repl.exec", { source }, 0);
+  const runtime = activeRuntime;
+  try {
+    return await activeClient.call<{ stdout: string; stderr: string }>("repl.exec", { source }, 0);
+  } catch (error) {
+    if (!runtime || !isRecoverableSerialManagerError(error)) throw error;
+    await closeManager();
+    await ensureManagerStarted(runtime.device);
+    if (!activeClient) throw error;
+    return await activeClient.call<{ stdout: string; stderr: string }>("repl.exec", { source }, 0);
+  }
 }
 
 export async function interruptManager(): Promise<boolean> {

@@ -333,7 +333,7 @@ describe('extension activate smoke coverage', () => {
     expect(vscode.window.createTreeView).toHaveBeenCalledWith('microPythonWorkBenchActionsView', expect.any(Object));
     expect(vscode.window.createTreeView).toHaveBeenCalledWith('microPythonWorkBenchSyncView', expect.any(Object));
     expect(vscode.window.createStatusBarItem).toHaveBeenCalled();
-    expect(vscode.workspace.createFileSystemWatcher).toHaveBeenCalledTimes(2);
+    expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled();
     expect(pythonInterpreterModule.PythonInterpreterManager.checkMpremoteAvailability).toHaveBeenCalled();
     expect(context.subscriptions.length).toBeGreaterThan(10);
   });

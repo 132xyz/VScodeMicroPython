@@ -45,7 +45,6 @@ python -m pip install --user pyserial
 4. Optional but recommended:
    - Install the Python and Pylance VS Code extensions for the best completion experience.
    - Enable `microPythonWorkBench.enableCodeCompletion` for workspace-scoped MicroPython IntelliSense.
-   - `microPythonWorkBench.experimentalCustomRepl` is enabled by default for the built-in host-side client.
 
 ## Requirements
 
@@ -65,6 +64,7 @@ Use `microPythonWorkBench.pythonPath` if the extension should use a specific int
 - `MicroPython WorkBench: Sync changed Files Local → Board` and `MicroPython WorkBench: Sync changed Files Board → Local` only transfer changed files.
 - `MicroPython WorkBench: Sync all files (Local → Board)` and `MicroPython WorkBench: Sync all files (Board → Local)` perform full baseline sync operations.
 - `MicroPython WorkBench: Sync Active File Local → Board` uploads only the current editor file when it belongs to the configured sync root.
+- `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` stores the save-upload toggle in VS Code workspace state, not in `settings.json`.
 
 Workspace-specific metadata is stored under `.mpy-workbench/`:
 
@@ -96,8 +96,8 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 
 ### Built-in Python REPL
 
-- `microPythonWorkBench.experimentalCustomRepl` is enabled by default and uses the bundled Python `mpyrepl` client.
-- REPL, Run Active File, port detection, file browsing, and sync use the same custom transport stack.
+- The bundled Python `mpyrepl` client is the built-in board transport.
+- REPL, Run Active File, port detection, file browsing, and sync use the same transport stack.
 - The Python client provides:
   - host-side multiline editing
   - prompt-toolkit based completion
@@ -112,18 +112,18 @@ See [docs/custom-python-repl.md](docs/custom-python-repl.md) for the English gui
 These are the settings most users will touch first:
 
 - `microPythonWorkBench.connect`: fixed serial device such as `COM3` or `/dev/ttyUSB0`
+- `microPythonWorkBench.connectOnActivate`: allow activation-time file-tree population from the board; off by default to avoid taking the serial port unexpectedly
 - `microPythonWorkBench.syncLocalRoot`: workspace-relative or absolute local sync root
 - `microPythonWorkBench.rootPath`: board-side root path such as `/` or `/lib`
-- `microPythonWorkBench.autoSyncOnSave`: upload local saves automatically
+- `MicroPython WorkBench: Toggle workspace Auto-Sync on Save`: command/view toggle for automatic upload on save, stored per workspace in extension state
 - `microPythonWorkBench.serialAutoSuspend`: suspend REPL/Run terminals around sync operations
 - `microPythonWorkBench.replRestoreBehavior`: control how REPL is restored after auto-suspend
-- `microPythonWorkBench.experimentalCustomRepl`: compatibility setting; built-in mpyrepl transport remains enabled
 - `microPythonWorkBench.pythonPath`: interpreter override used for helper scripts
 - `microPythonWorkBench.enableCodeCompletion`: enable workspace-scoped MicroPython completion
 - `microPythonWorkBench.stubInstallPath`: default stub installation directory inside the workspace
 - `microPythonWorkBench.stubAutoSelect`: automatically apply the best installed stub for the connected board
 - `microPythonWorkBench.codeCompletionExtraPaths`: merge extra `.pyi` paths into the active stub root
-- `microPythonWorkBench.usePyRawList`: use the Python raw-REPL directory listing helper instead of the default listing path
+- `microPythonWorkBench.usePyRawList`: advanced fallback/debug option that uses the legacy Python raw-REPL directory listing helper instead of the serial manager tree/cache path
 
 See `package.json` under `contributes.configuration` for the full setting list.
 

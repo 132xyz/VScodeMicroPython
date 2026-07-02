@@ -20,6 +20,7 @@ import bootstrap
 bootstrap.configure_import_path()
 
 import completion_engine as completion_engine_module
+import completion_fallbacks as completion_fallbacks_module
 import completion_parser as completion_parser_module
 import completion_state as completion_state_module
 import completion_stubs as completion_stubs_module
@@ -39,6 +40,7 @@ from completion_device import (
     _split_expression,
     query_device_attributes,
 )
+from completion_fallbacks import fallback_candidates_for_expression
 from completion_state import ReplSessionSymbols
 from completion_state import _display_meta_for_kind
 from completion_stubs import StubCompletionIndex
@@ -629,6 +631,30 @@ def set_text(value) -> None: ...
         )
         self.assertEqual([item.text for item in manual_items], ["device_only"])
         self.assertEqual(calls, [("lvgl", "device")])
+
+    def test_completion_fallbacks_cover_modules_aliases_classes_and_invalid_expressions(self) -> None:
+        reloaded = importlib.reload(completion_fallbacks_module)
+        symbols = ReplSessionSymbols()
+        symbols.record_successful_source("import lvgl as lv")
+
+        lv_candidates = reloaded.fallback_candidates_for_expression("lv", symbols)
+        self.assertEqual(lv_candidates["label"], "fallback class")
+        self.assertEqual(lv_candidates["screen_active"], "fallback function")
+
+        obj_call_candidates = fallback_candidates_for_expression("lv.obj()", symbols)
+        self.assertEqual(obj_call_candidates["set_size"], "fallback function")
+        self.assertEqual(obj_call_candidates["get_width"], "fallback function")
+        self.assertEqual(
+            fallback_candidates_for_expression("lv.obj", symbols)["align"],
+            "fallback function",
+        )
+        self.assertEqual(
+            fallback_candidates_for_expression("lv.label()", symbols)["set_text"],
+            "fallback function",
+        )
+        self.assertEqual(fallback_candidates_for_expression("machine.Pin()", symbols), {})
+        self.assertEqual(fallback_candidates_for_expression("1 +", symbols), {})
+        self.assertEqual(fallback_candidates_for_expression("(1 + 2)", symbols), {})
 
     def test_completion_engine_merges_device_cache_with_sparse_fallbacks(self) -> None:
         calls: list[tuple[str, str]] = []
@@ -1649,6 +1675,7 @@ delattr(items, 'value')
 
     def test_reload_heavy_modules_for_import_smoke(self) -> None:
         self.assertTrue(hasattr(importlib.reload(session_module), "build_prompt_session"))
+        self.assertTrue(hasattr(importlib.reload(completion_fallbacks_module), "fallback_candidates_for_expression"))
         self.assertTrue(hasattr(importlib.reload(completion_parser_module), "parse_completion_request"))
         self.assertTrue(hasattr(importlib.reload(completion_stubs_module), "StubCompletionIndex"))
         self.assertTrue(hasattr(importlib.reload(completion_engine_module), "ReplCompleter"))

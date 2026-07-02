@@ -989,7 +989,6 @@ export class BoardOperations {
       await fs.access(abs);
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
-      await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
       return;
     } catch {}
 
@@ -998,7 +997,6 @@ export class BoardOperations {
       await this.withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
-      await vscode.workspace.getConfiguration().update("microPythonWorkBench.lastOpenedPath", abs);
     } catch (err: any) {
       console.error("openFile: Failed to copy/open file from board:", err);
       vscode.window.showErrorMessage(`Failed to open file from board: ${err?.message || String(err)}`);

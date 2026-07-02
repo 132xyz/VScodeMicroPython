@@ -27,7 +27,6 @@
 
 仓库现在默认使用内置 Python `mpyrepl` 客户端：
 
-- 设置项：`microPythonWorkBench.experimentalCustomRepl`
 - 文档：`docs/custom-python-repl.md` / `docs/custom-python-repl_zh-CN.md`
 
 这条路径通过内置的 `scripts/mpyrepl` 客户端处理 REPL 输出和文件传输，当前具备：
@@ -44,7 +43,7 @@
 
 优先顺序：
 
-1. 确认 `microPythonWorkBench.experimentalCustomRepl` 保持默认开启
+1. 确认当前使用的是扩展内置 REPL 终端
 2. 确认 `microPythonWorkBench.pythonPath` 指向可用 Python
 3. 确认该 Python 环境具备 `pyserial`
 4. 重新打开 REPL 终端验证

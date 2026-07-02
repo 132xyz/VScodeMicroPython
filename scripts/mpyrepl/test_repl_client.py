@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -26,6 +27,10 @@ class FakeSocket:
     def __init__(self) -> None:
         self.sent: list[bytes] = []
         self.closed = False
+        self.timeouts: list[float | None] = []
+
+    def settimeout(self, timeout: float | None) -> None:
+        self.timeouts.append(timeout)
 
     def sendall(self, data: bytes) -> None:
         self.sent.append(data)
@@ -90,6 +95,33 @@ class StderrThenOkManagerClient(FakeManagerClient):
         return super().call(method, params)
 
 
+class ExecKeyboardInterruptManagerClient(FakeManagerClient):
+    def call(self, method: str, params=None):
+        self.calls.append((method, params or {}))
+        if method == "manager.status":
+            return {"state": "ready"}
+        if method == "repl.exec":
+            raise KeyboardInterrupt()
+        return True
+
+
+class ExecWaitsForCtrlCManagerClient(FakeManagerClient):
+    interrupt_event = threading.Event()
+
+    def call(self, method: str, params=None):
+        self.calls.append((method, params or {}))
+        if method == "manager.status":
+            return {"state": "ready"}
+        if method == "device.interrupt":
+            self.interrupt_event.set()
+            return True
+        if method == "repl.exec":
+            if not self.interrupt_event.wait(timeout=2):
+                raise RuntimeError("exec was not interrupted")
+            return {"stdout": "", "stderr": ""}
+        return True
+
+
 class ReplClientTests(unittest.TestCase):
     def test_parse_endpoint_validates_host_port(self) -> None:
         self.assertEqual(repl_client.parse_endpoint("127.0.0.1:1234"), ("127.0.0.1", 1234))
@@ -125,11 +157,12 @@ class ReplClientTests(unittest.TestCase):
         client._socket = FakeSocket()
         client._reader = io.BytesIO(
             encode_json_line(
-                {"id": "1", "ok": False, "error": {"message": "failed"}}
+                {"id": "1", "ok": False, "error": {"code": "device", "message": "failed"}}
             ).encode("utf-8")
         )
-        with self.assertRaisesRegex(RuntimeError, "failed"):
+        with self.assertRaisesRegex(repl_client.ManagerRequestError, "failed") as raised:
             client.call("manager.ping")
+        self.assertEqual(raised.exception.code, "device")
 
         client._reader = io.BytesIO(b"")
         with self.assertRaisesRegex(RuntimeError, "connection closed"):
@@ -154,6 +187,7 @@ class ReplClientTests(unittest.TestCase):
             client.close()
 
         self.assertIn("manager is closing", stderr.getvalue())
+        self.assertEqual(fake_socket.timeouts, [None])
 
     def test_read_message_without_connection_raises(self) -> None:
         client = repl_client.ManagerClient("127.0.0.1", 1, "tok")
@@ -192,6 +226,51 @@ class ReplClientTests(unittest.TestCase):
         self.assertIn(("repl.exec", {"source": "bad()"}), client.calls)
         self.assertIn(("repl.exec", {"source": "print(2)"}), client.calls)
         self.assertTrue(client.closed)
+
+    def test_run_repl_client_ctrl_c_during_exec_sends_out_of_band_interrupt(self) -> None:
+        FakeManagerClient.instances.clear()
+        prompt = FakePromptSession(["time.sleep(99)", ":exit"])
+        stderr = io.StringIO()
+
+        with mock.patch.object(repl_client, "ManagerClient", ExecKeyboardInterruptManagerClient), mock.patch.object(
+            repl_client, "build_prompt_session", return_value=prompt
+        ), mock.patch.object(sys, "stderr", stderr):
+            code = repl_client.run_repl_client("127.0.0.1:5000", "tok")
+
+        main_client = FakeManagerClient.instances[0]
+        interrupt_client = FakeManagerClient.instances[1]
+        self.assertEqual(code, 0)
+        self.assertIn(("repl.exec", {"source": "time.sleep(99)"}), main_client.calls)
+        self.assertIn(("device.interrupt", {}), interrupt_client.calls)
+        self.assertTrue(interrupt_client.closed)
+        self.assertTrue(main_client.closed)
+        self.assertIn("interrupt sent", stderr.getvalue())
+
+    def test_run_repl_client_stdin_ctrl_c_interrupts_blocking_exec_wait(self) -> None:
+        FakeManagerClient.instances.clear()
+        ExecWaitsForCtrlCManagerClient.interrupt_event = threading.Event()
+        prompt = FakePromptSession(["time.sleep(99)", ":exit"])
+        stderr = io.StringIO()
+        key_calls = 0
+
+        def fake_key_reader(timeout: float):
+            nonlocal key_calls
+            key_calls += 1
+            return repl_client.CTRL_C if key_calls == 1 else None
+
+        with mock.patch.object(repl_client, "ManagerClient", ExecWaitsForCtrlCManagerClient), mock.patch.object(
+            repl_client, "build_prompt_session", return_value=prompt
+        ), mock.patch.object(
+            repl_client, "_read_pending_stdin_key", side_effect=fake_key_reader
+        ), mock.patch.object(sys, "stderr", stderr):
+            code = repl_client.run_repl_client("127.0.0.1:5000", "tok")
+
+        main_client = FakeManagerClient.instances[0]
+        interrupt_client = FakeManagerClient.instances[1]
+        self.assertEqual(code, 0)
+        self.assertIn(("repl.exec", {"source": "time.sleep(99)"}), main_client.calls)
+        self.assertIn(("device.interrupt", {}), interrupt_client.calls)
+        self.assertIn("interrupt sent", stderr.getvalue())
 
     def test_main_reports_unhandled_client_crashes(self) -> None:
         stderr = io.StringIO()
@@ -241,6 +320,19 @@ class ReplClientTests(unittest.TestCase):
         args = parser.parse_args(["--endpoint", "127.0.0.1:1", "--token", "tok"])
         self.assertEqual(args.endpoint, "127.0.0.1:1")
         self.assertEqual(args.token, "tok")
+
+    def test_report_manager_error_distinguishes_transport_loss(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            repl_client._report_manager_error(
+                repl_client.ManagerRequestError("transport_lost", "serial connection lost")
+            )
+            repl_client._report_manager_error(
+                repl_client.ManagerRequestError("device", "boom")
+            )
+
+        self.assertIn("retrying will reconnect", stderr.getvalue())
+        self.assertIn("manager request failed: boom", stderr.getvalue())
 
 
 if __name__ == "__main__":

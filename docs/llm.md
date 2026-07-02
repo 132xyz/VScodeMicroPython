@@ -28,7 +28,7 @@ notificationsAlerts.ts:42 Failed to delete /mpy_testroot from board: Command fai
 ~
 - 先直接使用python独立验证功能先不直接修改扩展的js代码,验证后在集成到扩展内
 ~
-- 安装最新扩展后没看到这个配置microPythonWorkBench.experimentalCustomRepl
+- 历史问题记录：安装最新扩展后没看到当时的实验 REPL 配置项
 - 你可以直接改E:\xm\github\.vscode\settings.json看看没有生效
 
 - 重启vscode扩展后配置项出现了
@@ -136,3 +136,30 @@ NameError: name 'socket' isn't defined
 - 历史功能能工作了,可以尝试继续拉高py的测试覆盖率
 - 同时也可以看看js能不能显示测试覆盖率,并尝试拉高
 - github流水线报错了,是不是没装依赖
+
+~
+- 这个workbench.desktop.main.js:sourcemap:442   ERR [WebForks.mpy]: The 'css' contribution point is proposed API
+这是什么问题详细分析一下
+- 代码块运行会出现不合理超时,不应该假设代码多久内就会返回吧
+>>> import time
+>>> time.sleep(60)
+Traceback (most recent call last):
+TimeoutError: timed out
+
+- 可以参考thonny 添加一个连接后同步设备时钟的功能
+- 现在运行报错了:
+>>> 1
+Traceback (most recent call last):
+  File "c:\Users\Administrator\.vscode\extensions\webforks.mpy-0.4.6\scripts\mpyrepl\__main__.py", line 954, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "c:\Users\Administrator\.vscode\extensions\webforks.mpy-0.4.6\scripts\mpyrepl\__main__.py", line 896, in main
+    return run_repl_client(args.endpoint, args.token)
+  File "c:\Users\Administrator\.vscode\extensions\webforks.mpy-0.4.6\scripts\mpyrepl\repl_client.py", line 238, in run_repl_client
+    result = client.call("repl.exec", {"source": source})
+  File "c:\Users\Administrator\.vscode\extensions\webforks.mpy-0.4.6\scripts\mpyrepl\repl_client.py", line 97, in call
+    raise RuntimeError(str(error.get("message") or "manager request failed"))
+RuntimeError: ReadFile failed (PermissionError(13, '设备不识别此命令。', None, 22))
+
+[mpyrepl] REPL client exited with code 1. Terminal kept open for diagnostics.
+PS C:\qzrobot\mpy> (Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& c:\qzrobot\mpy\.venv\Scripts\Activate.ps1)

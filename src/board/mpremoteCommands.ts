@@ -54,13 +54,6 @@ function getInternalPythonRoot(): string | null {
 }
 
 function useExperimentalCustomRepl(): boolean {
-  const configured = vscode.workspace.getConfiguration().get<boolean>(
-    "microPythonWorkBench.experimentalCustomRepl",
-    true,
-  );
-  if (configured === false) {
-    debugLog("microPythonWorkBench.experimentalCustomRepl=false is ignored; built-in mpyrepl transport is required.");
-  }
   return true;
 }
 
@@ -821,20 +814,10 @@ export async function openSerialConnection(): Promise<void> {
 }
 
 export async function openReplTerminal() {
-  // Strict handshake like Thonny: ensure device is interrupted and responsive before opening REPL
-  const cfg = vscode.workspace.getConfiguration();
-  const interrupt = cfg.get<boolean>("microPythonWorkBench.interruptOnConnect", true);
-  const strict = cfg.get<boolean>("microPythonWorkBench.strictConnect", true);
   let lastError: any = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      if (strict) {
-        await strictConnectHandshake(interrupt);
-      }
-      // Removed mp.reset() call that was previously here - it caused device soft reset
-      // and cleared all user-defined variables. The Ctrl-C/Ctrl-B sent by getReplTerminal
-      // is sufficient to interrupt any running code without resetting state.
-      const term = await getReplTerminal(undefined, { interrupt });
+      const term = await getReplTerminal();
       term.show(true);
       // tiny delay to ensure terminal connects before next action
       await new Promise(r => setTimeout(r, 150));
@@ -857,19 +840,6 @@ export async function openReplTerminal() {
     }
   }
   if (lastError) throw lastError;
-}
-
-async function strictConnectHandshake(_interrupt: boolean) {
-  // Previously this function called mp.reset() which performs a soft reset and
-  // clears all user-defined variables on the device. This was undesirable because
-  // users expect REPL sessions to preserve their work.
-  // 
-  // The strictConnectHandshake is now a no-op. The terminal-based mpremote connect
-  // command handles the connection directly, and the optional Ctrl-C/Ctrl-B sent
-  // via getReplTerminal is sufficient to ensure the device is in a responsive state.
-  //
-  // If connection issues occur, the retry logic in openReplTerminal() handles them.
-  return;
 }
 
 export function toLocalRelative(devicePath: string, rootPath: string): string | null {

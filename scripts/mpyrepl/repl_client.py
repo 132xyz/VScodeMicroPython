@@ -7,15 +7,30 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import socket
 import sys
+import threading
+import time
 import traceback
-from typing import Any
+from typing import Any, Callable
 
 from manager_protocol import decode_json_line, encode_json_line
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
+
+
+CTRL_C = "\x03"
+KeyReader = Callable[[float], str | None]
+
+
+class ManagerRequestError(RuntimeError):
+    """Structured error returned by the hidden manager."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code or "error"
 
 
 class ManagerClient:
@@ -50,6 +65,7 @@ class ManagerClient:
         if self._socket is not None:
             return
         sock = socket.create_connection((self._host, self._port), timeout=10)
+        sock.settimeout(None)
         self._socket = sock
         self._reader = sock.makefile("rb")
 
@@ -94,7 +110,10 @@ class ManagerClient:
                 continue
             if not message.get("ok"):
                 error = message.get("error") if isinstance(message.get("error"), dict) else {}
-                raise RuntimeError(str(error.get("message") or "manager request failed"))
+                raise ManagerRequestError(
+                    str(error.get("code") or "error"),
+                    str(error.get("message") or "manager request failed"),
+                )
             return message.get("result")
 
     def _read_message(self) -> dict[str, Any]:
@@ -222,7 +241,11 @@ def run_repl_client(endpoint: str, token: str) -> int:
             except EOFError:
                 break
             except KeyboardInterrupt:
-                client.call("device.interrupt")
+                try:
+                    client.call("device.interrupt")
+                except ManagerRequestError as exc:
+                    _report_manager_error(exc)
+                    continue
                 sys.stderr.write("\n[mpyrepl] interrupt sent\n")
                 sys.stderr.flush()
                 continue
@@ -231,16 +254,159 @@ def run_repl_client(endpoint: str, token: str) -> int:
             if source == PROMPT_EXIT or stripped in {":q", ":quit", ":exit"}:
                 break
             if source == PROMPT_SOFT_RESET:
-                client.call("device.softReset")
+                try:
+                    client.call("device.softReset")
+                except ManagerRequestError as exc:
+                    _report_manager_error(exc)
                 continue
             if not stripped:
                 continue
-            result = client.call("repl.exec", {"source": source})
+            watcher = _ExecutionInterruptWatcher(host, port, token)
+            try:
+                with watcher:
+                    result = client.call("repl.exec", {"source": source})
+            except KeyboardInterrupt:
+                watcher.send_interrupt()
+                _report_execution_interrupt(watcher)
+                continue
+            except ManagerRequestError as exc:
+                if watcher.interrupt_sent and exc.code == "cancelled":
+                    _report_execution_interrupt(watcher)
+                    continue
+                _report_manager_error(exc)
+                continue
+            if watcher.interrupt_sent:
+                _report_execution_interrupt(watcher)
+                continue
             if isinstance(result, dict) and result.get("stderr"):
                 continue
     finally:
         client.close()
     return 0
+
+
+def _report_manager_error(exc: ManagerRequestError) -> None:
+    if exc.code == "transport_lost":
+        sys.stderr.write("\n[mpyrepl] serial connection lost; retrying will reconnect the manager\n")
+    else:
+        sys.stderr.write("\n[mpyrepl] manager request failed: %s\n" % exc)
+    sys.stderr.flush()
+
+
+def _report_execution_interrupt(watcher: "_ExecutionInterruptWatcher") -> None:
+    if watcher.reported:
+        return
+    watcher.reported = True
+    if watcher.interrupt_error is not None:
+        sys.stderr.write("\n[mpyrepl] interrupt failed: %s\n" % watcher.interrupt_error)
+    else:
+        sys.stderr.write("\n[mpyrepl] interrupt sent\n")
+    sys.stderr.flush()
+
+
+def _send_interrupt_out_of_band(host: str, port: int, token: str) -> None:
+    client = ManagerClient(host, port, token)
+    try:
+        client.call("device.interrupt")
+    finally:
+        client.close()
+
+
+class _ExecutionInterruptWatcher:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        token: str,
+        key_reader: KeyReader | None = None,
+    ) -> None:
+        self._host = host
+        self._port = port
+        self._token = token
+        self._key_reader = key_reader or _read_pending_stdin_key
+        self._stop = threading.Event()
+        self._interrupt_sent = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.interrupt_error: Exception | None = None
+        self.reported = False
+
+    @property
+    def interrupt_sent(self) -> bool:
+        return self._interrupt_sent.is_set()
+
+    def __enter__(self) -> "_ExecutionInterruptWatcher":
+        self._thread = threading.Thread(target=self._run, name="mpyrepl-ctrl-c-watch", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=0.2)
+
+    def send_interrupt(self) -> None:
+        if self._interrupt_sent.is_set():
+            return
+        try:
+            _send_interrupt_out_of_band(self._host, self._port, self._token)
+        except Exception as exc:
+            self.interrupt_error = exc
+        finally:
+            self._interrupt_sent.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set() and not self._interrupt_sent.is_set():
+            try:
+                key = self._key_reader(0.05)
+            except Exception:
+                return
+            if key == CTRL_C:
+                self.send_interrupt()
+                return
+
+
+def _read_pending_stdin_key(timeout: float) -> str | None:
+    if os.name == "nt":
+        return _read_pending_windows_key(timeout)
+    return _read_pending_posix_key(timeout)
+
+
+def _read_pending_windows_key(timeout: float) -> str | None:
+    try:
+        import msvcrt
+    except Exception:
+        time.sleep(timeout)
+        return None
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if msvcrt.kbhit():
+                key = msvcrt.getwch()
+                if key in ("\x00", "\xe0") and msvcrt.kbhit():
+                    msvcrt.getwch()
+                    return None
+                return key
+        except Exception:
+            return None
+        time.sleep(0.01)
+    return None
+
+
+def _read_pending_posix_key(timeout: float) -> str | None:
+    try:
+        import select
+
+        if not sys.stdin or not sys.stdin.isatty():
+            time.sleep(timeout)
+            return None
+        readable, _, _ = select.select([sys.stdin], [], [], timeout)
+        if readable:
+            return sys.stdin.read(1)
+    except Exception:
+        return None
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
