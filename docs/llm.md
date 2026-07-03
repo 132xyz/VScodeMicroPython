@@ -163,3 +163,4 @@ RuntimeError: ReadFile failed (PermissionError(13, '设备不识别此命令。'
 
 [mpyrepl] REPL client exited with code 1. Terminal kept open for diagnostics.
 PS C:\qzrobot\mpy> (Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& c:\qzrobot\mpy\.venv\Scripts\Activate.ps1)
+

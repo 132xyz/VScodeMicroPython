@@ -33,6 +33,11 @@ npm run compile
 npm run package
 ```
 
+For development builds that will be installed into VS Code, prefer the full PowerShell build so the package version changes after validation:
+
+```powershell
+.\build.ps1
+```
 
 2. Install `pyserial` into the Python environment used by the extension:
 
@@ -145,6 +150,16 @@ See `package.json` under `contributes.configuration` for the full setting list.
 - `MicroPython WorkBench: Toggle Code Completion`
 
 ## Build, test, and package
+
+Recommended validated local package build on Windows:
+
+```powershell
+.\build.ps1
+```
+
+`build.ps1` compiles the extension, runs JavaScript tests, runs Python `mpyrepl` tests with the required coverage gate, then bumps the package version with `npm version patch --no-git-tag-version` and writes the `.vsix` to `release/`. Do not use `-S` after a fix is verified and ready to install in VS Code; keeping the same extension version can prevent VS Code from prompting for extension reload/restart. Use `.\build.ps1 -S` only for temporary diagnostic packaging where the version must intentionally stay unchanged.
+
+Manual partial checks:
 
 ```bash
 npm run compile

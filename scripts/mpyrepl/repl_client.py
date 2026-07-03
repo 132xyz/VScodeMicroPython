@@ -7,22 +7,25 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import os
 import socket
 import sys
 import threading
 import time
 import traceback
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 from manager_protocol import decode_json_line, encode_json_line
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.input import Input, create_input
+from prompt_toolkit.key_binding import KeyPress
+from prompt_toolkit.keys import Keys
 from session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
 
 
 CTRL_C = "\x03"
-KeyReader = Callable[[float], str | None]
+CtrlCReader = Callable[[Input, float], bool]
 
 
 class ManagerRequestError(RuntimeError):
@@ -224,7 +227,8 @@ def run_repl_client(endpoint: str, token: str) -> int:
     host, port = parse_endpoint(endpoint)
     client = ManagerClient(host, port, token)
     completer = ManagerCompleter(client)
-    session = build_prompt_session(completer=completer, complete_while_typing=True)
+    input_obj = create_input()
+    session = build_prompt_session(completer=completer, input=input_obj, complete_while_typing=True)
     try:
         status = client.call("manager.status")
         sys.stderr.write(
@@ -261,7 +265,7 @@ def run_repl_client(endpoint: str, token: str) -> int:
                 continue
             if not stripped:
                 continue
-            watcher = _ExecutionInterruptWatcher(host, port, token)
+            watcher = _ExecutionInterruptWatcher(host, port, token, input_obj)
             try:
                 with watcher:
                     result = client.call("repl.exec", {"source": source})
@@ -282,6 +286,7 @@ def run_repl_client(endpoint: str, token: str) -> int:
                 continue
     finally:
         client.close()
+        input_obj.close()
     return 0
 
 
@@ -318,12 +323,14 @@ class _ExecutionInterruptWatcher:
         host: str,
         port: int,
         token: str,
-        key_reader: KeyReader | None = None,
+        input_obj: Input,
+        ctrl_c_reader: CtrlCReader | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._token = token
-        self._key_reader = key_reader or _read_pending_stdin_key
+        self._input = input_obj
+        self._ctrl_c_reader = ctrl_c_reader or _read_ctrl_c_from_input
         self._stop = threading.Event()
         self._interrupt_sent = threading.Event()
         self._thread: threading.Thread | None = None
@@ -356,57 +363,37 @@ class _ExecutionInterruptWatcher:
             self._interrupt_sent.set()
 
     def _run(self) -> None:
-        while not self._stop.is_set() and not self._interrupt_sent.is_set():
-            try:
-                key = self._key_reader(0.05)
-            except Exception:
-                return
-            if key == CTRL_C:
-                self.send_interrupt()
-                return
+        try:
+            raw_mode = self._input.raw_mode()
+        except Exception:
+            raw_mode = _null_context()
+        with raw_mode:
+            while not self._stop.is_set() and not self._interrupt_sent.is_set():
+                try:
+                    if self._ctrl_c_reader(self._input, 0.05):
+                        self.send_interrupt()
+                        return
+                except Exception:
+                    return
 
 
-def _read_pending_stdin_key(timeout: float) -> str | None:
-    if os.name == "nt":
-        return _read_pending_windows_key(timeout)
-    return _read_pending_posix_key(timeout)
-
-
-def _read_pending_windows_key(timeout: float) -> str | None:
-    try:
-        import msvcrt
-    except Exception:
-        time.sleep(timeout)
-        return None
-
+def _read_ctrl_c_from_input(input_obj: Input, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            if msvcrt.kbhit():
-                key = msvcrt.getwch()
-                if key in ("\x00", "\xe0") and msvcrt.kbhit():
-                    msvcrt.getwch()
-                    return None
-                return key
-        except Exception:
-            return None
+        for key_press in input_obj.read_keys():
+            if _is_ctrl_c_key(key_press):
+                return True
         time.sleep(0.01)
-    return None
+    return False
 
 
-def _read_pending_posix_key(timeout: float) -> str | None:
-    try:
-        import select
+def _is_ctrl_c_key(key_press: KeyPress) -> bool:
+    return key_press.key == Keys.ControlC or key_press.data == CTRL_C
 
-        if not sys.stdin or not sys.stdin.isatty():
-            time.sleep(timeout)
-            return None
-        readable, _, _ = select.select([sys.stdin], [], [], timeout)
-        if readable:
-            return sys.stdin.read(1)
-    except Exception:
-        return None
-    return None
+
+@contextmanager
+def _null_context() -> Iterator[None]:
+    yield
 
 
 def build_parser() -> argparse.ArgumentParser:

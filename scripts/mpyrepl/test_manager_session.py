@@ -144,6 +144,8 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.transport.closed)
         self.assertTrue(self.transport.interrupted)
         self.assertTrue(any(event == "stdout" for event, _ in self.events))
+        helper_loads = [command for command in self.transport.executed if "class __mpy_repl_helper" in command]
+        self.assertEqual(len(helper_loads), 2)
 
     async def test_complete_returns_candidates_from_session_symbols(self) -> None:
         await self.session.open()

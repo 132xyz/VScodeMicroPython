@@ -42,6 +42,14 @@ npm run test:py
 npm run test:coverage
 ```
 
+### 完整本地构建、测试、版本更新与打包
+
+```powershell
+.\build.ps1
+```
+
+该命令会依次执行编译、JavaScript 测试、Python `mpyrepl` 覆盖率测试, 通过后自动更新 `package.json` 与 `package-lock.json` 的版本号并生成 `release/*.vsix`。修复验证完成并准备安装到 VS Code 时不要使用 `-S`, 因为版本号不变可能导致 VS Code 不提示重新加载/重启扩展。`.\build.ps1 -S` 只适合临时诊断打包。
+
 ### 监听模式运行 Jest
 
 ```bash

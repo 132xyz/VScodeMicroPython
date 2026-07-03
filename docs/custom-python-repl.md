@@ -75,6 +75,8 @@ The completer currently merges candidates from several sources:
 - top-level modules discovered from the active stub root
 - dotted runtime completion by querying device attributes with `dir()`
 
+Stub-backed function and constructor completions include parameter details from `.pyi` files when available, such as `bpp: int = 3` and `timing: int = 1` in the completion menu.
+
 This means completion quality is highest when both of these are true:
 
 - code completion is enabled in the extension

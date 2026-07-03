@@ -25,6 +25,7 @@ class StubMember:
     return_display: str = ""
     signature: str = ""
     parameters: list[str] = field(default_factory=list)
+    parameter_displays: dict[str, str] = field(default_factory=dict)
     children: dict[str, "StubMember"] = field(default_factory=dict)
 
 
@@ -90,7 +91,7 @@ class StubCompletionIndex:
             return {}
 
         return {
-            f"{name}=": "stub parameter"
+            f"{name}=": current.parameter_displays.get(name, "stub parameter")
             for name in current.parameters
             if name not in used_keywords and not name.startswith("_")
         }
@@ -268,6 +269,7 @@ def _populate_children(parent: StubMember, body: list[ast.stmt], module_path: li
             init_member = child.children.get("__init__")
             if init_member is not None:
                 child.parameters = list(init_member.parameters)
+                child.parameter_displays = dict(init_member.parameter_displays)
                 child.signature = init_member.signature
             parent.children[node.name] = child
             continue
@@ -280,6 +282,7 @@ def _populate_children(parent: StubMember, body: list[ast.stmt], module_path: li
                 return_display=_annotation_display(node.returns),
                 signature=_signature_display(node.args),
                 parameters=_parameter_names(node.args),
+                parameter_displays=_parameter_displays(node.args),
             )
             continue
 
@@ -337,6 +340,36 @@ def _parameter_names(args: ast.arguments) -> list[str]:
     ]
 
 
+def _parameter_displays(args: ast.arguments) -> dict[str, str]:
+    """Return menu details for keyword-completable parameters.
+
+    :param args: Function argument node.
+    :return: Parameter name to typed/default display text.
+    """
+    positional = [*args.posonlyargs, *args.args]
+    default_offset = len(positional) - len(args.defaults)
+    defaults_by_name = {
+        arg.arg: args.defaults[index - default_offset]
+        for index, arg in enumerate(positional)
+        if index >= default_offset
+    }
+
+    displays: dict[str, str] = {}
+    for arg in args.args:
+        if arg.arg in {"self", "cls"}:
+            continue
+        display = _argument_display(arg, defaults_by_name.get(arg.arg))
+        displays[arg.arg] = display if display != arg.arg else "stub parameter"
+
+    for index, arg in enumerate(args.kwonlyargs):
+        if arg.arg in {"self", "cls"}:
+            continue
+        display = _argument_display(arg, args.kw_defaults[index])
+        displays[arg.arg] = display if display != arg.arg else "stub parameter"
+
+    return displays
+
+
 def _signature_display(args: ast.arguments) -> str:
     """Return a compact function signature for the completion menu.
 
@@ -388,6 +421,12 @@ def _argument_display(arg: ast.arg, default: ast.AST | None) -> str:
     :param default: Optional default value node.
     :return: Argument display text.
     """
+    annotation = _annotation_display(arg.annotation)
+    if annotation:
+        display = f"{arg.arg}: {annotation}"
+        if default is not None:
+            display = f"{display} = {_default_display(default)}"
+        return display
     if default is None:
         return arg.arg
     return f"{arg.arg}={_default_display(default)}"
@@ -421,7 +460,8 @@ def _parameter_name(part: str) -> str:
     """
     if part in {"/", "*"}:
         return ""
-    return part.lstrip("*").split("=", 1)[0]
+    name = part.lstrip("*").split("=", 1)[0].strip()
+    return name.split(":", 1)[0].strip()
 
 
 def _expression_path(expression: str) -> list[str]:

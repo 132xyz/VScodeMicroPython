@@ -18,8 +18,10 @@ bootstrap.configure_import_path()
 
 import repl_client
 from manager_protocol import encode_json_line
+from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from prompt_toolkit.keys import Keys
 from session import PROMPT_SOFT_RESET
 
 
@@ -53,6 +55,33 @@ class FakePromptSession:
         if isinstance(value, BaseException):
             raise value
         return value
+
+
+class FakeInput:
+    def __init__(self, key_batches=None) -> None:
+        self.key_batches = list(key_batches or [])
+        self.closed = False
+        self.raw_entries = 0
+
+    def raw_mode(self):
+        input_obj = self
+
+        class _RawMode:
+            def __enter__(self):
+                input_obj.raw_entries += 1
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        return _RawMode()
+
+    def read_keys(self):
+        if self.key_batches:
+            return self.key_batches.pop(0)
+        return []
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeManagerClient:
@@ -250,19 +279,12 @@ class ReplClientTests(unittest.TestCase):
         FakeManagerClient.instances.clear()
         ExecWaitsForCtrlCManagerClient.interrupt_event = threading.Event()
         prompt = FakePromptSession(["time.sleep(99)", ":exit"])
+        input_obj = FakeInput([[KeyPress(Keys.ControlC, repl_client.CTRL_C)]])
         stderr = io.StringIO()
-        key_calls = 0
-
-        def fake_key_reader(timeout: float):
-            nonlocal key_calls
-            key_calls += 1
-            return repl_client.CTRL_C if key_calls == 1 else None
 
         with mock.patch.object(repl_client, "ManagerClient", ExecWaitsForCtrlCManagerClient), mock.patch.object(
             repl_client, "build_prompt_session", return_value=prompt
-        ), mock.patch.object(
-            repl_client, "_read_pending_stdin_key", side_effect=fake_key_reader
-        ), mock.patch.object(sys, "stderr", stderr):
+        ), mock.patch.object(repl_client, "create_input", return_value=input_obj), mock.patch.object(sys, "stderr", stderr):
             code = repl_client.run_repl_client("127.0.0.1:5000", "tok")
 
         main_client = FakeManagerClient.instances[0]
@@ -271,6 +293,8 @@ class ReplClientTests(unittest.TestCase):
         self.assertIn(("repl.exec", {"source": "time.sleep(99)"}), main_client.calls)
         self.assertIn(("device.interrupt", {}), interrupt_client.calls)
         self.assertIn("interrupt sent", stderr.getvalue())
+        self.assertGreaterEqual(input_obj.raw_entries, 1)
+        self.assertTrue(input_obj.closed)
 
     def test_main_reports_unhandled_client_crashes(self) -> None:
         stderr = io.StringIO()

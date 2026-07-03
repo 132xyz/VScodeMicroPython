@@ -32,6 +32,12 @@ npm run compile
 npm run package
 ```
 
+如果这个包会安装到 VS Code 中验证, 优先使用完整 PowerShell 构建流程, 这样验证通过后会自动更新扩展版本:
+
+```powershell
+.\build.ps1
+```
+
 2. 在扩展将要使用的 Python 环境中安装 `pyserial`：
 
 ```bash
@@ -143,6 +149,16 @@ python -m pip install --user pyserial
 - `MicroPython 工作台：切换代码补全`
 
 ## 构建、测试与打包
+
+Windows 本地验证并生成可安装包时, 推荐使用:
+
+```powershell
+.\build.ps1
+```
+
+`build.ps1` 会先编译扩展, 再运行 JavaScript 测试和带覆盖率门槛的 Python `mpyrepl` 测试, 全部通过后使用 `npm version patch --no-git-tag-version` 自动更新 `package.json` 与 `package-lock.json` 中的版本号, 最后把 `.vsix` 输出到 `release/`。修复已经验证正确并准备安装到 VS Code 时不要使用 `-S`, 否则扩展版本号不变, VS Code 可能不会提示重新加载/重启扩展。`.\build.ps1 -S` 只用于临时诊断打包, 并且必须明确接受版本不变。
+
+手动局部检查命令:
 
 ```bash
 npm run compile

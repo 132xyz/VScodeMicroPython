@@ -884,6 +884,8 @@ alias_config = config
                 """
 from other import imported_name
 CONST: int
+class NeoPixel:
+    def __init__(self, pin: int, n: int, bpp: int = 3, timing: int = 1) -> None: ...
 class Pin:
     def __init__(self, id, mode=None, *, pull=None, value=None) -> None: ...
     value: int
@@ -917,13 +919,14 @@ def reset(pin: Pin, hard=False) -> None: ...
                 index.candidates_for_expression("hw", symbols),
                 {
                     "CONST": "stub attribute",
+                    "NeoPixel": "stub class (pin: int, n: int, bpp: int = 3, timing: int = 1)",
                     "PWM": "stub class",
                     "Pin": "stub class (id, mode=None, *, pull=None, value=None)",
                     "create_pin": "stub function () -> Pin",
                     "create_pwm": "stub function () -> PWM",
                     "imported_name": "stub import",
                     "optional_pin": "stub function () -> Optional[Pin]",
-                    "reset": "stub function (pin, hard=False) -> None",
+                    "reset": "stub function (pin: Pin, hard=False) -> None",
                 },
             )
             self.assertEqual(
@@ -933,14 +936,22 @@ def reset(pin: Pin, hard=False) -> None: ...
             self.assertEqual(
                 index.parameter_candidates_for_call("machine.Pin", frozenset({"id"}), symbols),
                 {
-                    "mode=": "stub parameter",
-                    "pull=": "stub parameter",
-                    "value=": "stub parameter",
+                    "mode=": "mode=None",
+                    "pull=": "pull=None",
+                    "value=": "value=None",
+                },
+            )
+            self.assertEqual(
+                index.parameter_candidates_for_call("machine.NeoPixel", frozenset({"pin"}), symbols),
+                {
+                    "n=": "n: int",
+                    "bpp=": "bpp: int = 3",
+                    "timing=": "timing: int = 1",
                 },
             )
             self.assertEqual(
                 index.parameter_candidates_for_call("machine.reset", frozenset(), symbols),
-                {"pin=": "stub parameter", "hard=": "stub parameter"},
+                {"pin=": "pin: Pin", "hard=": "hard=False"},
             )
             self.assertEqual(
                 index.candidates_for_expression("machine.Pin()", symbols),
@@ -1026,7 +1037,7 @@ def create_pin() -> Pin: ...
             self.assertEqual([item.text for item in call_items], ["id=", "mode=", "pull=", "value="])
             self.assertEqual(
                 [item.display_meta_text for item in call_items],
-                ["stub parameter", "stub parameter", "stub parameter", "stub parameter"],
+                ["stub parameter", "mode=None", "pull=None", "value=None"],
             )
 
             prefixed_call_items = list(
@@ -1185,7 +1196,7 @@ def external() -> other.Widget: ...
             )
             self.assertEqual(
                 index.candidates_for_expression("lvgl.create_label()", symbols),
-                {"set_text": "stub function (value) -> None"},
+                {"set_text": "stub function (value: str) -> None"},
             )
             self.assertEqual(
                 index.candidates_for_expression('"lvgl.obj"', symbols),

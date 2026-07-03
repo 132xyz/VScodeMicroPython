@@ -221,6 +221,7 @@ class ManagerSession:
 
         try:
             await self._gate.run("soft-reset", transport.soft_reset, _consumer)
+            await self._gate.run("helper-load", self._ensure_helper_loaded, transport)
         except TransportError as exc:
             await self._mark_transport_lost(exc)
         finally:

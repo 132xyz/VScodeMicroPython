@@ -83,7 +83,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-# 编译成功后，按需增加版本号（除非用户通过 -SkipVersion 指定跳过）
+# 编译和测试成功后默认增加版本号；-S 仅用于临时诊断打包时跳过版本更新。
 if (-not $S) {
     # 自动增加版本号
     Write-Host "Reading current version from package.json..." -ForegroundColor Green
