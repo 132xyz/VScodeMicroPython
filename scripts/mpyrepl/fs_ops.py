@@ -16,6 +16,9 @@ from transport import SerialReplTransport
 
 JSON_MARKER = "__MPYFS_JSON__"
 PROGRESS_MARKER = "__MPYFS_PROGRESS__"
+DOWNLOAD_START_MARKER = "__MPYFS_DOWNLOAD_START__"
+DOWNLOAD_END_MARKER = "__MPYFS_DOWNLOAD_END__"
+DOWNLOAD_ERROR_MARKER = "__MPYFS_DOWNLOAD_ERROR__"
 DEFAULT_CHUNK_SIZE = 4096
 UPLOAD_HANDLE_VAR = "__mpy_upload_file"
 UPLOAD_PATH_VAR = "__mpy_upload_path"
@@ -610,6 +613,29 @@ class DeviceFsClient:
             }
         )
 
+    def _emit_read_progress(
+        self,
+        progress: Callable[[dict[str, Any]], None] | None,
+        source: str,
+        target: Path,
+        bytes_read: int,
+        total_size: int,
+        *,
+        done: bool = False,
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "op": "read_file",
+                "path": source,
+                "local_path": str(target),
+                "bytes": int(bytes_read),
+                "total": int(total_size),
+                "done": bool(done),
+            }
+        )
+
     def _start_write(self, temp_path: str) -> None:
         body = (
             "import os\n"
@@ -696,12 +722,14 @@ class DeviceFsClient:
         local_path: str,
         *,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Download one device file to a local path.
 
         :param device_path: Device source path.
         :param local_path: Local destination path.
         :param chunk_size: Bytes per chunk.
+        :param progress: Optional callback receiving byte-level download progress.
         :return: None
         """
         source = _normalize_device_path(device_path)
@@ -712,16 +740,173 @@ class DeviceFsClient:
         if info is None:
             raise FsOperationError("file not found: %s" % source, "not_found")
         size = int(info.get("size") or 0)
+        try:
+            self._read_file_stdout_base64(source, target, temp_target, size, chunk_size, progress)
+            os.replace(temp_target, target)
+            self._emit_read_progress(progress, source, target, size, size, done=True)
+        except Exception:
+            try:
+                temp_target.unlink()
+            except Exception:
+                pass
+            raise
+
+    def _read_file_stdout_base64(
+        self,
+        source: str,
+        target: Path,
+        temp_target: Path,
+        size: int,
+        chunk_size: int,
+        progress: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        offset = 0
+        pending = b""
+        started = False
+        completed = False
+        device_error = ""
+        saw_consumer_data = False
+
+        def parse_marker(line: bytes, marker: str) -> dict[str, Any]:
+            text = line.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(text[len(marker) :])
+            except json.JSONDecodeError as exc:
+                raise FsOperationError("invalid download stream marker: %s" % exc, "bad_json")
+            return payload if isinstance(payload, dict) else {}
+
+        def process_line(raw_line: bytes, handle) -> None:
+            nonlocal started, completed, device_error, offset
+            line = raw_line.strip()
+            if not line:
+                return
+            if line.startswith(DOWNLOAD_START_MARKER.encode("ascii")):
+                payload = parse_marker(line, DOWNLOAD_START_MARKER)
+                expected = int(payload.get("size") or 0)
+                if expected != size:
+                    raise FsOperationError(
+                        "downloaded size mismatch for %s: expected %d bytes, device reported %d bytes"
+                        % (source, size, expected),
+                        "size_mismatch",
+                    )
+                started = True
+                return
+            if line.startswith(DOWNLOAD_END_MARKER.encode("ascii")):
+                payload = parse_marker(line, DOWNLOAD_END_MARKER)
+                reported = int(payload.get("bytes") or 0)
+                if reported != offset:
+                    raise FsOperationError(
+                        "downloaded size mismatch for %s: host read %d bytes, device reported %d bytes"
+                        % (source, offset, reported),
+                        "size_mismatch",
+                    )
+                completed = True
+                return
+            if line.startswith(DOWNLOAD_ERROR_MARKER.encode("ascii")):
+                payload = parse_marker(line, DOWNLOAD_ERROR_MARKER)
+                device_error = str(payload.get("error") or "device download failed")
+                return
+            if not started:
+                raise FsOperationError("download stream start marker not found for %s" % source, "bad_response")
+            if completed:
+                return
+            try:
+                chunk = base64.b64decode(line)
+            except Exception as exc:
+                raise FsOperationError("invalid download data for %s: %s" % (source, exc), "bad_response")
+            handle.write(chunk)
+            offset += len(chunk)
+            self._emit_read_progress(progress, source, target, offset, size)
+
+        def consume_stdout(data: bytes, handle) -> None:
+            nonlocal pending, saw_consumer_data
+            if not data:
+                return
+            saw_consumer_data = True
+            pending += data.replace(b"\x04", b"")
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                process_line(line, handle)
+
+        self._emit_read_progress(progress, source, target, 0, size)
         with temp_target.open("wb") as handle:
-            offset = 0
-            while offset < size:
-                encoded = self._read_chunk(source, offset, chunk_size)
-                chunk = base64.b64decode(encoded.encode("ascii"))
-                handle.write(chunk)
-                offset += len(chunk)
-                if not chunk:
-                    break
-        os.replace(temp_target, target)
+            result = self._transport.exec_raw(
+                self._stdout_base64_sender_code(source, size, chunk_size),
+                timeout=self._timeout,
+                stdout_consumer=lambda data: consume_stdout(data, handle),
+            )
+            if not saw_consumer_data and result.stdout:
+                consume_stdout(result.stdout, handle)
+            consume_stdout(b"\n", handle)
+            if result.stderr:
+                raise FsOperationError(
+                    result.stderr.decode("utf-8", errors="replace").strip() or "device stderr",
+                    "stderr",
+                )
+            if device_error:
+                raise FsOperationError(device_error)
+            if not started:
+                raise FsOperationError("download stream start marker not found for %s" % source, "bad_response")
+            if not completed:
+                raise FsOperationError("download stream end marker not found for %s" % source, "bad_response")
+            if offset != size:
+                raise FsOperationError(
+                    "downloaded size mismatch for %s: expected %d bytes, got %d bytes"
+                    % (source, size, offset),
+                    "size_mismatch",
+                )
+
+    def _stdout_base64_sender_code(self, source: str, size: int, chunk_size: int) -> str:
+        return (
+            "try:\n"
+            "    import ujson as json\n"
+            "except ImportError:\n"
+            "    import json\n"
+            "import binascii, sys\n"
+            f"path = {_device_string(source)}\n"
+            f"total = {int(size)}\n"
+            f"chunk_size = {max(1, int(chunk_size))}\n"
+            f"start_marker = {DOWNLOAD_START_MARKER!r}\n"
+            f"end_marker = {DOWNLOAD_END_MARKER!r}\n"
+            f"error_marker = {DOWNLOAD_ERROR_MARKER!r}\n"
+            "def emit(marker, payload):\n"
+            "    sys.stdout.write(marker + json.dumps(payload) + '\\n')\n"
+            "def write_bytes(data):\n"
+            "    stream = getattr(sys.stdout, 'buffer', None)\n"
+            "    if stream is not None:\n"
+            "        stream.write(data)\n"
+            "    else:\n"
+            "        sys.stdout.write(data.decode())\n"
+            "f = None\n"
+            "sent = 0\n"
+            "try:\n"
+            "    emit(start_marker, {'size': total})\n"
+            "    f = open(path, 'rb')\n"
+            "    while True:\n"
+            "        chunk = f.read(chunk_size)\n"
+            "        if not chunk:\n"
+            "            break\n"
+            "        encoded = binascii.b2a_base64(chunk)\n"
+            "        if encoded[-1:] != b'\\n':\n"
+            "            encoded += b'\\n'\n"
+            "        write_bytes(encoded)\n"
+            "        sent += len(chunk)\n"
+            "    f.close()\n"
+            "    f = None\n"
+            "    if sent != total:\n"
+            "        raise OSError('downloaded size mismatch')\n"
+            "    emit(end_marker, {'bytes': sent})\n"
+            "except Exception as exc:\n"
+            "    if f is not None:\n"
+            "        try:\n"
+            "            f.close()\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    try:\n"
+            "        emit(error_marker, {'error': repr(exc)})\n"
+            "    except Exception:\n"
+            "        pass\n"
+        )
 
     def _read_chunk(self, device_path: str, offset: int, size: int) -> str:
         body = (
@@ -803,7 +988,12 @@ def run_fs_operation(client: DeviceFsClient, op: str, payload: dict[str, Any]) -
         )
         return True
     if op == "read_file":
-        client.read_file(str(payload.get("path") or ""), str(payload.get("local_path") or ""))
+        progress_callback = payload.get("progress_callback")
+        client.read_file(
+            str(payload.get("path") or ""),
+            str(payload.get("local_path") or ""),
+            progress=progress_callback if callable(progress_callback) else None,
+        )
         return True
     if op == "exec":
         return client.exec_json(str(payload.get("source") or ""))

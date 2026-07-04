@@ -12,6 +12,9 @@ jest.mock('node:fs/promises', () => ({
 jest.mock('../src/board/mpremote', () => ({
   cpToDevice: jest.fn().mockResolvedValue(undefined),
   cpFromDevice: jest.fn().mockResolvedValue(undefined),
+  cpFromDeviceWithProgress: jest.fn(async (_devicePath: string, _localPath: string, onProgress: (event: { bytes: number; total: number; done?: boolean }) => void) => {
+    onProgress({ bytes: 10, total: 10, done: true });
+  }),
   mkdir: jest.fn().mockResolvedValue(undefined),
   deleteAny: jest.fn().mockResolvedValue(undefined),
   listTreeStats: jest.fn().mockResolvedValue([]),
@@ -79,6 +82,7 @@ const fs = require('node:fs/promises') as {
 const mp = require('../src/board/mpremote') as {
   cpToDevice: jest.Mock;
   cpFromDevice: jest.Mock;
+  cpFromDeviceWithProgress: jest.Mock;
   mkdir: jest.Mock;
   deleteAny: jest.Mock;
   listTreeStats: jest.Mock;
@@ -203,7 +207,7 @@ describe('fileCommands coverage', () => {
 
     await fileCommands.syncFileLocalToBoard(node);
 
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/lib/utils.py', path.join('/workspace/mpy', 'lib', 'utils.py'));
+    expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/lib/utils.py', path.join('/workspace/mpy', 'lib', 'utils.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
     expect(mp.cpToDevice).toHaveBeenCalledWith(path.join('/workspace/mpy', 'lib', 'utils.py'), '/lib/utils.py');
   });
 
@@ -216,7 +220,7 @@ describe('fileCommands coverage', () => {
     await fileCommands.syncFileBoardToLocal(node);
 
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(path.join('/workspace/mpy', 'boot.py')), { recursive: true });
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/boot.py', path.join('/workspace/mpy', 'boot.py'));
+    expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/boot.py', path.join('/workspace/mpy', 'boot.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Downloaded board → local: boot.py');
     expect(pathMapping.restoreSerialSessionsFromSnapshot).toHaveBeenCalledWith(
       expect.anything(),
@@ -324,7 +328,7 @@ describe('fileCommands coverage', () => {
 
     await fileCommands.openFile(node);
 
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'), expect.objectContaining({ token: expect.any(Object) }));
+    expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
     expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith({ fsPath: path.join('/workspace/mpy', 'main.py') });
   });
 

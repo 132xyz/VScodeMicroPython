@@ -191,6 +191,44 @@ describe("mpyClient manager-backed operations", () => {
     ]);
   });
 
+  test("readFileWithProgress subscribes to manager progress events", async () => {
+    let progressHandler: ((payload: Record<string, unknown>) => void) | undefined;
+    const manager = {
+      connected: true,
+      on: jest.fn((_event: string, handler: (payload: Record<string, unknown>) => void) => {
+        progressHandler = handler;
+      }),
+      off: jest.fn(),
+      call: jest.fn(async () => {
+        progressHandler?.({
+          op: "read_file",
+          path: "/main.py",
+          local_path: "main.py",
+          bytes: 5,
+          total: 10,
+        });
+      }),
+    };
+    (getManagerClient as jest.Mock).mockReturnValue(manager);
+    (getActiveManagerRuntime as jest.Mock).mockReturnValue({ device: "COM21" });
+    const events: mpyClient.FileTransferProgress[] = [];
+
+    await mpyClient.readFileWithProgress("COM21", "/main.py", "main.py", event => events.push(event));
+
+    expect(manager.on).toHaveBeenCalledWith("progress", expect.any(Function));
+    expect(manager.off).toHaveBeenCalledWith("progress", expect.any(Function));
+    expect(manager.call).toHaveBeenCalledWith(
+      "fs.readFile",
+      expect.objectContaining({ op: "read_file", path: "/main.py", localPath: "main.py" }),
+      30 * 60 * 1000,
+    );
+    expect(events).toEqual([
+      { localPath: "main.py", devicePath: "/main.py", bytes: 0, total: 0 },
+      { localPath: "main.py", devicePath: "/main.py", bytes: 5, total: 10, done: false },
+      { localPath: "main.py", devicePath: "/main.py", bytes: 10, total: 10, done: true },
+    ]);
+  });
+
   test("writeFileWithProgress cancels active manager transfer", async () => {
     let cancelHandler: (() => void) | undefined;
     let rejectTransfer: ((error: Error) => void) | undefined;

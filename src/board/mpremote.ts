@@ -1142,6 +1142,23 @@ export async function cpFromDevice(
   try {
     await mpyClient.readFile(connect, devicePath, localPath, opts.token);
   } catch (error: any) {
+    if (error?.code === "cancelled") throw error;
+    throw new Error(`Failed to copy from device: ${error?.message || error}\nDevice path: ${devicePath}\nLocal path: ${localPath}`);
+  }
+}
+
+export async function cpFromDeviceWithProgress(
+  devicePath: string,
+  localPath: string,
+  onProgress: (event: mpyClient.FileTransferProgress) => void,
+  opts: { token?: vscode.CancellationToken } = {},
+): Promise<void> {
+  const connect = normalizeConnect(getActiveConnect());
+  if (!connect || connect === "auto") throw new Error("Select a specific serial port first");
+  try {
+    await mpyClient.readFileWithProgress(connect, devicePath, localPath, onProgress, opts.token);
+  } catch (error: any) {
+    if (error?.code === "cancelled") throw error;
     throw new Error(`Failed to copy from device: ${error?.message || error}\nDevice path: ${devicePath}\nLocal path: ${localPath}`);
   }
 }

@@ -16,6 +16,7 @@ import { ActiveFileSyncError, syncActiveEditorToBoard } from "../sync/activeFile
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { uploadToBoardHere } from "./uploadToBoard";
 import { refreshActionsTreeView } from "../core/actions";
+import { createTransferProgressReporter } from "../core/transferProgress";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -62,6 +63,28 @@ function isCancelledError(error: unknown): boolean {
   const candidate = error as { code?: unknown; message?: unknown } | undefined;
   const message = String(candidate?.message ?? "");
   return candidate?.code === "cancelled" || message === "Upload cancelled" || message === "Open file cancelled";
+}
+
+async function downloadFromBoardWithProgress(
+  devicePath: string,
+  localPath: string,
+  title: string,
+  label: string,
+): Promise<void> {
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title,
+    cancellable: true
+  }, async (progress, token) => {
+    const reportTransfer = createTransferProgressReporter(progress);
+    progress.report({ increment: 0, message: "Downloading from board..." });
+    throwIfCancelled(token);
+    await withAutoSuspend(() => mp.cpFromDeviceWithProgress(devicePath, localPath, event => {
+      reportTransfer(label, event);
+    }, { token }));
+    throwIfCancelled(token);
+    progress.report({ increment: 0, message: "Download complete." });
+  });
 }
 
 async function refreshBoardTree(): Promise<void> {
@@ -228,7 +251,7 @@ export const fileCommands = {
       const pick = await vscode.window.showWarningMessage(`Local file not found: ${rel}. Download from board first?`, { modal: true }, "Download");
       if (pick !== "Download") return;
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await downloadFromBoardWithProgress(node.path, abs, `Downloading ${rel}...`, rel);
     }
     await withAutoSuspend(() => mp.cpToDevice(abs, node.path));
     // tree.addNode(node.path, false); // Add uploaded file to tree
@@ -249,12 +272,12 @@ export const fileCommands = {
     } catch {
       // Local file doesn't exist, just download it
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await downloadFromBoardWithProgress(node.path, abs, `Downloading ${rel}...`, rel);
       vscode.window.showInformationMessage(`Downloaded board → local: ${rel}`);
       return;
     }
     // Local file exists, overwrite it with board version
-    await withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+    await downloadFromBoardWithProgress(node.path, abs, `Downloading ${rel}...`, rel);
     vscode.window.showInformationMessage(`Synced board → local: ${rel}`);
   },
 
@@ -282,17 +305,7 @@ export const fileCommands = {
         const fileExistsLocally = await fs.access(abs).then(() => true).catch(() => false);
         if (!fileExistsLocally) {
           try {
-            await vscode.window.withProgress({
-              location: vscode.ProgressLocation.Notification,
-              title: `Opening ${node.path}...`,
-              cancellable: true
-            }, async (progress, token) => {
-              progress.report({ increment: 0, message: "Downloading from board..." });
-              throwIfCancelled(token);
-              await withAutoSuspend(() => mp.cpFromDevice(node.path, abs, { token }));
-              throwIfCancelled(token);
-              progress.report({ increment: 100, message: "Download complete." });
-            });
+            await downloadFromBoardWithProgress(node.path, abs, `Opening ${node.path}...`, rel);
           } catch (copyError: any) {
             if (isCancelledError(copyError)) {
               vscode.window.showInformationMessage("Open file cancelled.");
@@ -306,18 +319,6 @@ export const fileCommands = {
       }
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
-    } else {
-      // Fallback: no workspace, use temp
-      // const temp = vscode.Uri.joinPath(context.globalStorageUri, node.path.replace(/\//g, "_"));
-      // await fs.mkdir(path.dirname(temp.fsPath), { recursive: true });
-      // try {
-      //   await withAutoSuspend(() => mp.cpFromDevice(node.path, temp.fsPath));
-      //   const doc = await vscode.workspace.openTextDocument(temp);
-      //   await vscode.window.showTextDocument(doc, { preview: true });
-      // } catch (copyError: any) {
-      //   console.error(`[DEBUG] openFile (extension fallback): Failed to copy file to temp location:`, copyError);
-      //   vscode.window.showErrorMessage(`Failed to copy file from board to temp location: ${copyError?.message || copyError}`);
-      // }
     }
   },
 

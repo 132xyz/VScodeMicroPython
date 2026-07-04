@@ -310,7 +310,7 @@ class ManagerSession:
         client = self._require_fs_client()
         request_id = str(payload.get("request_id") or "")
         operation_payload = dict(payload)
-        if op == "write_file":
+        if op in {"write_file", "read_file"}:
             operation_payload["progress_callback"] = lambda event: self._emit_event(
                 "progress",
                 {"operationId": request_id, **event},

@@ -10,6 +10,9 @@ jest.mock('../src/board/mpremote', () => ({
   uploadReplacing: jest.fn().mockResolvedValue(undefined),
   listTreeStats: jest.fn().mockResolvedValue([]),
   cpFromDevice: jest.fn().mockResolvedValue(undefined),
+  cpFromDeviceWithProgress: jest.fn(async (_devicePath: string, _localPath: string, onProgress: (event: { bytes: number; total: number; done?: boolean }) => void) => {
+    onProgress({ bytes: 10, total: 10, done: true });
+  }),
 }));
 jest.mock('../src/board/MpRemoteManager', () => ({
   MpRemoteManager: {
@@ -49,6 +52,7 @@ const mp = require('../src/board/mpremote') as {
   uploadReplacing: jest.Mock;
   listTreeStats: jest.Mock;
   cpFromDevice: jest.Mock;
+  cpFromDeviceWithProgress: jest.Mock;
 };
 const syncModule = require('../src/sync/sync') as {
   buildManifest: jest.Mock;
@@ -152,8 +156,8 @@ describe('syncCommands coverage', () => {
 
     await syncCommands.syncBaselineFromBoard();
 
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'));
-    expect(mp.cpFromDevice).toHaveBeenCalledWith('/lib/utils.py', path.join('/workspace/mpy', 'lib', 'utils.py'));
+    expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/main.py', path.join('/workspace/mpy', 'main.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/lib/utils.py', path.join('/workspace/mpy', 'lib', 'utils.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
     expect(syncModule.saveManifest).toHaveBeenCalledWith(
       path.join('/workspace', '.mpy-workbench', 'esp32sync.json'),
       expect.any(Object)

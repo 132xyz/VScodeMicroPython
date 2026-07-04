@@ -14,6 +14,7 @@ import { buildManifest, diffManifests, saveManifest, loadManifest, Manifest } fr
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { createIgnoreMatcher } from "../sync/sync";
 import { Esp32DecorationProvider } from "../ui/decorations";
+import { createTransferProgressReporter } from "../core/transferProgress";
 
 // Helper function to get workspace folder
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -320,8 +321,8 @@ export const syncCommands = {
           return;
         }
 
-        // Calculate increment per file
-        const incrementPerFile = 100 / Math.max(total, 1);
+        const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+        const reportTransfer = createTransferProgressReporter(progress, totalBytes);
 
         await withAutoSuspend(async () => {
           for (let i = 0; i < files.length; i++) {
@@ -339,11 +340,13 @@ export const syncCommands = {
             }
             const abs = path.join(localRootDir, ...rel.split('/'));
 
-            progress.report({ increment: incrementPerFile, message: `Downloading (${i + 1}/${total}): ${rel}` });
+            progress.report({ increment: 0, message: `Downloading (${i + 1}/${total}): ${rel}` });
 
             try {
               await fs.mkdir(path.dirname(abs), { recursive: true });
-              await mp.cpFromDevice(file.path, abs);
+              await mp.cpFromDeviceWithProgress(file.path, abs, event => {
+                reportTransfer(`Downloading (${i + 1}/${total}): ${rel}`, event);
+              }, { token });
             } catch (downloadError: any) {
               console.error(`[syncBaselineFromBoard] Failed to download ${rel}:`, downloadError?.message || downloadError);
               // Ask user if they want to continue
@@ -502,6 +505,7 @@ export const syncCommands = {
         return !matcher(rel, false);
       });
       const total = filtered.length;
+      const reportTransfer = createTransferProgressReporter(progress);
       await withAutoSuspend(async () => {
         for (const devicePath of filtered) {
           const rel = toLocalRelative(devicePath, rootPath2);
@@ -509,7 +513,9 @@ export const syncCommands = {
           const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(devicePath, abs);
+          await mp.cpFromDeviceWithProgress(devicePath, abs, event => {
+            reportTransfer(`Downloading ${rel} (${done}/${total})`, event);
+          });
           // tree.addNode(devicePath, false); // Add downloaded file to tree
         }
       });

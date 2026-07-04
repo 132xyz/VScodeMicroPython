@@ -159,14 +159,21 @@ export class CodeCompletionManager {
       const auto = vscode.workspace.getConfiguration('microPythonWorkBench').get<boolean>('stubAutoSelect', true);
       this.warnIfPyrightOverrides();
 
-      const entries = indexStubPaths(searchPaths);
-      let selectedStub = this.pickBestInstalledStub(
-        entries,
-        recommendation,
-        boardInfo?.sysname,
-        boardInfo?.machine,
-        boardHint
-      );
+      let entries = indexStubPaths(searchPaths);
+      let selectedStub = this.getPersistedStubInspection();
+
+      if (!selectedStub) {
+        if (entries.length === 0) {
+          entries = refreshIndex(searchPaths);
+        }
+        selectedStub = this.pickBestInstalledStub(
+          entries,
+          recommendation,
+          boardInfo?.sysname,
+          boardInfo?.machine,
+          boardHint
+        );
+      }
 
       if (!selectedStub && entries.length === 0 && boardInfo && auto && recommendation.primary) {
         console.info('[CodeCompletion] no matching stubs found during enable; use MPY: Stub to install or choose one');
@@ -183,7 +190,7 @@ export class CodeCompletionManager {
 
       selectedStub = await this.handleVersionMismatch(
         selectedStub,
-        refreshIndex(searchPaths),
+        entries,
         recommendation,
         resolvedInstall
       );
@@ -449,6 +456,23 @@ export class CodeCompletionManager {
 
   private getStubSearchPaths(): string[] {
     return [this.getResolvedInstallPath()].filter(Boolean);
+  }
+
+  private getPersistedStubInspection(): StubInspection | null {
+    const state = this.context?.workspaceState;
+    const candidates = [
+      this.lastBaseStubPath,
+      state?.get<string>('mpy.lastBaseStubPath'),
+      this.lastStubPath,
+      state?.get<string>('mpy.lastStubPath'),
+    ];
+
+    for (const candidate of candidates) {
+      const inspected = inspectStubRoot(candidate);
+      if (inspected) return inspected;
+    }
+
+    return null;
   }
 
   private applyExtraStubOverlay(baseStub: StubInspection): StubInspection {

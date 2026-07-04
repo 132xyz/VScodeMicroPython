@@ -429,6 +429,38 @@ describe('CodeCompletionManager helper coverage', () => {
     expect(manager.lastStubPath).toBeUndefined();
   });
 
+  test('enableCodeCompletion honors persisted MPY Stub selection even when index cache is empty', async () => {
+    const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
+    const manager = codeCompletionManager as any;
+    const selectedRoot = '/workspace/.mpy-workbench/pyi/micropython-esp32-stubs-1.28.0.post4';
+    const workspaceState = {
+      get: jest.fn((key: string) => {
+        if (key === 'mpy.lastBaseStubPath') return selectedRoot;
+        if (key === 'mpy.lastStubPath') return selectedRoot;
+        return undefined;
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    manager.context = { workspaceState };
+    manager.lastBaseStubPath = undefined;
+    manager.lastStubPath = undefined;
+    manager.lastTypeshedPath = undefined;
+    manager.isEnabled = false;
+    manager.handleVersionMismatch = Object.getPrototypeOf(manager).handleVersionMismatch.bind(manager);
+    stubIndex.indexStubPaths.mockReturnValueOnce([]);
+    stubSupport.inspectStubRoot.mockImplementation((root: string | undefined) => root ? { root } : null);
+    manager.updatePythonConfiguration = jest.fn().mockResolvedValue(undefined);
+    manager.persistAppliedStubState = jest.fn().mockResolvedValue(undefined);
+    manager.applyExtraStubOverlay = jest.fn((stub: { root: string }) => ({ root: path.join(stub.root, 'overlay') }));
+
+    await manager.enableCodeCompletion();
+
+    expect(stubIndex.findBestMatch).not.toHaveBeenCalled();
+    expect(manager.updatePythonConfiguration).toHaveBeenCalledWith({ root: path.join(selectedRoot, 'overlay') });
+    expect(manager.persistAppliedStubState).toHaveBeenCalledWith({ root: selectedRoot }, { root: path.join(selectedRoot, 'overlay') });
+    expect(manager.isEnabled).toBe(true);
+  });
+
   test('handleVersionMismatch warns when device version is newer and early enable path warns without pylance', async () => {
     const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
     const manager = codeCompletionManager as any;

@@ -17,6 +17,7 @@ from models import ExecResult, ReplConfig
 
 BytesConsumer = Callable[[bytes], None]
 INTERRUPT_FOLLOW_GRACE = 1.5
+READ_UNTIL_MAX_CHUNK_SIZE = 4096
 
 
 class TransportError(RuntimeError):
@@ -57,6 +58,7 @@ class SerialReplTransport:
         self._in_raw_repl = False
         self._use_raw_paste = True
         self._interrupt_requested_at: Optional[float] = None
+        self._read_buffer = b""
 
     def __enter__(self) -> "SerialReplTransport":
         """Open the transport when used as a context manager.
@@ -104,6 +106,7 @@ class SerialReplTransport:
         finally:
             self._serial = None
             self._in_raw_repl = False
+            self._read_buffer = b""
 
     def read_until(
         self,
@@ -123,39 +126,50 @@ class SerialReplTransport:
         :param include_ending_in_consumer: Whether to forward the final suffix.
         :return: Accumulated bytes.
         """
-        data = b""
+        data = bytearray()
         emitted_length = 0
         started_at = time.monotonic()
         last_char_at = started_at
 
         while True:
-            if data.endswith(ending):
-                if consumer is not None:
-                    limit = len(data) if include_ending_in_consumer else len(data) - len(ending)
-                    if emitted_length < limit:
-                        consumer(data[emitted_length:limit])
-                return data
-
             now = time.monotonic()
             if timeout is not None and now >= last_char_at + timeout:
-                return data
+                return bytes(data)
             if overall_timeout is not None and now >= started_at + overall_timeout:
-                return data
+                return bytes(data)
             if (
                 interrupt_timeout is not None
                 and self._interrupt_requested_at is not None
                 and now >= max(self._interrupt_requested_at, last_char_at) + interrupt_timeout
             ):
-                return data
+                return bytes(data)
 
-            new_data = self._read_serial(1)
+            pending = len(self._read_buffer) or self._safe_in_waiting()
+            read_size = min(max(1, pending), READ_UNTIL_MAX_CHUNK_SIZE)
+            new_data = self._read_serial(read_size)
             if new_data:
-                data += new_data
+                prefix_length = max(0, len(ending) - 1)
+                prefix = bytes(data[-prefix_length:]) if prefix_length else b""
+                ending_index = (prefix + new_data).find(ending)
+                if ending_index >= 0:
+                    take = ending_index + len(ending) - len(prefix)
+                    data.extend(new_data[:take])
+                    remainder = new_data[take:]
+                    if remainder:
+                        self._read_buffer = remainder + self._read_buffer
+                    if consumer is not None:
+                        limit = len(data) if include_ending_in_consumer else len(data) - len(ending)
+                        if emitted_length < limit:
+                            consumer(bytes(data[emitted_length:limit]))
+                    return bytes(data)
+                data.extend(new_data)
                 if consumer is not None:
-                    safe_limit = len(data) - max(0, len(ending) - 1)
+                    safe_limit = len(data) - prefix_length
                     if emitted_length < safe_limit:
-                        consumer(data[emitted_length:safe_limit])
+                        consumer(bytes(data[emitted_length:safe_limit]))
                         emitted_length = safe_limit
+                    last_char_at = time.monotonic()
+                    continue
                 last_char_at = time.monotonic()
                 continue
 
@@ -452,10 +466,12 @@ class SerialReplTransport:
         if callable(reset_input):
             try:
                 reset_input()
+                self._read_buffer = b""
                 return
             except (OSError, serial.SerialException):
                 pass
 
+        self._read_buffer = b""
         deadline = None if max_duration is None else time.monotonic() + max_duration
         pending = self._safe_in_waiting()
         while pending > 0:
@@ -512,6 +528,10 @@ class SerialReplTransport:
         """
         if size <= 0:
             return b""
+        if self._read_buffer:
+            data = self._read_buffer[:size]
+            self._read_buffer = self._read_buffer[size:]
+            return data
 
         serial_port = self._ensure_serial()
         try:

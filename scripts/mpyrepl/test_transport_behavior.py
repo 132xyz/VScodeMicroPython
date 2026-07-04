@@ -212,7 +212,7 @@ class TransportBehaviorTests(unittest.TestCase):
             transport.read_until(b"END", timeout=0.01, consumer=streamed.append),
             b"abcEND",
         )
-        self.assertEqual(streamed, [b"a", b"b", b"c", b"E"])
+        self.assertEqual(streamed, [b"a", b"bc"])
 
         serial_stub.read_chunks = [b"xy", b"END"]
         streamed = []
@@ -225,7 +225,11 @@ class TransportBehaviorTests(unittest.TestCase):
             ),
             b"xyEND",
         )
-        self.assertEqual(streamed, [b"x", b"y", b"E", b"ND"])
+        self.assertEqual(streamed, [b"xyEND"])
+
+        serial_stub.read_chunks = [b"out\x04err\x04"]
+        self.assertEqual(transport.read_until(b"\x04", timeout=0.01), b"out\x04")
+        self.assertEqual(transport.read_until(b"\x04", timeout=0.01), b"err\x04")
 
         transport._serial = _FakeSerial()
         with mock.patch("transport.time.sleep", return_value=None):

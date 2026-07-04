@@ -9,6 +9,7 @@ import { Esp32DecorationProvider } from "../ui/decorations";
 import { getLocalSyncRoot } from "../core/workspaceUtils";
 import { listDirPyRaw } from "../python/pyraw";
 import { suspendSerialSessionsForAutoSync, restoreSerialSessionsFromSnapshot } from "./mpremoteCommands";
+import { createTransferProgressReporter } from "../core/transferProgress";
 
 // Helper to get workspace folder or throw error
 function getWorkspaceFolder(): vscode.WorkspaceFolder {
@@ -444,13 +445,17 @@ export class BoardOperations {
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Board: Sync all files (Board → Local)", cancellable: false }, async (progress) => {
       let done = 0;
       const total = toDownload.length;
+      const totalBytes = toDownload.reduce((sum, stat) => sum + (Number(stat.size) || 0), 0);
+      const reportTransfer = createTransferProgressReporter(progress, totalBytes);
       await this.withAutoSuspend(async () => {
         for (const stat of toDownload) {
           const rel = toLocalRelative(stat.path, rootPath);
           const abs = path.join(localRootDir, ...rel.split("/"));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(stat.path, abs);
+          await mp.cpFromDeviceWithProgress(stat.path, abs, event => {
+            reportTransfer(`Downloading ${rel} (${done}/${total})`, event);
+          });
           this.tree.addNode(stat.path, false); // Add downloaded file to tree
         }
       });
@@ -951,13 +956,18 @@ export class BoardOperations {
         return !matcher(rel, false);
       });
       const total = filtered.length;
+      const sizeByPath = new Map(deviceStats.filter(e => !e.isDir).map(e => [e.path, Number(e.size) || 0]));
+      const totalBytes = filtered.reduce((sum, devicePath) => sum + (sizeByPath.get(devicePath) || 0), 0);
+      const reportTransfer = createTransferProgressReporter(progress, totalBytes);
       await this.withAutoSuspend(async () => {
         for (const devicePath of filtered) {
           const rel = toLocalRelative(devicePath, rootPath);
           const abs = path.join(localRootDir, ...rel.split('/'));
           progress.report({ message: `Downloading ${rel} (${++done}/${total})` });
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await mp.cpFromDevice(devicePath, abs);
+          await mp.cpFromDeviceWithProgress(devicePath, abs, event => {
+            reportTransfer(`Downloading ${rel} (${done}/${total})`, event);
+          });
           this.tree.addNode(devicePath, false); // Add downloaded file to tree
         }
       });
@@ -994,7 +1004,14 @@ export class BoardOperations {
 
     // Otherwise, copy from device then open
     try {
-      await this.withAutoSuspend(() => mp.cpFromDevice(node.path, abs));
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Opening ${node.path}...`, cancellable: true }, async (progress, token) => {
+        const reportTransfer = createTransferProgressReporter(progress);
+        progress.report({ increment: 0, message: "Downloading from board..." });
+        await this.withAutoSuspend(() => mp.cpFromDeviceWithProgress(node.path, abs, event => {
+          reportTransfer(rel, event);
+        }, { token }));
+        progress.report({ increment: 0, message: "Download complete." });
+      });
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(abs));
       await vscode.window.showTextDocument(doc, { preview: false });
     } catch (err: any) {

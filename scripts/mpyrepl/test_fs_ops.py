@@ -16,6 +16,9 @@ if CURRENT_DIR not in sys.path:
 
 from fs_ops import (
     DEFAULT_CHUNK_SIZE,
+    DOWNLOAD_END_MARKER,
+    DOWNLOAD_ERROR_MARKER,
+    DOWNLOAD_START_MARKER,
     JSON_MARKER,
     DeviceFsClient,
     FsOperationError,
@@ -36,15 +39,22 @@ class FakeTransport:
         self.commands = []
         self.timeouts = []
 
-    def exec_raw(self, command: str, timeout: float):
+    def exec_raw(self, command: str, timeout: float, stdout_consumer=None, stderr_consumer=None):
         self.commands.append(command)
         self.timeouts.append(timeout)
         if not self.responses:
             raise AssertionError("unexpected exec_raw call")
         response = self.responses.pop(0)
         if isinstance(response, ExecResult):
+            if stdout_consumer is not None and response.stdout:
+                stdout_consumer(response.stdout)
+            if stderr_consumer is not None and response.stderr:
+                stderr_consumer(response.stderr)
             return response
-        return ExecResult(stdout=_json_stdout(response), stderr=b"")
+        result = ExecResult(stdout=_json_stdout(response), stderr=b"")
+        if stdout_consumer is not None:
+            stdout_consumer(result.stdout)
+        return result
 
 
 class FakeStreamingTransport(FakeTransport):
@@ -82,6 +92,26 @@ class FakeStreamingTransport(FakeTransport):
 def _json_stdout(data, ok: bool = True, error: str = "") -> bytes:
     payload = {"ok": ok, "data": data} if ok else {"ok": False, "error": error}
     return (JSON_MARKER + json.dumps(payload) + "\n").encode("utf-8")
+
+
+def _download_stdout(data: bytes, *, size: int | None = None) -> bytes:
+    total = len(data) if size is None else size
+    return b"".join(
+        [
+            (DOWNLOAD_START_MARKER + json.dumps({"size": total}) + "\n").encode("ascii"),
+            base64.b64encode(data) + b"\n",
+            (DOWNLOAD_END_MARKER + json.dumps({"bytes": len(data)}) + "\n").encode("ascii"),
+        ]
+    )
+
+
+def _download_error_stdout(message: str, *, size: int = 0) -> bytes:
+    return b"".join(
+        [
+            (DOWNLOAD_START_MARKER + json.dumps({"size": size}) + "\n").encode("ascii"),
+            (DOWNLOAD_ERROR_MARKER + json.dumps({"error": message}) + "\n").encode("ascii"),
+        ]
+    )
 
 
 class FsOpsTests(unittest.TestCase):
@@ -350,19 +380,65 @@ class FsOpsTests(unittest.TestCase):
         self.assertIn("os.remove(p)", transport.commands[-1])
 
     def test_read_file_downloads_chunks_to_local_temp_then_replaces(self) -> None:
-        encoded = base64.b64encode(b"hello").decode("ascii")
         with tempfile.TemporaryDirectory() as tmp_dir:
             target = Path(tmp_dir) / "out.bin"
             transport = FakeTransport(
                 [
                     {"exists": True, "mode": 0, "size": 5, "mtime": 0, "is_dir": False},
-                    encoded,
+                    ExecResult(stdout=_download_stdout(b"hello"), stderr=b""),
+                ]
+            )
+            client = DeviceFsClient(transport)
+            events = []
+
+            client.read_file("/remote.bin", str(target), chunk_size=16, progress=events.append)
+            self.assertEqual(target.read_bytes(), b"hello")
+            self.assertFalse(target.with_name("out.bin.mpydownload").exists())
+            self.assertEqual(
+                events,
+                [
+                    {
+                        "op": "read_file",
+                        "path": "/remote.bin",
+                        "local_path": str(target),
+                        "bytes": 0,
+                        "total": 5,
+                        "done": False,
+                    },
+                    {
+                        "op": "read_file",
+                        "path": "/remote.bin",
+                        "local_path": str(target),
+                        "bytes": 5,
+                        "total": 5,
+                        "done": False,
+                    },
+                    {
+                        "op": "read_file",
+                        "path": "/remote.bin",
+                        "local_path": str(target),
+                        "bytes": 5,
+                        "total": 5,
+                        "done": True,
+                    },
+                ],
+            )
+
+    def test_read_file_rejects_size_mismatch_and_removes_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "out.bin"
+            transport = FakeTransport(
+                [
+                    {"exists": True, "mode": 0, "size": 5, "mtime": 0, "is_dir": False},
+                    ExecResult(stdout=_download_stdout(b"he", size=5), stderr=b""),
                 ]
             )
             client = DeviceFsClient(transport)
 
-            client.read_file("/remote.bin", str(target), chunk_size=16)
-            self.assertEqual(target.read_bytes(), b"hello")
+            with self.assertRaisesRegex(FsOperationError, "downloaded size mismatch"):
+                client.read_file("/remote.bin", str(target), chunk_size=16)
+
+            self.assertFalse(target.exists())
             self.assertFalse(target.with_name("out.bin.mpydownload").exists())
 
     def test_read_file_missing_raises_not_found(self) -> None:

@@ -416,6 +416,61 @@ export async function writeFileWithProgress(
   throw new Error("serial manager is not available for filesystem upload");
 }
 
+export async function readFileWithProgress(
+  device: string,
+  devicePath: string,
+  localPath: string,
+  onProgress: (event: FileTransferProgress) => void,
+  token?: vscode.CancellationToken,
+): Promise<void> {
+  const payload = { op: "read_file", path: devicePath, local_path: localPath };
+  const manager = await getFsManager(device, "fs.readFile");
+  if (manager) {
+    let latest: FileTransferProgress | undefined;
+    const onManagerProgress = (progress: Record<string, unknown>) => {
+      if (progress.op && progress.op !== "read_file") return;
+      if (progress.path && progress.path !== devicePath) return;
+      if (progress.local_path && progress.local_path !== localPath) return;
+      latest = progressPayloadToEvent(progress);
+      onProgress(latest);
+    };
+    onProgress({ localPath, devicePath, bytes: 0, total: 0 });
+    manager.on("progress", onManagerProgress);
+    try {
+      const params = managerParamsForFsPayload(payload);
+      try {
+        await managerCallWithCancellation<void>(
+          manager,
+          "fs.readFile",
+          params,
+          30 * 60 * 1000,
+          token,
+        );
+      } catch (error) {
+        if (token?.isCancellationRequested || !isRecoverableSerialManagerError(error)) throw error;
+        await closeManager();
+        const restarted = await getFsManager(device, "fs.readFile");
+        if (!restarted) throw error;
+        await managerCallWithCancellation<void>(
+          restarted,
+          "fs.readFile",
+          params,
+          30 * 60 * 1000,
+          token,
+        );
+      }
+      if (!latest?.done) {
+        const total = latest?.total || latest?.bytes || 0;
+        onProgress({ localPath, devicePath, bytes: total, total, done: true });
+      }
+      return;
+    } finally {
+      manager.off("progress", onManagerProgress);
+    }
+  }
+  throw new Error("serial manager is not available for filesystem download");
+}
+
 export async function readFile(
   device: string,
   devicePath: string,
