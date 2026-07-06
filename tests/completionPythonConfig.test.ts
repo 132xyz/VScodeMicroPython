@@ -57,7 +57,7 @@ describe('completionPythonConfig', () => {
     const extensionPath = path.join('C:', 'Users', 'test', '.vscode', 'extensions', 'WebForks.mpy');
     const overlayStubRoot = path.join('C:', 'workspace', '.mpy-workbench', 'code-completion-overlay', 'esp32-stubs');
     const workspaceConfig = createConfiguration({
-      'analysis.extraPaths': ['C:/user/keep', 'C:/extra/typings'],
+      'analysis.extraPaths': ['C:/user/keep', 'C:/extra/typings', 'C:/workspace/old-mpy'],
       'autoComplete.extraPaths': [path.join(extensionPath, 'code_completion', 'default')],
       'analysis.stubPath': '',
       'analysis.typeshedPaths': [],
@@ -91,13 +91,19 @@ describe('completionPythonConfig', () => {
       lastStubPath: overlayStubRoot,
       lastTypeshedPath: undefined,
       userExtraPaths: ['C:/extra/typings'],
+      managedExtraPaths: ['C:/workspace/mpy', 'C:/workspace/mpy/lib'],
+      lastManagedExtraPaths: ['C:/workspace/old-mpy'],
     });
 
     expect(result).toEqual({
       appliedTypeshedPath: undefined,
       settingsChanged: true,
     });
-    expect(workspaceConfig.store['analysis.extraPaths']).toEqual(['C:/user/keep']);
+    expect(workspaceConfig.store['analysis.extraPaths']).toEqual([
+      'C:/user/keep',
+      'C:/workspace/mpy',
+      'C:/workspace/mpy/lib',
+    ]);
     expect(workspaceConfig.store['analysis.stubPath']).toBe(overlayStubRoot);
     expect(workspaceConfig.store['analysis.diagnosticSeverityOverrides']).toEqual({
       reportMissingModuleSource: 'none',

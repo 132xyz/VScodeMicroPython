@@ -100,6 +100,9 @@ export class SerialManagerProcess {
       token,
     ]);
     if (options.stubRoot) args.push("--stub-root", options.stubRoot);
+    for (const completionRoot of options.completionRoots || []) {
+      if (completionRoot) args.push("--completion-root", completionRoot);
+    }
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,

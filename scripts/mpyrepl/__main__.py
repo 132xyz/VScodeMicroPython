@@ -649,6 +649,7 @@ async def run_async_repl(
     follow_timeout: float,
     control_file: str,
     stub_root: str,
+    completion_roots: list[str] | None,
     dir_query_timeout: float,
 ) -> int:
     """Run a minimal async prompt_toolkit loop over one raw REPL session.
@@ -656,6 +657,7 @@ async def run_async_repl(
     :param config: Runtime configuration.
     :param follow_timeout: Timeout for each execution.
     :param control_file: Optional path for extension-side control messages.
+    :param completion_roots: Additional local completion roots.
     :return: Process exit code.
     """
     state = AsyncReplState()
@@ -672,6 +674,7 @@ async def run_async_repl(
         completer = ReplCompleter(
             session_symbols,
             stub_root=stub_root,
+            completion_roots=completion_roots,
             dotted_provider=lambda expression, prefix, timeout=None: query_device_attributes(
                 transport,
                 gate,
@@ -920,6 +923,7 @@ def main() -> int:
                     args.follow_timeout,
                     args.control_file,
                     args.stub_root,
+                    args.completion_roots,
                     args.dir_query_timeout,
                 )
             )
@@ -931,6 +935,7 @@ def main() -> int:
                 token=args.token,
                 follow_timeout=args.follow_timeout,
                 stub_root=args.stub_root,
+                completion_roots=args.completion_roots,
                 dir_query_timeout=args.dir_query_timeout,
             )
         if args.command == "soft-reset":

@@ -52,6 +52,7 @@ jest.mock('../src/core/localization', () => ({
 jest.mock('../src/completion/codeCompletion', () => ({
   codeCompletionManager: {
     getActiveStubPath: jest.fn(() => undefined),
+    getActiveCompletionRoots: jest.fn(() => []),
   },
 }));
 
@@ -104,6 +105,7 @@ const localization = require('../src/core/localization') as {
 const codeCompletion = require('../src/completion/codeCompletion') as {
   codeCompletionManager: {
     getActiveStubPath: jest.Mock;
+    getActiveCompletionRoots: jest.Mock;
   };
 };
 
@@ -262,6 +264,11 @@ describe('board mpremoteCommands coverage', () => {
       .mockResolvedValueOnce('Install to this Python')
       .mockResolvedValueOnce(undefined);
     codeCompletion.codeCompletionManager.getActiveStubPath.mockReturnValue('/workspace/stub-overlay');
+    codeCompletion.codeCompletionManager.getActiveCompletionRoots.mockReturnValue([
+      '/workspace/stub-overlay',
+      '/workspace/mpy',
+      '/workspace/mpy/lib',
+    ]);
 
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
     const replTerminal = await commands.getReplTerminal();

@@ -90,6 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional stub root used for bare top-level module completion",
     )
     async_parser.add_argument(
+        "--completion-root",
+        dest="completion_roots",
+        action="append",
+        default=[],
+        help="Additional completion root; may be specified more than once",
+    )
+    async_parser.add_argument(
         "--dir-query-timeout",
         type=float,
         default=2.0,
@@ -119,6 +126,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--stub-root",
         default="",
         help="Optional stub root used for completion",
+    )
+    manager_parser.add_argument(
+        "--completion-root",
+        dest="completion_roots",
+        action="append",
+        default=[],
+        help="Additional completion root; may be specified more than once",
     )
     manager_parser.add_argument(
         "--dir-query-timeout",

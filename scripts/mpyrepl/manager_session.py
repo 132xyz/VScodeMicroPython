@@ -43,6 +43,7 @@ class ManagerSession:
     :param config: Serial runtime configuration.
     :param follow_timeout: Default execution follow timeout.
     :param stub_root: Optional completion stub root.
+    :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device-backed completion timeout.
     :param emit_event: Event callback used by the manager server.
     :param transport_factory: Optional transport factory for tests.
@@ -54,6 +55,7 @@ class ManagerSession:
         config: ReplConfig,
         follow_timeout: float | None = None,
         stub_root: str = "",
+        completion_roots: list[str] | None = None,
         dir_query_timeout: float = 2.0,
         emit_event: EventCallback | None = None,
         transport_factory: TransportFactory = SerialReplTransport,
@@ -63,6 +65,7 @@ class ManagerSession:
         :param config: Serial runtime configuration.
         :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
         :param stub_root: Optional completion stub root.
+        :param completion_roots: Additional local completion roots.
         :param dir_query_timeout: Device-backed completion timeout.
         :param emit_event: Event callback used by the manager server.
         :param transport_factory: Optional transport factory for tests.
@@ -71,6 +74,7 @@ class ManagerSession:
         self._config = config
         self._follow_timeout = follow_timeout
         self._stub_root = stub_root
+        self._completion_roots = list(completion_roots or [])
         self._dir_query_timeout = dir_query_timeout
         self._emit_event = emit_event or (lambda event, payload: None)
         self._transport_factory = transport_factory
@@ -132,6 +136,7 @@ class ManagerSession:
         self._completer = ReplCompleter(
             self._symbols,
             stub_root=self._stub_root,
+            completion_roots=self._completion_roots,
             dotted_provider=lambda expression, prefix, timeout=None: query_device_attributes(
                 transport,
                 self._gate,

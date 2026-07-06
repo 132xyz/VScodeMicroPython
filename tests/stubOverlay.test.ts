@@ -44,6 +44,24 @@ describe('stubOverlay', () => {
     expect(result).toBe(baseRoot);
   });
 
+  it('removes a stale overlay root when no extra stub paths exist', () => {
+    const workspaceRoot = makeTempDir();
+    const baseRoot = writeBaseStubRoot(workspaceRoot);
+    const overlayRoot = path.join(
+      workspaceRoot,
+      '.mpy-workbench',
+      'code-completion-overlay',
+      path.basename(baseRoot),
+    );
+    fs.mkdirSync(overlayRoot, { recursive: true });
+    fs.writeFileSync(path.join(overlayRoot, 'stale.py'), 'VALUE = 1\n');
+
+    const result = buildOverlayStubRoot(baseRoot, workspaceRoot, []);
+
+    expect(result).toBe(baseRoot);
+    expect(fs.existsSync(overlayRoot)).toBe(false);
+  });
+
   it('merges directory contents into a generated overlay root', () => {
     const workspaceRoot = makeTempDir();
     const baseRoot = writeBaseStubRoot(workspaceRoot);

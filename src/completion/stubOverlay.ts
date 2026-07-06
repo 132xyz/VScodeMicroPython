@@ -22,14 +22,17 @@ function copyIntoOverlay(sourcePath: string, overlayRoot: string): void {
 
 export function buildOverlayStubRoot(baseStubRoot: string, workspaceRoot: string, extraStubPaths: string[]): string {
   const existingExtraPaths = extraStubPaths.filter(Boolean).filter(p => fs.existsSync(p));
-  if (existingExtraPaths.length === 0) return baseStubRoot;
-
   const overlayRoot = path.join(
     workspaceRoot,
     '.mpy-workbench',
     'code-completion-overlay',
     path.basename(baseStubRoot),
   );
+
+  if (existingExtraPaths.length === 0) {
+    fs.rmSync(overlayRoot, { recursive: true, force: true });
+    return baseStubRoot;
+  }
 
   fs.rmSync(overlayRoot, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(overlayRoot), { recursive: true });

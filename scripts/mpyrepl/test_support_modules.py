@@ -109,6 +109,10 @@ class SupportModuleTests(unittest.TestCase):
                 "control.json",
                 "--stub-root",
                 "stubs",
+                "--completion-root",
+                "mpy",
+                "--completion-root",
+                "mpy/lib",
                 "--dir-query-timeout",
                 "3.5",
             ]
@@ -119,6 +123,7 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(args.command, "async-repl")
         self.assertEqual(args.control_file, "control.json")
         self.assertEqual(args.stub_root, "stubs")
+        self.assertEqual(args.completion_roots, ["mpy", "mpy/lib"])
         self.assertEqual(args.dir_query_timeout, 3.5)
 
     def test_cli_exec_parses_follow_timeout(self) -> None:
@@ -175,6 +180,8 @@ class SupportModuleTests(unittest.TestCase):
                 "tok",
                 "--stub-root",
                 "stubs",
+                "--completion-root",
+                "mpy",
                 "--dir-query-timeout",
                 "1.5",
             ]
@@ -194,6 +201,7 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(manager_args.manager_port, 50123)
         self.assertEqual(manager_args.token, "tok")
         self.assertEqual(manager_args.stub_root, "stubs")
+        self.assertEqual(manager_args.completion_roots, ["mpy"])
         self.assertEqual(manager_args.dir_query_timeout, 1.5)
         self.assertEqual(client_args.command, "repl-client")
         self.assertEqual(client_args.endpoint, "127.0.0.1:50123")
@@ -908,10 +916,21 @@ def reset(pin: Pin, hard=False) -> None: ...
                 "class Helper:\n    attr: int\n",
                 encoding="utf-8",
             )
+            (stub_root / "localmod.py").write_text(
+                """
+VALUE = 1
+class LocalDevice:
+    def open(self) -> None:
+        pass
+def create_device() -> LocalDevice:
+    return LocalDevice()
+""".strip(),
+                encoding="utf-8",
+            )
             (stub_root / "broken.pyi").write_text("def broken(:\n", encoding="utf-8")
 
             index = StubCompletionIndex(str(stub_root))
-            self.assertEqual(index.module_names(), {"broken", "machine", "pkg"})
+            self.assertEqual(index.module_names(), {"broken", "localmod", "machine", "pkg"})
 
             symbols = ReplSessionSymbols()
             symbols.record_successful_source("import machine as hw")
@@ -982,7 +1001,47 @@ def reset(pin: Pin, hard=False) -> None: ...
                 index.candidates_for_expression("pkg.sub.Helper", symbols),
                 {"attr": "stub attribute"},
             )
+            self.assertEqual(
+                index.candidates_for_expression("localmod", symbols),
+                {
+                    "LocalDevice": "stub class",
+                    "VALUE": "stub attribute",
+                    "create_device": "stub function () -> LocalDevice",
+                },
+            )
+            self.assertEqual(
+                index.candidates_for_expression("localmod.create_device()", symbols),
+                {"open": "stub function () -> None"},
+            )
             self.assertEqual(index.candidates_for_expression("missing", symbols), {})
+
+    def test_stub_index_reads_multiple_completion_roots_without_overlay_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            stub_root = base_dir / "stubs"
+            source_root = base_dir / "mpy"
+            stub_root.mkdir()
+            source_root.mkdir()
+            (stub_root / "machine.pyi").write_text("class Pin:\n    pass\n", encoding="utf-8")
+            (stub_root / "dupe.pyi").write_text("class StubOnly:\n    pass\n", encoding="utf-8")
+            (source_root / "project.py").write_text(
+                "class ProjectDevice:\n    def start(self) -> None:\n        pass\n",
+                encoding="utf-8",
+            )
+            (source_root / "dupe.py").write_text("class SourceOnly:\n    pass\n", encoding="utf-8")
+
+            index = StubCompletionIndex([str(stub_root), str(source_root)])
+            symbols = ReplSessionSymbols()
+
+            self.assertEqual(index.module_names(), {"dupe", "machine", "project"})
+            self.assertEqual(
+                index.candidates_for_expression("project.ProjectDevice", symbols),
+                {"start": "stub function () -> None"},
+            )
+            self.assertEqual(
+                index.candidates_for_expression("dupe", symbols),
+                {"StubOnly": "stub class"},
+            )
 
     def test_repl_completer_prefers_stub_dotted_candidates_and_uses_device_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

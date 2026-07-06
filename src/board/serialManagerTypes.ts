@@ -40,6 +40,7 @@ export type SerialManagerStartOptions = {
   pythonPath?: string;
   scriptPath?: string;
   stubRoot?: string;
+  completionRoots?: string[];
   host?: string;
   token?: string;
   startupTimeoutMs?: number;

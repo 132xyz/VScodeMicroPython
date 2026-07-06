@@ -303,6 +303,7 @@ async def run_manager_async(
     token: str = "",
     follow_timeout: float | None = None,
     stub_root: str = "",
+    completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
     ready_stream: TextIO = sys.stdout,
 ) -> int:
@@ -314,6 +315,7 @@ async def run_manager_async(
     :param token: Optional authentication token.
     :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
     :param stub_root: Optional completion stub root.
+    :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
     :param ready_stream: Stream for the ready line.
     :return: Process exit code.
@@ -324,6 +326,7 @@ async def run_manager_async(
         config,
         follow_timeout=follow_timeout,
         stub_root=stub_root,
+        completion_roots=completion_roots,
         dir_query_timeout=dir_query_timeout,
         emit_event=server.emit_event,
     )
@@ -340,6 +343,7 @@ def run_manager(
     token: str = "",
     follow_timeout: float | None = None,
     stub_root: str = "",
+    completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
 ) -> int:
     """Synchronous CLI wrapper for the hidden serial manager.
@@ -350,6 +354,7 @@ def run_manager(
     :param token: Optional authentication token.
     :param follow_timeout: Default execution follow timeout, or None to wait for user code indefinitely.
     :param stub_root: Optional completion stub root.
+    :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
     :return: Process exit code.
     """
@@ -361,6 +366,7 @@ def run_manager(
             token=token,
             follow_timeout=follow_timeout,
             stub_root=stub_root,
+            completion_roots=completion_roots,
             dir_query_timeout=dir_query_timeout,
         )
     )

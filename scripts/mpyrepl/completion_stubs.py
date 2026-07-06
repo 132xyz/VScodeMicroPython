@@ -1,4 +1,4 @@
-"""Static `.pyi` completion index for the custom REPL.
+"""Static `.pyi`/`.py` completion index for the custom REPL.
 
 :return: None
 """
@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,19 +30,48 @@ class StubMember:
     children: dict[str, "StubMember"] = field(default_factory=dict)
 
 
+def _normalize_roots(stub_root: str | Path | Sequence[str | Path] | None) -> list[Path]:
+    """Return an ordered list of non-empty completion roots.
+
+    :param stub_root: One path or an iterable of paths.
+    :return: Ordered path list with duplicates removed.
+    """
+    if stub_root is None:
+        return []
+
+    values: list[str | Path]
+    if isinstance(stub_root, (str, Path)):
+        values = [stub_root]
+    else:
+        values = list(stub_root)
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        path = Path(value)
+        key = str(path).replace("\\", "/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(path)
+    return roots
+
+
 class StubCompletionIndex:
-    """Index importable `.pyi` files for fast dotted completion.
+    """Index importable `.pyi` and `.py` files for fast dotted completion.
 
     :return: None
     """
 
-    def __init__(self, stub_root: str | None) -> None:
-        """Build an index for one stub root.
+    def __init__(self, stub_root: str | Path | Sequence[str | Path] | None) -> None:
+        """Build an index for one or more completion roots.
 
-        :param stub_root: Root directory containing `.pyi` files.
+        :param stub_root: Root directory or ordered root list containing `.pyi` and `.py` files.
         :return: None
         """
-        self._root = Path(stub_root) if stub_root else None
+        self._roots = _normalize_roots(stub_root)
         self._modules: dict[tuple[str, ...], StubMember] = {}
         self._load()
 
@@ -97,31 +127,34 @@ class StubCompletionIndex:
         }
 
     def _load(self) -> None:
-        """Load all visible `.pyi` modules under the root.
+        """Load all visible `.pyi` and `.py` modules under the root.
 
         :return: None
         """
-        if self._root is None or not self._root.is_dir():
-            return
-
-        for path in sorted(self._root.rglob("*.pyi")):
-            if any(part.startswith(".") for part in path.relative_to(self._root).parts):
+        for root in self._roots:
+            if not root.is_dir():
                 continue
 
-            module_parts = self._module_parts(path)
-            if not module_parts:
-                continue
+            for pattern in ("*.pyi", "*.py"):
+                for path in sorted(root.rglob(pattern)):
+                    if any(part.startswith(".") for part in path.relative_to(root).parts):
+                        continue
 
-            self._modules[module_parts] = _parse_stub_file(path, module_parts)
+                    module_parts = self._module_parts(path, root)
+                    if not module_parts or module_parts in self._modules:
+                        continue
 
-    def _module_parts(self, path: Path) -> tuple[str, ...]:
-        """Return import path parts for one stub file.
+                    self._modules[module_parts] = _parse_stub_file(path, module_parts)
+
+    def _module_parts(self, path: Path, root: Path) -> tuple[str, ...]:
+        """Return import path parts for one stub/source file.
 
         :param path: Stub file path.
+        :param root: Completion root containing the file.
         :return: Import path parts.
         """
-        relative = path.relative_to(self._root)
-        if relative.name == "__init__.pyi":
+        relative = path.relative_to(root)
+        if relative.name in {"__init__.pyi", "__init__.py"}:
             return tuple(part for part in relative.parent.parts if part)
         return tuple(relative.with_suffix("").parts)
 
@@ -238,7 +271,7 @@ class StubCompletionIndex:
 
 
 def _parse_stub_file(path: Path, module_parts: tuple[str, ...]) -> StubMember:
-    """Parse one `.pyi` file into a static symbol tree.
+    """Parse one `.pyi`/`.py` file into a static symbol tree.
 
     :param path: Stub file path.
     :param module_parts: Import path parts for this module.

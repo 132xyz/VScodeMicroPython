@@ -52,6 +52,7 @@ const stubOverlay = require('../src/completion/stubOverlay') as {
   buildOverlayStubRoot: jest.Mock;
 };
 const completionPythonConfig = require('../src/completion/completionPythonConfig') as {
+  applyPythonCompletionConfiguration: jest.Mock;
   restoreManagedMissingModuleSourceOverride: jest.Mock;
 };
 const boardInfoModule = require('../src/board/boardInfoService') as {
@@ -176,6 +177,38 @@ describe('CodeCompletionManager helper coverage', () => {
     expect(vscode.window.setStatusBarMessage).toHaveBeenCalled();
   });
 
+  test('local sync root and lib are used without copying into overlay', async () => {
+    const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
+    const manager = codeCompletionManager as any;
+    const localRoot = path.join('/workspace', 'mpy');
+    const localLib = path.join(localRoot, 'lib');
+    const localPathKeys = new Set([localRoot, localLib].map((value: string) => value.replace(/\\/g, '/').toLowerCase()));
+
+    fs.existsSync.mockImplementation((inputPath: string) => localPathKeys.has(String(inputPath).replace(/\\/g, '/').toLowerCase()));
+    fs.statSync.mockReturnValue({ isDirectory: () => true });
+
+    const baseStub = { root: '/workspace/.mpy-workbench/pyi/micropython-esp32-stubs' };
+    manager.isEnabled = true;
+    manager.lastStubPath = baseStub.root;
+    manager.applyExtraStubOverlay(baseStub);
+
+    expect(stubOverlay.buildOverlayStubRoot).toHaveBeenCalledWith(
+      baseStub.root,
+      '/workspace',
+      ['/workspace/extra'],
+    );
+
+    await manager.updatePythonConfiguration(baseStub);
+    expect(completionPythonConfig.applyPythonCompletionConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        managedExtraPaths: [localRoot, localLib],
+      }),
+    );
+    expect(codeCompletionManager.getActiveCompletionRoots()).toEqual([baseStub.root, localRoot, localLib]);
+    manager.isEnabled = false;
+    manager.lastStubPath = undefined;
+  });
+
   test('helper methods inspect bundled stubs and pyright overrides', () => {
     const { codeCompletionManager } = require('../src/completion/codeCompletion') as typeof import('../src/completion/codeCompletion');
     const manager = codeCompletionManager as any;
@@ -270,7 +303,7 @@ describe('CodeCompletionManager helper coverage', () => {
       'microPythonWorkBench.toggleCodeCompletion',
       expect.any(Function)
     );
-    expect(workspaceState.get).toHaveBeenCalledTimes(3);
+    expect(workspaceState.get).toHaveBeenCalledTimes(4);
     expect(context.subscriptions).toHaveLength(5);
     expect(manager.statusBarItem.hide).toHaveBeenCalled();
     expect(manager.stubStatusBarItem.hide).toHaveBeenCalled();

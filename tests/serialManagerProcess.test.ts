@@ -65,6 +65,8 @@ describe("SerialManagerProcess", () => {
       baudRate: 1500000,
       token: "tok",
       scriptPath: "/extension/scripts/mpyrepl/__main__.py",
+      stubRoot: "/workspace/stubs",
+      completionRoots: ["/workspace/mpy", "/workspace/mpy/lib"],
     });
 
     await Promise.resolve();
@@ -77,7 +79,19 @@ describe("SerialManagerProcess", () => {
     expect(endpoint.port).toBe(50123);
     expect(spawn).toHaveBeenCalledWith(
       "py",
-      expect.arrayContaining(["-3", expect.stringContaining("__main__.py"), "--port", "COM21", "manager"]),
+      expect.arrayContaining([
+        "-3",
+        expect.stringContaining("__main__.py"),
+        "--port",
+        "COM21",
+        "manager",
+        "--stub-root",
+        "/workspace/stubs",
+        "--completion-root",
+        "/workspace/mpy",
+        "--completion-root",
+        "/workspace/mpy/lib",
+      ]),
       expect.objectContaining({ windowsHide: true }),
     );
   });

@@ -167,6 +167,7 @@ async function buildCustomReplCommand(device: string): Promise<{ command: string
 
   const controlFile = getCustomReplControlFile(device);
   const stubRoot = codeCompletionManager.getActiveStubPath();
+  const completionRoots = codeCompletionManager.getActiveCompletionRoots();
   const baudRate = vscode.workspace.getConfiguration('microPythonWorkBench').get<number>('baudRate', 115200);
   const args = [
     quoteShellArg(scriptPath),
@@ -181,6 +182,11 @@ async function buildCustomReplCommand(device: string): Promise<{ command: string
 
   if (stubRoot) {
     args.push('--stub-root', quoteShellArg(stubRoot));
+  }
+  for (const completionRoot of completionRoots) {
+    if (completionRoot) {
+      args.push('--completion-root', quoteShellArg(completionRoot));
+    }
   }
 
   const base = `"${pythonPath}" ${args.join(' ')}`;

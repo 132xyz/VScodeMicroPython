@@ -13,6 +13,8 @@ export interface ApplyPythonCompletionConfigOptions {
   lastStubPath?: string;
   lastTypeshedPath?: string;
   userExtraPaths: string[];
+  managedExtraPaths?: string[];
+  lastManagedExtraPaths?: string[];
 }
 
 export interface ApplyPythonCompletionConfigResult {
@@ -117,6 +119,23 @@ function normalizePath(value?: string): string {
   return (value || '').replace(/\\/g, '/').toLowerCase();
 }
 
+function dedupePaths(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    const key = normalizePath(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function uniqueExistingPaths(values: string[]): string[] {
+  return dedupePaths(values.filter(Boolean));
+}
+
 function isExtensionPath(value: string): boolean {
   if (!value) return false;
   const normalized = value.toLowerCase().replace(/\\/g, '/');
@@ -142,6 +161,8 @@ export async function applyPythonCompletionConfiguration(
     ? path.join(options.workspaceRoot, options.stubInstallPath)
     : options.stubInstallPath;
   const oldPaths = getLegacyExtensionPaths(options.extensionPath);
+  const managedExtraPaths = uniqueExistingPaths(options.managedExtraPaths || []);
+  const lastManagedExtraPaths = uniqueExistingPaths(options.lastManagedExtraPaths || []);
 
   const isWorkspaceInstallPath = (value?: string) => {
     if (!value) return false;
@@ -186,13 +207,18 @@ export async function applyPythonCompletionConfiguration(
   }
 
   const extraPaths = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
+  const managedExtraPathKeys = new Set([...managedExtraPaths, ...lastManagedExtraPaths].map(normalizePath));
   const newExtraPaths = extraPaths.filter(
-    value => !isExtensionPath(value) && !oldPaths.includes(value) && !options.userExtraPaths.includes(value)
+    value => !isExtensionPath(value)
+      && !oldPaths.includes(value)
+      && !options.userExtraPaths.includes(value)
+      && !managedExtraPathKeys.has(normalizePath(value))
   );
-  const extraChanged = extraPaths.length !== newExtraPaths.length
-    || extraPaths.some((value, index) => value !== newExtraPaths[index]);
+  const desiredExtraPaths = dedupePaths([...newExtraPaths, ...managedExtraPaths]);
+  const extraChanged = extraPaths.length !== desiredExtraPaths.length
+    || extraPaths.some((value, index) => value !== desiredExtraPaths[index]);
   if (extraChanged) {
-    await pythonConfig.update('analysis.extraPaths', newExtraPaths, vscode.ConfigurationTarget.Workspace);
+    await pythonConfig.update('analysis.extraPaths', desiredExtraPaths, vscode.ConfigurationTarget.Workspace);
   }
 
   const autoCompleteExtraPaths = pythonConfig.get<string[]>('autoComplete.extraPaths', []) || [];

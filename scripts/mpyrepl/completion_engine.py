@@ -10,7 +10,7 @@ import inspect
 import keyword
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
@@ -110,10 +110,31 @@ class RuntimeCacheEntry:
     expires_at: float | None = None
 
 
-def discover_stub_modules(stub_root: str | None) -> set[str]:
-    """Return top-level module names exposed by one stub root.
+def _completion_roots(stub_root: str | None, completion_roots: str | Sequence[str] | None = None) -> list[str]:
+    """Return ordered completion roots with duplicates removed.
 
-    :param stub_root: Root directory containing MicroPython stubs.
+    :param stub_root: Primary stub root.
+    :param completion_roots: Additional completion roots.
+    :return: Ordered root list.
+    """
+    roots: list[str] = []
+    seen: set[str] = set()
+    extra_roots = [completion_roots] if isinstance(completion_roots, str) else list(completion_roots or [])
+    for value in [stub_root or "", *extra_roots]:
+        if not value:
+            continue
+        key = value.replace("\\", "/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(value)
+    return roots
+
+
+def discover_stub_modules(stub_root: str | Sequence[str] | None) -> set[str]:
+    """Return top-level module names exposed by one or more completion roots.
+
+    :param stub_root: Root directory or ordered roots containing MicroPython stubs/sources.
     :return: Discovered top-level module names.
     """
     return StubCompletionIndex(stub_root).module_names()
@@ -144,6 +165,7 @@ class ReplCompleter(Completer):
         self,
         session_symbols: ReplSessionSymbols,
         stub_root: str | None = None,
+        completion_roots: str | Sequence[str] | None = None,
         dotted_provider: Callable[..., Iterable[str]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         auto_device_timeout: float | None = AUTO_DEVICE_QUERY_TIMEOUT_SECONDS,
@@ -153,6 +175,7 @@ class ReplCompleter(Completer):
 
         :param session_symbols: Mutable session symbol table.
         :param stub_root: Optional stub root for top-level modules.
+        :param completion_roots: Additional local completion roots.
         :param dotted_provider: Optional provider for dotted member lookups.
         :param clock: Monotonic clock used for short negative-cache expiry.
         :param auto_device_timeout: Timeout for automatic device queries.
@@ -160,7 +183,7 @@ class ReplCompleter(Completer):
         :return: None
         """
         self._session_symbols = session_symbols
-        self._stub_index = StubCompletionIndex(stub_root)
+        self._stub_index = StubCompletionIndex(_completion_roots(stub_root, completion_roots))
         self._stub_modules = self._stub_index.module_names()
         self._dotted_provider = dotted_provider
         self._dotted_provider_accepts_timeout = _accepts_timeout_argument(dotted_provider)

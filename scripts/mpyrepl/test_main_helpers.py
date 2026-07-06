@@ -91,10 +91,17 @@ class FakePromptSession:
 class FakeRuntimeCompleter(FakeCompleter):
     instances = []
 
-    def __init__(self, session_symbols, stub_root: str = "", dotted_provider=None) -> None:
+    def __init__(
+        self,
+        session_symbols,
+        stub_root: str = "",
+        completion_roots=None,
+        dotted_provider=None,
+    ) -> None:
         super().__init__()
         self.session_symbols = session_symbols
         self.stub_root = stub_root
+        self.completion_roots = completion_roots
         self.dotted_provider = dotted_provider
         FakeRuntimeCompleter.instances.append(self)
 
@@ -610,6 +617,7 @@ class MainHelperTests(unittest.TestCase):
             second="a",
             control_file="control.json",
             stub_root="stubs",
+            completion_roots=["mpy", "mpy/lib"],
             dir_query_timeout=2.0,
         )
 
@@ -988,10 +996,12 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                                                 1.0,
                                                 "",
                                                 "stubs",
+                                                ["mpy", "mpy/lib"],
                                                 2.0,
                                             )
 
         self.assertEqual(result, 0)
+        self.assertEqual(FakeRuntimeCompleter.instances[-1].completion_roots, ["mpy", "mpy/lib"])
         self.assertEqual(symbols.recorded, ["print(1)"])
         self.assertEqual(FakeRuntimeCompleter.instances[-1].clear_runtime_cache_calls, 0)
         self.assertEqual(
@@ -1049,6 +1059,7 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                                                     1.0,
                                                     "",
                                                     "",
+                                                    [],
                                                     2.0,
                                                 )
 

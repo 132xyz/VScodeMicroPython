@@ -18,6 +18,7 @@ import {
   applyPythonCompletionConfiguration,
   restoreManagedMissingModuleSourceOverride,
 } from './completionPythonConfig';
+import { getLocalSyncRoot } from '../core/workspaceUtils';
 
 /**
  * 代码补全管理器
@@ -32,6 +33,7 @@ export class CodeCompletionManager {
   private lastStubPath?: string;
   private lastBaseStubPath?: string;
   private lastTypeshedPath?: string;
+  private lastCompletionSourcePaths?: string[];
 
   private constructor() {
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -56,6 +58,14 @@ export class CodeCompletionManager {
     return this.getWorkspaceRoot();
   }
 
+  public getActiveCompletionRoots(): string[] {
+    if (!this.isEnabled && !this.lastStubPath) return [];
+    return this.dedupePaths([
+      this.lastStubPath || '',
+      ...this.getLocalCompletionSourcePaths(),
+    ]);
+  }
+
   /**
    * 初始化代码补全管理器
    */
@@ -64,6 +74,7 @@ export class CodeCompletionManager {
     try { this.lastStubPath = await context.workspaceState.get<string>('mpy.lastStubPath'); } catch {}
     try { this.lastBaseStubPath = await context.workspaceState.get<string>('mpy.lastBaseStubPath'); } catch {}
     try { this.lastTypeshedPath = await context.workspaceState.get<string>('mpy.lastTypeshedPath'); } catch {}
+    try { this.lastCompletionSourcePaths = await context.workspaceState.get<string[]>('mpy.lastCompletionSourcePaths'); } catch {}
     // 初始化代码补全管理器
 
     // 注册命令
@@ -89,6 +100,7 @@ export class CodeCompletionManager {
           this.isEnabled &&
           (
             e.affectsConfiguration('microPythonWorkBench.codeCompletionExtraPaths')
+            || e.affectsConfiguration('microPythonWorkBench.syncLocalRoot')
           )
         ) {
           const activeBaseStubPath = this.lastBaseStubPath || this.context?.workspaceState.get<string>('mpy.lastBaseStubPath');
@@ -280,10 +292,16 @@ export class CodeCompletionManager {
         const extra = pythonConfig.get<string[]>('analysis.extraPaths', []) || [];
         const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
         const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+        const managedSourcePaths = [
+          ...(this.lastCompletionSourcePaths || []),
+          ...this.getPersistedCompletionSourcePaths(),
+          ...this.getLocalCompletionSourcePaths(),
+        ];
         const newExtra = extra.filter(p => !(p && (
           p.replace(/\\/g,'/').toLowerCase().includes('.mpy-workbench')
           || p.toLowerCase().includes('code_completion')
           || userExtraPaths.includes(p)
+          || managedSourcePaths.some(sourcePath => this.samePath(sourcePath, p))
         )));
         if (newExtra.length !== extra.length) {
           await pythonConfig.update('analysis.extraPaths', newExtra, vscode.ConfigurationTarget.Workspace);
@@ -298,9 +316,11 @@ export class CodeCompletionManager {
         try { await this.context?.workspaceState.update('mpy.lastStubPath', undefined); } catch {}
         try { await this.context?.workspaceState.update('mpy.lastBaseStubPath', undefined); } catch {}
         try { await this.context?.workspaceState.update('mpy.lastTypeshedPath', undefined); } catch {}
+        try { await this.context?.workspaceState.update('mpy.lastCompletionSourcePaths', undefined); } catch {}
         this.lastStubPath = undefined;
         this.lastBaseStubPath = undefined;
         this.lastTypeshedPath = undefined;
+        this.lastCompletionSourcePaths = undefined;
       }
 
       this.isEnabled = false;
@@ -411,6 +431,10 @@ export class CodeCompletionManager {
     const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
     const stubInstallPath = mpyConfig.get<string>('stubInstallPath', '.mpy-workbench/pyi');
     const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+    const managedExtraPaths = this.getLocalCompletionSourcePaths();
+    const lastManagedExtraPaths = this.lastCompletionSourcePaths
+      || this.getPersistedCompletionSourcePaths()
+      || [];
     const result = await applyPythonCompletionConfiguration({
       stubInfo,
       workspaceState: this.context?.workspaceState,
@@ -420,13 +444,21 @@ export class CodeCompletionManager {
       lastStubPath: this.lastStubPath,
       lastTypeshedPath: this.lastTypeshedPath,
       userExtraPaths,
+      managedExtraPaths,
+      lastManagedExtraPaths,
     });
 
     this.lastTypeshedPath = result.appliedTypeshedPath;
+    this.lastCompletionSourcePaths = managedExtraPaths;
     try {
       await this.context?.workspaceState.update('mpy.lastTypeshedPath', result.appliedTypeshedPath);
     } catch (e) {
       console.warn('[CodeCompletion] failed to persist lastTypeshedPath', e);
+    }
+    try {
+      await this.context?.workspaceState.update('mpy.lastCompletionSourcePaths', managedExtraPaths);
+    } catch (e) {
+      console.warn('[CodeCompletion] failed to persist lastCompletionSourcePaths', e);
     }
     
     // 近期 Pylance 版本在 stop/restart 上不稳定，这里只写配置，不再强制重启。
@@ -478,12 +510,16 @@ export class CodeCompletionManager {
   private applyExtraStubOverlay(baseStub: StubInspection): StubInspection {
     const mpyConfig = vscode.workspace.getConfiguration('microPythonWorkBench');
     const configuredExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
+    const localSourcePaths = this.getLocalCompletionSourcePaths();
+    const overlayExtraPaths = configuredExtraPaths.filter(
+      extraPath => !localSourcePaths.some(sourcePath => this.samePath(sourcePath, extraPath))
+    );
 
     const workspaceRoot = this.getWorkspaceRoot();
     if (!workspaceRoot) return baseStub;
 
     try {
-      const overlayRoot = buildOverlayStubRoot(baseStub.root, workspaceRoot, configuredExtraPaths);
+      const overlayRoot = buildOverlayStubRoot(baseStub.root, workspaceRoot, overlayExtraPaths);
       if (overlayRoot === baseStub.root) return baseStub;
 
       const overlayStub = inspectStubRoot(overlayRoot);
@@ -493,6 +529,52 @@ export class CodeCompletionManager {
       vscode.window.setStatusBarMessage('额外 pyi 目录合并失败，已回退到基础 MicroPython stubs。', 6000);
       return baseStub;
     }
+  }
+
+  private getLocalCompletionSourcePaths(): string[] {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return [];
+
+    let localRoot: string;
+    try {
+      localRoot = getLocalSyncRoot(workspaceFolder);
+    } catch {
+      return [];
+    }
+
+    return this.dedupePaths([localRoot, path.join(localRoot, 'lib')]).filter(p => {
+      try {
+        return fs.existsSync(p) && fs.statSync(p).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private getPersistedCompletionSourcePaths(): string[] {
+    const stored = this.context?.workspaceState.get<string[]>('mpy.lastCompletionSourcePaths');
+    return Array.isArray(stored) ? stored : [];
+  }
+
+  private samePath(left: string, right: string): boolean {
+    return this.normalizePath(left) === this.normalizePath(right);
+  }
+
+  private normalizePath(value: string): string {
+    return value.replace(/\\/g, '/').toLowerCase();
+  }
+
+  private dedupePaths(values: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+      if (!value) continue;
+      const key = this.normalizePath(value);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out;
   }
 
   private getBundledStubInspection(): StubInspection | null {
@@ -652,7 +734,9 @@ export class CodeCompletionManager {
       const userExtraPaths = mpyConfig.get<string[]>('codeCompletionExtraPaths', []) || [];
       
       // 收集所有路径
-      const allPaths = [stubPath, ...userExtraPaths].filter(Boolean);
+      const localSourcePaths = this.getLocalCompletionSourcePaths();
+
+      const allPaths = [stubPath, ...userExtraPaths, ...localSourcePaths].filter(Boolean);
       
       for (const p of allPaths) {
         try {

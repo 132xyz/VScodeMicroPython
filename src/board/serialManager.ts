@@ -39,6 +39,15 @@ async function getActiveStubPath(): Promise<string | undefined> {
   }
 }
 
+async function getActiveCompletionRoots(): Promise<string[]> {
+  try {
+    const { codeCompletionManager } = await import("../completion/codeCompletion");
+    return codeCompletionManager.getActiveCompletionRoots();
+  } catch {
+    return [];
+  }
+}
+
 export function getActiveManagerRuntime(): SerialManagerRuntime | undefined {
   return activeRuntime;
 }
@@ -64,10 +73,12 @@ export async function ensureManagerStarted(device: string): Promise<SerialManage
 
   const managerProcess = activeProcess || new SerialManagerProcess();
   activeProcess = managerProcess;
+  const stubRoot = await getActiveStubPath();
   const endpoint = await managerProcess.start({
     device,
     baudRate: getBaudRate(),
-    stubRoot: await getActiveStubPath(),
+    stubRoot,
+    completionRoots: await getActiveCompletionRoots(),
   });
   const client = new SerialManagerClient(endpoint);
   await client.connect();
