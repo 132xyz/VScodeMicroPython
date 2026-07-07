@@ -305,6 +305,7 @@ async def run_manager_async(
     stub_root: str = "",
     completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
+    helper_version: str = "",
     ready_stream: TextIO = sys.stdout,
 ) -> int:
     """Run the hidden serial manager server.
@@ -317,6 +318,7 @@ async def run_manager_async(
     :param stub_root: Optional completion stub root.
     :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
+    :param helper_version: Version string shown by the injected helper.
     :param ready_stream: Stream for the ready line.
     :return: Process exit code.
     """
@@ -328,6 +330,7 @@ async def run_manager_async(
         stub_root=stub_root,
         completion_roots=completion_roots,
         dir_query_timeout=dir_query_timeout,
+        helper_version=helper_version,
         emit_event=server.emit_event,
     )
     await server.start(session)
@@ -345,6 +348,7 @@ def run_manager(
     stub_root: str = "",
     completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
+    helper_version: str = "",
 ) -> int:
     """Synchronous CLI wrapper for the hidden serial manager.
 
@@ -356,6 +360,7 @@ def run_manager(
     :param stub_root: Optional completion stub root.
     :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
+    :param helper_version: Version string shown by the injected helper.
     :return: Process exit code.
     """
     return asyncio.run(
@@ -368,5 +373,6 @@ def run_manager(
             stub_root=stub_root,
             completion_roots=completion_roots,
             dir_query_timeout=dir_query_timeout,
+            helper_version=helper_version,
         )
     )

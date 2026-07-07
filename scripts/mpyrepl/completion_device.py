@@ -52,22 +52,25 @@ def _build_dir_query_source(expression: str, session_symbols: ReplSessionSymbols
         fallback_clause = (
             f"except NameError:\n"
             f"    try:\n"
-            f"        _mpy_target = __import__({fallback_name!r}){suffix}\n"
+            f"        target = __import__({fallback_name!r}){suffix}\n"
             f"    except Exception:\n"
-            f"        _mpy_target = None\n"
+            f"        target = None\n"
         )
 
     source = (
-        "_mpy_target = None\n"
-        "try:\n"
-        f"    _mpy_target = {resolved_expression}\n"
-        f"{fallback_clause}"
-        "except Exception:\n"
-        "    _mpy_target = None\n\n"
-        "if _mpy_target is not None:\n"
-        "    for _mpy_name in dir(_mpy_target):\n"
-        "        if not str(_mpy_name).startswith('_'):\n"
-        "            print(repr(_mpy_name))\n"
+        "def __mpy_dir_query():\n"
+        "    target = None\n"
+        "    try:\n"
+        f"        target = {resolved_expression}\n"
+        f"{textwrap.indent(fallback_clause, '    ') if fallback_clause else ''}"
+        "    except Exception:\n"
+        "        target = None\n\n"
+        "    if target is not None:\n"
+        "        for name in dir(target):\n"
+        "            if not str(name).startswith('_'):\n"
+        "                print(repr(name))\n"
+        "__mpy_dir_query()\n"
+        "del __mpy_dir_query\n"
     )
     return textwrap.dedent(source).strip()
 

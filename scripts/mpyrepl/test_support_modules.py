@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import sys
@@ -115,6 +116,8 @@ class SupportModuleTests(unittest.TestCase):
                 "mpy/lib",
                 "--dir-query-timeout",
                 "3.5",
+                "--helper-version",
+                "0.4.22",
             ]
         )
 
@@ -125,6 +128,7 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(args.stub_root, "stubs")
         self.assertEqual(args.completion_roots, ["mpy", "mpy/lib"])
         self.assertEqual(args.dir_query_timeout, 3.5)
+        self.assertEqual(args.helper_version, "0.4.22")
 
     def test_cli_exec_parses_follow_timeout(self) -> None:
         parser = build_parser()
@@ -184,6 +188,8 @@ class SupportModuleTests(unittest.TestCase):
                 "mpy",
                 "--dir-query-timeout",
                 "1.5",
+                "--helper-version",
+                "0.4.22",
             ]
         )
         client_args = parser.parse_args(
@@ -203,6 +209,7 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(manager_args.stub_root, "stubs")
         self.assertEqual(manager_args.completion_roots, ["mpy"])
         self.assertEqual(manager_args.dir_query_timeout, 1.5)
+        self.assertEqual(manager_args.helper_version, "0.4.22")
         self.assertEqual(client_args.command, "repl-client")
         self.assertEqual(client_args.endpoint, "127.0.0.1:50123")
         self.assertEqual(client_args.token, "tok")
@@ -1545,11 +1552,15 @@ delattr(items, 'value')
         self.assertEqual(_resolved_expression("hw.Pin", symbols), "__import__('machine').Pin")
 
         source = _build_dir_query_source("hw.Pin", symbols)
-        self.assertIn("_mpy_target = __import__('machine').Pin", source)
+        self.assertIn("target = __import__('machine').Pin", source)
         self.assertIn("except NameError:", source)
 
+        missing_namespace: dict[str, object] = {}
         missing_module_source = _build_dir_query_source("missing_module", ReplSessionSymbols())
-        exec(missing_module_source, {})
+        exec(missing_module_source, missing_namespace)
+        self.assertNotIn("__mpy_dir_query", missing_namespace)
+        self.assertNotIn("target", missing_namespace)
+        self.assertNotIn("name", missing_namespace)
 
         names = _parse_dir_output(b"'Pin'\n'_hidden'\nnot-a-repr\n123\n'UART'\n")
         self.assertEqual(names, ["Pin", "UART"])
@@ -1590,16 +1601,45 @@ delattr(items, 'value')
         )
 
     def test_repl_semantics_wraps_top_level_expressions(self) -> None:
-        helper_source = build_helper_source()
+        helper_source = build_helper_source("0.4.22")
         self.assertIn("last_non_none_repl_value", helper_source)
+        self.assertIn("version = '0.4.22'", helper_source)
 
         source = instrument_source("1\nx = 2\nx")
-        self.assertIn("__mpy_repl_helper.print_repl_value(1)", source)
+        self.assertIn("__mpy.print_repl_value(1)", source)
         self.assertIn("x = 2", source)
-        self.assertIn("__mpy_repl_helper.print_repl_value(x)", source)
+        self.assertIn("__mpy.print_repl_value(x)", source)
 
         self.assertEqual(instrument_source("x = 1"), "x = 1")
         self.assertEqual(instrument_source("def broken(:\n"), "def broken(:\n")
+
+    def test_repl_helper_handles_globals_and_recursive_repr(self) -> None:
+        namespace: dict[str, object] = {}
+        exec(build_helper_source("0.4.22"), namespace)
+        helper = namespace["__mpy"]
+
+        self.assertEqual(repr(helper), "<__mpy MicroPython WorkBench REPL helper version=0.4.22>")
+        self.assertNotIn("__mpy_repl_helper", namespace)
+        self.assertNotIn("__mpy_helper", namespace)
+
+        globals_stream = io.StringIO()
+        with mock.patch("sys.stdout", globals_stream):
+            helper.print_repl_value(namespace)
+
+        self.assertIn("__mpy", globals_stream.getvalue())
+        self.assertNotIn("_", namespace)
+
+        class RecursiveRepr:
+            def __repr__(self) -> str:
+                raise RuntimeError("maximum recursion depth exceeded")
+
+        value = RecursiveRepr()
+        recursive_stream = io.StringIO()
+        with mock.patch("sys.stdout", recursive_stream):
+            helper.print_repl_value(value)
+
+        self.assertIn("<RecursiveRepr repr failed>", recursive_stream.getvalue())
+        self.assertIs(namespace["_"], value)
 
     def test_file_control_channel_accepts_supported_commands_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

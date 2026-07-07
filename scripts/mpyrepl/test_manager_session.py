@@ -121,6 +121,7 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.session = ManagerSession(
             ReplConfig(port="COM21", baudrate=115200),
+            helper_version="0.4.22",
             emit_event=lambda event, payload: self.events.append((event, payload)),
             transport_factory=factory,
         )
@@ -144,8 +145,9 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.transport.closed)
         self.assertTrue(self.transport.interrupted)
         self.assertTrue(any(event == "stdout" for event, _ in self.events))
-        helper_loads = [command for command in self.transport.executed if "class __mpy_repl_helper" in command]
+        helper_loads = [command for command in self.transport.executed if "class __mpy_helper" in command]
         self.assertEqual(len(helper_loads), 2)
+        self.assertTrue(all("version = '0.4.22'" in command for command in helper_loads))
 
     async def test_complete_returns_candidates_from_session_symbols(self) -> None:
         await self.session.open()

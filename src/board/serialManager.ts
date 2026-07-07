@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SerialManagerClient } from "./serialManagerClient";
-import { SerialManagerProcess, getMpyReplScriptPath, quoteShellArg, splitCommand } from "./serialManagerProcess";
+import { SerialManagerProcess, getExtensionVersion, getMpyReplScriptPath, quoteShellArg, splitCommand } from "./serialManagerProcess";
 import {
   SerialManagerEndpoint,
   SerialManagerRuntime,
@@ -79,6 +79,7 @@ export async function ensureManagerStarted(device: string): Promise<SerialManage
     baudRate: getBaudRate(),
     stubRoot,
     completionRoots: await getActiveCompletionRoots(),
+    helperVersion: getExtensionVersion(),
   });
   const client = new SerialManagerClient(endpoint);
   await client.connect();

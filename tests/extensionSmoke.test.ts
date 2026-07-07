@@ -402,6 +402,14 @@ describe('extension activate smoke coverage', () => {
     expect(mpModule.cpToDevice).toHaveBeenCalledWith('/workspace/src/main.py', '/main.py');
     expect(mpremoteCommandsModule.restoreSerialSessionsFromSnapshot).toHaveBeenCalled();
   });
+
+  test('deactivate closes the REPL terminal and serial manager path', async () => {
+    const { deactivate } = require('../src/core/extension') as typeof import('../src/core/extension');
+
+    await deactivate();
+
+    expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenCalledWith(true);
+  });
 });
 
 export {};

@@ -102,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Timeout in seconds for device-backed dir() completion queries",
     )
+    async_parser.add_argument(
+        "--helper-version",
+        default="",
+        help="Version string exposed by the injected REPL helper",
+    )
 
     manager_parser = subparsers.add_parser(
         "manager",
@@ -139,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Timeout in seconds for device-backed dir() completion queries",
+    )
+    manager_parser.add_argument(
+        "--helper-version",
+        default="",
+        help="Version string exposed by the injected REPL helper",
     )
 
     repl_client_parser = subparsers.add_parser(

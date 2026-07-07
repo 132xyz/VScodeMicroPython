@@ -773,7 +773,13 @@ export async function activate(context: vscode.ExtensionContext) {
   }));
 }
 
-export function deactivate() {}
+export async function deactivate() {
+  try {
+    await closeReplTerminal(true);
+  } catch (error) {
+    console.error("[Extension] Failed to close serial sessions during deactivation:", error);
+  }
+}
 
 // (no stray command registrations beyond this point)
 /*

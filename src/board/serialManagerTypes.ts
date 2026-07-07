@@ -41,9 +41,11 @@ export type SerialManagerStartOptions = {
   scriptPath?: string;
   stubRoot?: string;
   completionRoots?: string[];
+  helperVersion?: string;
   host?: string;
   token?: string;
   startupTimeoutMs?: number;
+  startupRetryDelaysMs?: number[];
 };
 
 export type SerialManagerRuntime = {

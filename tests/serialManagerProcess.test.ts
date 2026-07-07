@@ -13,6 +13,7 @@ import * as vscode from "vscode";
 import { MpRemoteManager } from "../src/board/MpRemoteManager";
 import {
   SerialManagerProcess,
+  isTransientSerialOpenError,
   parseReadyLine,
   quoteShellArg,
   splitCommand,
@@ -32,10 +33,21 @@ class FakeChild extends EventEmitter {
   });
 }
 
+async function waitForSpawnCount(count: number): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    if ((spawn as jest.Mock).mock.calls.length >= count) return;
+    await Promise.resolve();
+  }
+  throw new Error(`spawn was not called ${count} times`);
+}
+
 describe("SerialManagerProcess", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (vscode.extensions.getExtension as jest.Mock).mockReturnValue({ extensionPath: "/extension" });
+    (vscode.extensions.getExtension as jest.Mock).mockReturnValue({
+      extensionPath: "/extension",
+      packageJSON: { version: "0.4.22" },
+    });
     (vscode.extensions as any).all = [];
     (vscode.workspace as any).workspaceFolders = [];
     (MpRemoteManager.detectPythonPath as jest.Mock).mockResolvedValue("py -3");
@@ -91,9 +103,49 @@ describe("SerialManagerProcess", () => {
         "/workspace/mpy",
         "--completion-root",
         "/workspace/mpy/lib",
+        "--helper-version",
+        "0.4.22",
       ]),
       expect.objectContaining({ windowsHide: true }),
     );
+  });
+
+  test("retries startup when the serial port is still being released", async () => {
+    const firstChild = new FakeChild();
+    const secondChild = new FakeChild();
+    (spawn as jest.Mock)
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(secondChild);
+    const manager = new SerialManagerProcess();
+    const started = manager.start({
+      device: "COM7",
+      baudRate: 115200,
+      token: "tok",
+      scriptPath: "/extension/scripts/mpyrepl/__main__.py",
+      startupRetryDelaysMs: [0],
+    });
+
+    await Promise.resolve();
+    firstChild.stderr.emit(
+      "data",
+      Buffer.from("serial.serialutil.SerialException: could not open port 'COM7': PermissionError(13, 'Access is denied.', None, 5)\n"),
+    );
+    firstChild.exitCode = 1;
+    firstChild.emit("exit", 1);
+    await waitForSpawnCount(2);
+    secondChild.stdout.emit("data", Buffer.from(`${MANAGER_READY_MARKER}{"host":"127.0.0.1","port":50124,"token":"tok"}\n`));
+
+    const endpoint = await started;
+    secondChild.exitCode = 0;
+    await manager.stop();
+
+    expect(endpoint.port).toBe(50124);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  test("classifies transient Windows serial open failures", () => {
+    expect(isTransientSerialOpenError(new Error("PermissionError(13, '拒绝访问。', None, 5)"))).toBe(true);
+    expect(isTransientSerialOpenError(new Error("failed to inject repl helper"))).toBe(false);
   });
 
   test("does not reuse stale endpoint after child exits", async () => {

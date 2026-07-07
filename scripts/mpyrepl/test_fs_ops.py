@@ -26,6 +26,7 @@ from fs_ops import (
     _normalize_device_path,
     _parent_paths,
     _parse_json_result,
+    _wrap_device_code,
     response_payload,
     run_fs_operation,
     list_serial_ports,
@@ -142,6 +143,23 @@ class FsOpsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(FsOperationError, "stderr text"):
             DeviceFsClient(FakeTransport([ExecResult(stdout=b"", stderr=b"stderr text")])).execute("data = 1")
+
+    def test_wrapped_device_code_keeps_operation_locals_private(self) -> None:
+        namespace: dict[str, object] = {}
+        stdout = []
+
+        def fake_print(value):
+            stdout.append(value)
+
+        namespace["print"] = fake_print
+        exec(_wrap_device_code("items = [1]\ndata = items"), namespace)
+
+        self.assertEqual(stdout, [JSON_MARKER + json.dumps({"ok": True, "data": [1]})])
+        self.assertNotIn("items", namespace)
+        self.assertNotIn("data", namespace)
+        self.assertNotIn("__mpy_fs_op", namespace)
+        self.assertNotIn("__mpy_data", namespace)
+        self.assertNotIn("__mpy_json", namespace)
 
     def test_stat_listdir_tree_and_exec_json(self) -> None:
         transport = FakeTransport(

@@ -77,6 +77,17 @@ function getCustomReplScriptPath(): string | null {
   return null;
 }
 
+function getExtensionVersion(): string {
+  try {
+    const ext = vscode.extensions.getExtension('WebForks.mpy')
+      || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith('.mpy'))
+      || null;
+    const version = ext?.packageJSON?.version;
+    if (typeof version === 'string' && version.trim()) return version.trim();
+  } catch {}
+  return 'unknown';
+}
+
 function quoteShellArg(value: string): string {
   return value.includes(' ') ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
@@ -178,6 +189,8 @@ async function buildCustomReplCommand(device: string): Promise<{ command: string
     'async-repl',
     '--control-file',
     quoteShellArg(controlFile),
+    '--helper-version',
+    quoteShellArg(getExtensionVersion()),
   ];
 
   if (stubRoot) {

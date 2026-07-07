@@ -190,7 +190,10 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
                 return 0
 
         class FakeManagerSession(FakeSession):
+            kwargs = {}
+
             def __init__(self, *args, **kwargs) -> None:
+                FakeManagerSession.kwargs = kwargs
                 super().__init__()
 
         output = StringIO()
@@ -201,10 +204,12 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
             result = await run_manager_async(
                 ReplConfig(port="COM21", baudrate=115200),
                 token="tok",
+                helper_version="0.4.22",
                 ready_stream=output,
             )
 
         self.assertEqual(result, 0)
+        self.assertEqual(FakeManagerSession.kwargs["helper_version"], "0.4.22")
         self.assertIn(READY_MARKER, output.getvalue())
         self.assertIn('"token":"tok"', output.getvalue())
 

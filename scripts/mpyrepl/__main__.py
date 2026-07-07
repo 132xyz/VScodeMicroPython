@@ -213,16 +213,22 @@ def ensure_python_version() -> None:
         )
 
 
-def ensure_helper_loaded(transport: SerialReplTransport, follow_timeout: float) -> None:
+def ensure_helper_loaded(
+    transport: SerialReplTransport,
+    follow_timeout: float,
+    helper_version: str = "",
+) -> None:
     """Inject the minimal REPL helper into the current device session.
 
     :param transport: Active serial transport.
     :param follow_timeout: Timeout while loading the helper.
+    :param helper_version: Version string shown by the injected helper.
     :return: None
     """
-    result = transport.exec_raw(build_helper_source(), timeout=follow_timeout)
+    result = transport.exec_raw(build_helper_source(helper_version), timeout=follow_timeout)
     if result.stderr:
-        raise TransportError("failed to inject repl helper")
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise TransportError("failed to inject repl helper: %s" % detail)
 
 
 def run_exec(config: ReplConfig, code: str, follow_timeout: float) -> int:
@@ -651,6 +657,7 @@ async def run_async_repl(
     stub_root: str,
     completion_roots: list[str] | None,
     dir_query_timeout: float,
+    helper_version: str = "",
 ) -> int:
     """Run a minimal async prompt_toolkit loop over one raw REPL session.
 
@@ -658,6 +665,7 @@ async def run_async_repl(
     :param follow_timeout: Timeout for each execution.
     :param control_file: Optional path for extension-side control messages.
     :param completion_roots: Additional local completion roots.
+    :param helper_version: Version string shown by the injected helper.
     :return: Process exit code.
     """
     state = AsyncReplState()
@@ -669,7 +677,7 @@ async def run_async_repl(
 
     with SerialReplTransport(config) as transport:
         transport.enter_raw_repl(soft_reset=config.soft_reset_on_connect)
-        await gate.run("helper-load", ensure_helper_loaded, transport, follow_timeout)
+        await gate.run("helper-load", ensure_helper_loaded, transport, follow_timeout, helper_version)
         fs_client = DeviceFsClient(transport, timeout=config.operation_timeout)
         completer = ReplCompleter(
             session_symbols,
@@ -925,6 +933,7 @@ def main() -> int:
                     args.stub_root,
                     args.completion_roots,
                     args.dir_query_timeout,
+                    args.helper_version,
                 )
             )
         if args.command == "manager":
@@ -937,6 +946,7 @@ def main() -> int:
                 stub_root=args.stub_root,
                 completion_roots=args.completion_roots,
                 dir_query_timeout=args.dir_query_timeout,
+                helper_version=args.helper_version,
             )
         if args.command == "soft-reset":
             return run_soft_reset(config)

@@ -10,6 +10,8 @@ import {
   SerialManagerStartOptions,
 } from "./serialManagerTypes";
 
+const DEFAULT_STARTUP_RETRY_DELAYS_MS = [250, 750, 1500];
+
 export function splitCommand(cmd: string): { exe: string; args: string[] } {
   if (!cmd.includes('"') && (cmd.includes("\\") || cmd.includes("/")) && cmd.includes(" ")) {
     return { exe: cmd, args: [] };
@@ -45,6 +47,19 @@ export function getExtensionRoot(): string | null {
   }
 }
 
+export function getExtensionVersion(): string {
+  try {
+    const ext = vscode.extensions.getExtension("WebForks.mpy")
+      || vscode.extensions.all.find(e => e.id.toLowerCase().endsWith(".mpy"))
+      || null;
+    const version = ext?.packageJSON?.version;
+    if (typeof version === "string" && version.trim()) return version.trim();
+  } catch {
+    // ignore
+  }
+  return "unknown";
+}
+
 export function getMpyReplScriptPath(): string {
   const extensionRoot = getExtensionRoot();
   if (!extensionRoot) throw new Error("Extension root not found");
@@ -58,6 +73,16 @@ export function quoteShellArg(value: string): string {
     return `"${value.replace(/"/g, '\\"')}"`;
   }
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function isTransientSerialOpenError(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message || error || "");
+  return /could not open port|PermissionError\(13|Access is denied|拒绝访问|WinError 5|Error 5|device or resource busy|resource busy/i.test(message);
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export class SerialManagerProcess {
@@ -85,6 +110,32 @@ export class SerialManagerProcess {
     const parsed = splitCommand(pythonPath);
     const scriptPath = options.scriptPath || getMpyReplScriptPath();
     const token = options.token || crypto.randomBytes(24).toString("hex");
+    const retryDelays = options.startupRetryDelaysMs ?? DEFAULT_STARTUP_RETRY_DELAYS_MS;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      try {
+        return await this.startOnce(options, parsed, scriptPath, token);
+      } catch (error) {
+        lastError = error;
+        this.child = undefined;
+        this.endpoint = undefined;
+        if (attempt >= retryDelays.length || !isTransientSerialOpenError(error)) {
+          throw error;
+        }
+        await sleep(retryDelays[attempt]);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async startOnce(
+    options: SerialManagerStartOptions,
+    parsed: { exe: string; args: string[] },
+    scriptPath: string,
+    token: string,
+  ): Promise<SerialManagerEndpoint> {
     const args = parsed.args.concat([
       scriptPath,
       "--port",
@@ -103,6 +154,7 @@ export class SerialManagerProcess {
     for (const completionRoot of options.completionRoots || []) {
       if (completionRoot) args.push("--completion-root", completionRoot);
     }
+    args.push("--helper-version", options.helperVersion || getExtensionVersion());
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,

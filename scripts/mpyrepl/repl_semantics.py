@@ -8,25 +8,64 @@ from __future__ import annotations
 import ast
 
 
-HELPER_SOURCE = """
-class __mpy_repl_helper:
-    last_non_none_repl_value = None
+HELPER_SOURCE_TEMPLATE = """
+class __mpy_helper:
+    version = __MPY_HELPER_VERSION__
 
-    @classmethod
-    def print_repl_value(cls, obj):
+    def __init__(self):
+        self.last_non_none_repl_value = None
+
+    def __repr__(self):
+        return '<__mpy MicroPython WorkBench REPL helper version=%s>' % self.version
+
+    def safe_repr(self, obj):
+        try:
+            return repr(obj)
+        except RuntimeError as exc:
+            if 'recursion' not in str(exc):
+                raise
+            return self.fallback_repr(obj)
+
+    def fallback_repr(self, obj):
+        try:
+            obj_type = type(obj).__name__
+        except Exception:
+            obj_type = 'object'
+        try:
+            if isinstance(obj, dict):
+                return '<dict len=%d keys=%r>' % (len(obj), list(obj.keys()))
+        except Exception:
+            pass
+        try:
+            return '<%s len=%d repr failed>' % (obj_type, len(obj))
+        except Exception:
+            return '<%s repr failed>' % obj_type
+
+    def print_repl_value(self, obj):
         if obj is not None:
-            globals()['_'] = obj
-            cls.last_non_none_repl_value = obj
-            print(repr(obj))
+            text = self.safe_repr(obj)
+            if obj is not globals():
+                globals()['_'] = obj
+                self.last_non_none_repl_value = obj
+            print(text)
+
+__mpy = __mpy_helper()
+try:
+    del __mpy_repl_helper
+except Exception:
+    pass
+del __mpy_helper
 """.strip()
 
 
-def build_helper_source() -> str:
+def build_helper_source(helper_version: str = "") -> str:
     """Return the helper source injected into the device session.
 
+    :param helper_version: Version string shown by the injected helper.
     :return: Helper Python source.
     """
-    return HELPER_SOURCE
+    version = str(helper_version or "unknown")
+    return HELPER_SOURCE_TEMPLATE.replace("__MPY_HELPER_VERSION__", repr(version))
 
 
 def instrument_source(source: str) -> str:
@@ -47,7 +86,7 @@ def instrument_source(source: str) -> str:
             wrapped = ast.Expr(
                 value=ast.Call(
                     func=ast.Attribute(
-                        value=ast.Name(id="__mpy_repl_helper", ctx=ast.Load()),
+                        value=ast.Name(id="__mpy", ctx=ast.Load()),
                         attr="print_repl_value",
                         ctx=ast.Load(),
                     ),

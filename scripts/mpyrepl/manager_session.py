@@ -45,6 +45,7 @@ class ManagerSession:
     :param stub_root: Optional completion stub root.
     :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device-backed completion timeout.
+    :param helper_version: Version string shown by the injected helper.
     :param emit_event: Event callback used by the manager server.
     :param transport_factory: Optional transport factory for tests.
     :return: None
@@ -57,6 +58,7 @@ class ManagerSession:
         stub_root: str = "",
         completion_roots: list[str] | None = None,
         dir_query_timeout: float = 2.0,
+        helper_version: str = "",
         emit_event: EventCallback | None = None,
         transport_factory: TransportFactory = SerialReplTransport,
     ) -> None:
@@ -67,6 +69,7 @@ class ManagerSession:
         :param stub_root: Optional completion stub root.
         :param completion_roots: Additional local completion roots.
         :param dir_query_timeout: Device-backed completion timeout.
+        :param helper_version: Version string shown by the injected helper.
         :param emit_event: Event callback used by the manager server.
         :param transport_factory: Optional transport factory for tests.
         :return: None
@@ -76,6 +79,7 @@ class ManagerSession:
         self._stub_root = stub_root
         self._completion_roots = list(completion_roots or [])
         self._dir_query_timeout = dir_query_timeout
+        self._helper_version = helper_version
         self._emit_event = emit_event or (lambda event, payload: None)
         self._transport_factory = transport_factory
         self._transport: SerialReplTransport | None = None
@@ -398,9 +402,13 @@ class ManagerSession:
         ) from exc
 
     def _ensure_helper_loaded(self, transport: SerialReplTransport) -> None:
-        result = transport.exec_raw(build_helper_source(), timeout=self._config.operation_timeout)
+        result = transport.exec_raw(
+            build_helper_source(self._helper_version),
+            timeout=self._config.operation_timeout,
+        )
         if result.stderr:
-            raise TransportError("failed to inject repl helper")
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise TransportError("failed to inject repl helper: %s" % detail)
 
     def _require_transport(self) -> SerialReplTransport:
         if self._transport is None:

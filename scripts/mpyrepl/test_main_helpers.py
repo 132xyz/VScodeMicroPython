@@ -300,8 +300,9 @@ class MainHelperTests(unittest.TestCase):
         transport = mock.Mock()
         transport.exec_raw.return_value = ExecResult(stdout=b"", stderr=b"")
 
-        with mock.patch.object(mpyrepl_main, "build_helper_source", return_value="helper"):
-            mpyrepl_main.ensure_helper_loaded(transport, 1.5)
+        with mock.patch.object(mpyrepl_main, "build_helper_source", return_value="helper") as build_helper:
+            mpyrepl_main.ensure_helper_loaded(transport, 1.5, "0.4.22")
+        build_helper.assert_called_once_with("0.4.22")
         transport.exec_raw.assert_called_once_with("helper", timeout=1.5)
 
         broken_transport = mock.Mock()
@@ -619,6 +620,7 @@ class MainHelperTests(unittest.TestCase):
             stub_root="stubs",
             completion_roots=["mpy", "mpy/lib"],
             dir_query_timeout=2.0,
+            helper_version="0.4.22",
         )
 
         dispatch_cases = [
@@ -970,7 +972,7 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch.object(mpyrepl_main, "ReplSessionSymbols", return_value=symbols):
                 with mock.patch.object(mpyrepl_main, "ReplCompleter", FakeRuntimeCompleter):
                     with mock.patch.object(mpyrepl_main, "build_prompt_session", return_value=prompt_session):
-                        with mock.patch.object(mpyrepl_main, "ensure_helper_loaded"):
+                        with mock.patch.object(mpyrepl_main, "ensure_helper_loaded") as ensure_helper_loaded:
                             with mock.patch.object(
                                 mpyrepl_main,
                                 "execute_once",
@@ -998,6 +1000,7 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
                                                 "stubs",
                                                 ["mpy", "mpy/lib"],
                                                 2.0,
+                                                "0.4.22",
                                             )
 
         self.assertEqual(result, 0)
@@ -1019,6 +1022,7 @@ class MainAsyncHelperTests(unittest.IsolatedAsyncioTestCase):
         transport = FakeContextTransport.instances[-1]
         self.assertEqual(transport.enter_raw_repl_calls, [False])
         self.assertEqual(transport.exit_raw_repl_calls, 1)
+        ensure_helper_loaded.assert_called_once_with(transport, 1.0, "0.4.22")
         prompt_session.default_buffer.load_history_if_not_yet_loaded.assert_called()
         restore_sigint.assert_called_once_with()
 
