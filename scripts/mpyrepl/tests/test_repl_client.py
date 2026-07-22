@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import os
+import queue
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -42,6 +44,22 @@ class FakeSocket:
 
     def close(self) -> None:
         self.closed = True
+
+
+class BlockingReader:
+    def __init__(self) -> None:
+        self.lines: queue.Queue[bytes] = queue.Queue()
+        self.closed = False
+
+    def feed(self, line: str | bytes) -> None:
+        self.lines.put(line.encode("utf-8") if isinstance(line, str) else line)
+
+    def readline(self) -> bytes:
+        return self.lines.get(timeout=2)
+
+    def close(self) -> None:
+        self.closed = True
+        self.lines.put(b"")
 
 
 class FakePromptSession:
@@ -199,6 +217,54 @@ class ReplClientTests(unittest.TestCase):
         self.assertIn("warn", stderr.getvalue())
         self.assertIn(b'"method":"manager.ping"', fake_socket.sent[0])
         self.assertTrue(fake_socket.closed)
+
+    def test_manager_client_forwards_events_while_no_request_is_active(self) -> None:
+        client = repl_client.ManagerClient("127.0.0.1", 1, "tok")
+        fake_socket = FakeSocket()
+        reader = BlockingReader()
+        client._socket = fake_socket
+        client._reader = reader
+        reader.feed(encode_json_line({"id": "1", "ok": True, "result": {"state": "ready"}}))
+
+        stdout = io.StringIO()
+        with mock.patch.object(sys, "stdout", stdout):
+            self.assertEqual(client.call("manager.status"), {"state": "ready"})
+            reader.feed(encode_json_line({"event": "stdout", "payload": {"text": "background now\n"}}))
+            deadline = time.monotonic() + 1.0
+            while "background now" not in stdout.getvalue() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        client.close()
+
+        self.assertIn("background now", stdout.getvalue())
+        self.assertTrue(reader.closed)
+
+    def test_manager_client_disconnect_wakes_blocked_request(self) -> None:
+        client = repl_client.ManagerClient("127.0.0.1", 1, "tok")
+        fake_socket = FakeSocket()
+        reader = BlockingReader()
+        client._socket = fake_socket
+        client._reader = reader
+        errors: list[Exception] = []
+
+        def call_status() -> None:
+            try:
+                client.call("manager.status")
+            except Exception as exc:
+                errors.append(exc)
+
+        caller = threading.Thread(target=call_status)
+        caller.start()
+        deadline = time.monotonic() + 1.0
+        while not fake_socket.sent and time.monotonic() < deadline:
+            time.sleep(0.01)
+        reader.feed(b"")
+        caller.join(timeout=1.0)
+        client.close()
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("connection closed", str(errors[0]))
 
     def test_manager_client_call_raises_rpc_error_and_closed_connection(self) -> None:
         client = repl_client.ManagerClient("127.0.0.1", 1, "tok")

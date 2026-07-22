@@ -150,6 +150,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Version string exposed by the injected REPL helper",
     )
+    manager_parser.add_argument(
+        "--session-file",
+        default="",
+        help="Optional serial-manager.json path published by this manager",
+    )
+    manager_parser.add_argument(
+        "--owner-version",
+        default="",
+        help="Extension or CLI version stored in the manager descriptor",
+    )
+    manager_parser.add_argument(
+        "--script-path",
+        default="",
+        help="Manager entry script path stored in the descriptor",
+    )
 
     repl_client_parser = subparsers.add_parser(
         "repl-client",

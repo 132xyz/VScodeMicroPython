@@ -50,8 +50,8 @@ async function getActiveStubPath(): Promise<string | undefined> {
   }
 }
 
-function publishSerialState(open: boolean): void {
-  if (activeTransportConnected === open) return;
+function publishSerialState(open: boolean, force = false): void {
+  if (!force && activeTransportConnected === open) return;
   activeTransportConnected = open;
   setSerialContext(open);
   try {
@@ -65,6 +65,15 @@ export function isConnectedManagerState(state: string): boolean {
   return state === "ready" || state === "busy" || state === "cancelling";
 }
 
+export function runtimeWithManagerStatus(
+  runtime: SerialManagerRuntime | undefined,
+  status: SerialManagerStatus,
+): SerialManagerRuntime | undefined {
+  const nextDevice = typeof status.port === "string" ? status.port.trim() : "";
+  if (!runtime || !nextDevice || runtime.device === nextDevice) return runtime;
+  return { ...runtime, device: nextDevice };
+}
+
 function bindManagerState(
   client: SerialManagerClient,
   descriptorPath: string | undefined,
@@ -72,7 +81,18 @@ function bindManagerState(
 ): void {
   client.on("status", (status: SerialManagerStatus) => {
     if (client !== activeClient) return;
-    publishSerialState(isConnectedManagerState(String(status.state || "")));
+    const previousRuntime = activeRuntime;
+    const updatedRuntime = previousRuntime?.endpoint.token === token
+      ? runtimeWithManagerStatus(previousRuntime, status)
+      : previousRuntime;
+    const deviceChanged = updatedRuntime !== previousRuntime;
+    if (updatedRuntime) activeRuntime = updatedRuntime;
+    if (deviceChanged && updatedRuntime) {
+      void import("./mpremote")
+        .then(({ setSelectedConnect }) => setSelectedConnect(updatedRuntime.device))
+        .catch(() => undefined);
+    }
+    publishSerialState(isConnectedManagerState(String(status.state || "")), deviceChanged);
   });
   client.on("close", () => {
     if (client !== activeClient) return;
@@ -127,6 +147,7 @@ export async function ensureManagerStarted(device: string): Promise<SerialManage
     stubRoot,
     completionRoots: await getActiveCompletionRoots(),
     helperVersion: getExtensionVersion(),
+    descriptorPath,
   });
   const client = new SerialManagerClient(endpoint);
   activeClient = client;

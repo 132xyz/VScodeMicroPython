@@ -9,12 +9,13 @@ import argparse
 import itertools
 import json
 import os
+import queue
 import socket
 import sys
 import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, Callable, Iterator
 
 from mpyrepl.manager.protocol import decode_json_line, encode_json_line
@@ -23,6 +24,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.input import Input, create_input
 from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.patch_stdout import patch_stdout
 from mpyrepl.repl.session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
 
 
@@ -63,28 +65,48 @@ class ManagerClient:
         self._counter = itertools.count(1)
         self._socket: socket.socket | None = None
         self._reader = None
+        self._connect_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._pending_lock = threading.Lock()
+        self._pending: dict[str, queue.Queue[dict[str, Any] | Exception]] = {}
+        self._reader_stop = threading.Event()
+        self._reader_thread: threading.Thread | None = None
+        self._reader_error: Exception | None = None
 
     def connect(self) -> None:
         """Connect to the manager endpoint.
 
         :return: None
         """
-        if self._socket is not None:
-            return
-        sock = socket.create_connection((self._host, self._port), timeout=10)
-        sock.settimeout(None)
-        self._socket = sock
-        self._reader = sock.makefile("rb")
+        with self._connect_lock:
+            if self._socket is not None:
+                return
+            sock = socket.create_connection((self._host, self._port), timeout=10)
+            sock.settimeout(None)
+            self._socket = sock
+            self._reader = sock.makefile("rb")
+            self._reader_error = None
+            self._reader_stop.clear()
 
     def close(self) -> None:
         """Close the manager connection.
 
         :return: None
         """
-        reader = self._reader
-        sock = self._socket
-        self._reader = None
-        self._socket = None
+        self._reader_stop.set()
+        with self._connect_lock:
+            reader = self._reader
+            sock = self._socket
+            reader_thread = self._reader_thread
+            self._reader = None
+            self._socket = None
+            self._reader_thread = None
+        self._fail_pending(RuntimeError("manager connection closed"))
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
         if reader is not None:
             try:
                 reader.close()
@@ -95,6 +117,10 @@ class ManagerClient:
                 sock.close()
             except Exception:
                 pass
+        if reader_thread is not None and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=0.5)
+        with self._pending_lock:
+            self._reader_error = None
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
         """Send one request and wait for the matching response.
@@ -106,22 +132,79 @@ class ManagerClient:
         self.connect()
         request_id = str(next(self._counter))
         payload = {"id": request_id, "token": self._token, "method": method, "params": params or {}}
-        assert self._socket is not None
-        self._socket.sendall(encode_json_line(payload).encode("utf-8"))
-        while True:
-            message = self._read_message()
-            if "event" in message:
-                self._handle_event(message)
-                continue
-            if str(message.get("id")) != request_id:
-                continue
-            if not message.get("ok"):
-                error = message.get("error") if isinstance(message.get("error"), dict) else {}
-                raise ManagerRequestError(
-                    str(error.get("code") or "error"),
-                    str(error.get("message") or "manager request failed"),
-                )
-            return message.get("result")
+        response_queue: queue.Queue[dict[str, Any] | Exception] = queue.Queue(maxsize=1)
+        with self._pending_lock:
+            if self._reader_error is not None:
+                raise RuntimeError(str(self._reader_error)) from self._reader_error
+            self._pending[request_id] = response_queue
+        try:
+            self._ensure_reader_thread()
+            with self._send_lock:
+                sock = self._socket
+                if sock is None:
+                    raise RuntimeError("manager client is not connected")
+                sock.sendall(encode_json_line(payload).encode("utf-8"))
+            response = response_queue.get()
+        finally:
+            with self._pending_lock:
+                self._pending.pop(request_id, None)
+
+        if isinstance(response, Exception):
+            raise RuntimeError(str(response)) from response
+        if not response.get("ok"):
+            error = response.get("error") if isinstance(response.get("error"), dict) else {}
+            raise ManagerRequestError(
+                str(error.get("code") or "error"),
+                str(error.get("message") or "manager request failed"),
+            )
+        return response.get("result")
+
+    def _ensure_reader_thread(self) -> None:
+        """Start the single socket reader used by requests and live events."""
+        with self._pending_lock:
+            thread = self._reader_thread
+            if thread is not None and thread.is_alive():
+                return
+            if self._reader_error is not None:
+                raise RuntimeError(str(self._reader_error)) from self._reader_error
+            if self._reader is None:
+                raise RuntimeError("manager client is not connected")
+            thread = threading.Thread(
+                target=self._reader_loop,
+                name="mpyrepl-manager-reader",
+                daemon=True,
+            )
+            self._reader_thread = thread
+            thread.start()
+
+    def _reader_loop(self) -> None:
+        """Continuously drain manager messages so idle output is not delayed."""
+        try:
+            while not self._reader_stop.is_set():
+                message = self._read_message()
+                if "event" in message:
+                    self._handle_event(message)
+                    continue
+                request_id = str(message.get("id") or "")
+                with self._pending_lock:
+                    response_queue = self._pending.get(request_id)
+                if response_queue is not None:
+                    response_queue.put(message)
+        except Exception as exc:
+            if not self._reader_stop.is_set():
+                self._fail_pending(exc)
+
+    def _fail_pending(self, exc: Exception) -> None:
+        """Wake every blocked request after the shared reader fails."""
+        with self._pending_lock:
+            if not self._reader_stop.is_set():
+                self._reader_error = exc
+            response_queues = list(self._pending.values())
+        for response_queue in response_queues:
+            try:
+                response_queue.put_nowait(exc)
+            except queue.Full:
+                pass
 
     def _read_message(self) -> dict[str, Any]:
         reader = self._reader
@@ -136,14 +219,17 @@ class ManagerClient:
         event = message.get("event")
         payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
         if event == "stdout":
-            sys.stdout.write(str(payload.get("text") or ""))
-            sys.stdout.flush()
+            stream = sys.stdout
+            stream.write(str(payload.get("text") or ""))
+            stream.flush()
         elif event == "stderr":
-            sys.stderr.write(str(payload.get("text") or ""))
-            sys.stderr.flush()
+            stream = sys.stderr
+            stream.write(str(payload.get("text") or ""))
+            stream.flush()
         elif event == "status" and payload.get("state") == "closing":
-            sys.stderr.write("\n[mpyrepl] manager is closing\n")
-            sys.stderr.flush()
+            stream = sys.stderr
+            stream.write("\n[mpyrepl] manager is closing\n")
+            stream.flush()
 
 
 class ManagerCompleter(Completer):
@@ -243,10 +329,11 @@ def run_repl_client(endpoint: str, token: str) -> int:
         sys.stderr.flush()
         while True:
             try:
-                source = session.prompt(
-                    ">>> ",
-                    pre_run=lambda: session.default_buffer.load_history_if_not_yet_loaded(),
-                )
+                with _patch_prompt_output():
+                    source = session.prompt(
+                        ">>> ",
+                        pre_run=lambda: session.default_buffer.load_history_if_not_yet_loaded(),
+                    )
             except EOFError:
                 break
             except KeyboardInterrupt:
@@ -493,6 +580,17 @@ def _is_ctrl_c_key(key_press: KeyPress) -> bool:
 @contextmanager
 def _null_context() -> Iterator[None]:
     yield
+
+
+@contextmanager
+def _patch_prompt_output() -> Iterator[None]:
+    """Keep live output prompt-safe, with a fallback for non-console test hosts."""
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(patch_stdout(raw=True))
+        except Exception:
+            pass
+        yield
 
 
 def build_parser() -> argparse.ArgumentParser:

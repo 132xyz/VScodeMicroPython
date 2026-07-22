@@ -619,6 +619,12 @@ class MainHelperTests(unittest.TestCase):
             completion_roots=["mpy", "mpy/lib"],
             dir_query_timeout=2.0,
             helper_version="0.4.22",
+            session_file="session.json",
+            owner_version="0.4.34",
+            script_path="mpyrepl.py",
+            host="127.0.0.1",
+            manager_port=0,
+            token="tok",
         )
 
         dispatch_cases = [
@@ -645,6 +651,14 @@ class MainHelperTests(unittest.TestCase):
                         self.assertEqual(mpyrepl_app.main(), 24)
         run_async_repl.assert_called_once()
         asyncio_run.assert_called_once_with(mock.sentinel.repl_coro)
+
+        args = SimpleNamespace(command="manager", **base_args)
+        with mock.patch.object(mpyrepl_app, "ensure_python_version"):
+            with mock.patch.object(mpyrepl_app, "parse_args", return_value=args):
+                with mock.patch.object(mpyrepl_app, "run_manager", return_value=28) as run_manager:
+                    self.assertEqual(mpyrepl_app.main(), 28)
+        self.assertEqual(run_manager.call_args.kwargs["session_file"], "session.json")
+        self.assertEqual(run_manager.call_args.kwargs["owner_version"], "0.4.34")
 
         args = SimpleNamespace(command="unknown", **base_args)
         with mock.patch.object(mpyrepl_app, "ensure_python_version"):

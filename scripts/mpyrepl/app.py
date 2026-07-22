@@ -133,6 +133,9 @@ def main() -> int:
                 completion_roots=args.completion_roots,
                 dir_query_timeout=args.dir_query_timeout,
                 helper_version=args.helper_version,
+                session_file=args.session_file,
+                owner_version=args.owner_version,
+                script_path=args.script_path,
             )
         if args.command == "soft-reset":
             return run_soft_reset(config)

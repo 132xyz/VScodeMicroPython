@@ -104,7 +104,7 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 
 - The bundled Python `mpyrepl` client is the built-in board transport.
 - REPL, Run Active File, port detection, file browsing, and sync use the same transport stack.
-- A standard-library-only `agent` CLI can attach to the extension-owned manager through `.mpy-workbench/serial-manager.json` without reopening the serial port.
+- A standard-library-only `agent` CLI can attach through `.mpy-workbench/serial-manager.json` or cold-start the shared manager with `connect PORT`; the Agent itself never claims the serial port directly.
 - Runtime code is organized by responsibility under `scripts/mpyrepl/{clients,manager,runtime,completion,repl}`; `scripts/mpyrepl/__main__.py` remains the stable thin entry point.
 - The Python client provides:
   - host-side multiline editing

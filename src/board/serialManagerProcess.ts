@@ -158,7 +158,18 @@ export class SerialManagerProcess {
     for (const completionRoot of options.completionRoots || []) {
       if (completionRoot) args.push("--completion-root", completionRoot);
     }
-    args.push("--helper-version", options.helperVersion || getExtensionVersion());
+    const ownerVersion = options.helperVersion || getExtensionVersion();
+    args.push("--helper-version", ownerVersion);
+    if (options.descriptorPath) {
+      args.push(
+        "--session-file",
+        options.descriptorPath,
+        "--owner-version",
+        ownerVersion,
+        "--script-path",
+        scriptPath,
+      );
+    }
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,

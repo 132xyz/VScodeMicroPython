@@ -103,7 +103,7 @@ This means completion quality is highest when both of these are true:
 
 After the extension connects, a hidden manager process exclusively owns the physical serial port. VS Code, the human REPL, and agent CLI clients use local NDJSON RPC connections to that manager instead of opening the COM port independently. The manager serializes execution and filesystem work while keeping interrupt available out of band.
 
-The human REPL receives all device stdout/stderr, including output caused by agent commands and device background threads. One-shot agent commands consume only their own final RPC result by default, so unrelated output cannot corrupt their JSON response.
+The human REPL continuously drains manager events on a background reader, so device stdout/stderr appears while the prompt is idle without waiting for another input or completion request. Prompt-toolkit redraws the current editable input above the live output. This includes output caused by Agent commands and device background threads. One-shot Agent commands consume only their own final RPC result by default, so unrelated output cannot corrupt their JSON response.
 
 ### 4. Unicode handling
 
@@ -160,11 +160,12 @@ Useful options include:
 
 ## Agent CLI attachment
 
-After the manager becomes ready, the extension atomically publishes `.mpy-workbench/serial-manager.json` in the workspace. Agent commands search upward from the current directory, or accept `--workspace`, `--session`, or `MPY_MANAGER_SESSION`. An invalid descriptor is an error; the agent path never falls back to opening the serial port.
+After the manager becomes ready, the extension or manager atomically publishes `.mpy-workbench/serial-manager.json` in the workspace. Agent commands search upward from the current directory, or accept `--workspace`, `--session`, or `MPY_MANAGER_SESSION`. Except for `connect PORT`, which can cold-start a manager when no session exists, an invalid descriptor is an error. The agent path never falls back to opening the serial port directly.
 
 The agent path uses only the Python standard library and does not load prompt-toolkit, Pygments, or another TUI dependency. Common commands:
 
 ```bash
+python scripts/mpyrepl/__main__.py agent --workspace C:\qzrobot\mpy --timeout 20 connect COM5
 python scripts/mpyrepl/__main__.py agent status
 python scripts/mpyrepl/__main__.py agent exec --code "print(1)"
 python scripts/mpyrepl/__main__.py agent exec-file mpy/test.py
@@ -172,6 +173,9 @@ python scripts/mpyrepl/__main__.py agent ls /sd
 python scripts/mpyrepl/__main__.py agent get /sd/main.py ./main.py
 python scripts/mpyrepl/__main__.py agent put ./main.py /sd/main.py
 python scripts/mpyrepl/__main__.py agent rm /sd/old.py --yes
+python scripts/mpyrepl/__main__.py agent disconnect
+python scripts/mpyrepl/__main__.py agent --timeout 20 reconnect
+python scripts/mpyrepl/__main__.py agent shutdown
 ```
 
 `--busy wait` uses the manager's bounded queue by default, `--queue-timeout 30` limits how long a command may wait to start, and `--busy reject` fails immediately while busy. `--timeout` applies after the operation starts. Stdout contains exactly one final JSON object. With `--progress`, matching transfer progress JSONL is written to stderr.

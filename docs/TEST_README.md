@@ -99,10 +99,10 @@ npm run test:watch
 	- CLI 参数解析、补全模块、控制模块等辅助组件
 - `test_main_helpers.py`
 	- `app.py` 分发、异步 REPL 主循环、控制通道、Unicode 输出回退、soft reset 路径
-- `test_manager_protocol.py`、`test_manager_server.py`、`test_manager_session.py`
+- `test_manager_descriptor.py`、`test_manager_protocol.py`、`test_manager_server.py`、`test_manager_session.py`
 	- NDJSON 协议、客户端角色、串口操作排队、事件广播和共享设备会话
 - `test_agent_client.py`、`test_repl_client.py`
-	- 会话发现、JSON 契约、Agent 命令映射和人工 REPL manager 连接
+	- 会话发现、冷启动、串口生命周期、JSON 契约、Agent 命令映射、人工 REPL manager 连接和空闲提示符实时输出
 - `test_fs_ops.py`、`test_operation_gate.py`
 	- 文件传输、进度事件和串口操作串行化
 
@@ -114,8 +114,8 @@ npm run test:watch
 	- 26 个 test suites
 	- 110 个 tests
 - Python `mpyrepl`
-	- 187 个 tests
-	- 重构后的递归包源码覆盖率：81.8%
+	- 189 个 tests
+	- 递归包源码覆盖率：81.4%
 
 ## 测试基础设施与约定
 

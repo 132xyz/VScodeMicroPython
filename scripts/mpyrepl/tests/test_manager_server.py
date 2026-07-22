@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import unittest
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 
@@ -17,7 +19,7 @@ from mpyrepl import bootstrap
 
 bootstrap.configure_import_path()
 
-from mpyrepl.manager.protocol import READY_MARKER, encode_json_line
+from mpyrepl.manager.protocol import READY_MARKER, RpcMethodError, encode_json_line
 from mpyrepl.manager.server import ManagerServer, _fs_payload, _optional_float, _optional_int, run_manager_async
 from mpyrepl.runtime.models import ReplConfig
 
@@ -28,6 +30,10 @@ class FakeSession:
         self.closed = False
         self.cancelled = False
         self.interrupted = False
+        self.connected_port = ""
+        self.connected_baudrate = 0
+        self.disconnected = False
+        self.reconnect_timeout = 0.0
         self.reset = False
         self.executed = ""
         self.execute_instrument = True
@@ -49,6 +55,20 @@ class FakeSession:
     async def interrupt(self) -> bool:
         self.interrupted = True
         return True
+
+    async def reconnect(self, timeout: float) -> dict:
+        self.reconnect_timeout = timeout
+        return self.status()
+
+    async def connect(self, port: str, baudrate: int | None, timeout: float) -> dict:
+        self.connected_port = port
+        self.connected_baudrate = baudrate or 0
+        self.reconnect_timeout = timeout
+        return self.status()
+
+    async def disconnect(self) -> dict:
+        self.disconnected = True
+        return {**self.status(), "state": "stopped"}
 
     async def soft_reset(self) -> bool:
         self.reset = True
@@ -185,17 +205,34 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await server._dispatch("manager.cancel", {}, "2"))
         self.assertTrue(await server._dispatch("device.interrupt", {}, "3"))
-        self.assertTrue(await server._dispatch("device.softReset", {}, "4"))
-        self.assertEqual((await server._dispatch("repl.complete", {"text": "abc", "cursor": 1}, "5"))[0]["text"], "abc")
-        self.assertTrue(await server._dispatch("repl.clearRuntimeCache", {}, "6"))
-        self.assertEqual((await server._dispatch("fs.listdir", {"path": "/"}, "7"))["op"], "listdir")
-        self.assertEqual((await server._dispatch("fs.rename", {"src": "/a", "dst": "/b"}, "8"))["op"], "rename")
-        self.assertEqual((await server._dispatch("fs.readFile", {"devicePath": "/a", "localPath": "a"}, "9"))["op"], "read_file")
-        self.assertEqual((await server._dispatch("fs.writeFile", {"devicePath": "/a", "localPath": "a"}, "10"))["op"], "write_file")
-        self.assertEqual((await server._dispatch("fs.exec", {"source": "print(1)"}, "11"))["op"], "exec")
+        device_statuses: list[dict] = []
+        server.set_device_status_callback(device_statuses.append)
+        connect_status = await server._dispatch(
+            "device.connect",
+            {"port": "COM22", "baudrate": 230400, "connectTimeoutMs": 2500},
+            "4",
+        )
+        self.assertEqual(connect_status["state"], "ready")
+        disconnected_status = await server._dispatch("device.disconnect", {}, "5")
+        self.assertEqual(disconnected_status["state"], "stopped")
+        reconnect_status = await server._dispatch("device.reconnect", {"reconnectTimeoutMs": 1250}, "6")
+        self.assertEqual(reconnect_status["state"], "ready")
+        self.assertTrue(await server._dispatch("device.softReset", {}, "7"))
+        self.assertEqual((await server._dispatch("repl.complete", {"text": "abc", "cursor": 1}, "8"))[0]["text"], "abc")
+        self.assertTrue(await server._dispatch("repl.clearRuntimeCache", {}, "9"))
+        self.assertEqual((await server._dispatch("fs.listdir", {"path": "/"}, "10"))["op"], "listdir")
+        self.assertEqual((await server._dispatch("fs.rename", {"src": "/a", "dst": "/b"}, "11"))["op"], "rename")
+        self.assertEqual((await server._dispatch("fs.readFile", {"devicePath": "/a", "localPath": "a"}, "12"))["op"], "read_file")
+        self.assertEqual((await server._dispatch("fs.writeFile", {"devicePath": "/a", "localPath": "a"}, "13"))["op"], "write_file")
+        self.assertEqual((await server._dispatch("fs.exec", {"source": "print(1)"}, "14"))["op"], "exec")
         self.assertTrue(session.cancelled)
         self.assertTrue(session.interrupted)
+        self.assertEqual(session.connected_port, "COM22")
+        self.assertEqual(session.connected_baudrate, 230400)
+        self.assertTrue(session.disconnected)
+        self.assertEqual(session.reconnect_timeout, 1.25)
         self.assertTrue(session.reset)
+        self.assertEqual(len(device_statuses), 2)
         await server.close()
 
     async def test_hello_registers_client_roles(self) -> None:
@@ -215,6 +252,8 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(hello["result"]["protocolVersion"], 1)
         self.assertEqual(hello["result"]["role"], "agent")
+        self.assertIn("device-connect", hello["result"]["capabilities"])
+        self.assertIn("device-disconnect", hello["result"]["capabilities"])
         self.assertEqual(hello["result"]["status"]["agentClientCount"], 1)
         await _close_test_writer(writer)
         await server.close()
@@ -390,6 +429,56 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(FakeManagerSession.kwargs["helper_version"], "0.4.22")
         self.assertIn(READY_MARKER, output.getvalue())
         self.assertIn('"token":"tok"', output.getvalue())
+
+    async def test_run_manager_async_publishes_and_cleans_descriptor(self) -> None:
+        class ShutdownServer(ManagerServer):
+            async def serve_until_shutdown(self) -> int:
+                await self.close()
+                return 0
+
+        class FakeManagerSession(FakeSession):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__()
+
+        publisher = mock.Mock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_file = str(Path(temp_dir) / "serial-manager.json")
+            with mock.patch("mpyrepl.manager.server.ManagerServer", ShutdownServer), mock.patch(
+                "mpyrepl.manager.server.ManagerSession",
+                FakeManagerSession,
+            ), mock.patch(
+                "mpyrepl.manager.server.ManagerDescriptorPublisher",
+                return_value=publisher,
+            ) as publisher_factory:
+                result = await run_manager_async(
+                    ReplConfig(port="COM5", baudrate=115200),
+                    token="tok",
+                    session_file=session_file,
+                    owner_version="0.4.34",
+                    script_path=__file__,
+                    ready_stream=StringIO(),
+                )
+
+        self.assertEqual(result, 0)
+        descriptor = publisher_factory.call_args.args[1]
+        self.assertEqual(descriptor.device, "COM5")
+        self.assertEqual(descriptor.extensionVersion, "0.4.34")
+        publisher.publish.assert_called_once()
+        publisher.close.assert_called_once()
+
+    async def test_connect_rpc_rejects_non_positive_timeout(self) -> None:
+        server = ManagerServer("tok")
+        await server.start(FakeSession())  # type: ignore[arg-type]
+
+        with self.assertRaises(RpcMethodError) as raised:
+            await server._dispatch(
+                "device.connect",
+                {"port": "COM5", "connectTimeoutMs": 0},
+                "connect",
+            )
+
+        self.assertEqual(raised.exception.code, "invalid_params")
+        await server.close()
 
     def test_fs_payload_accepts_camel_case_paths(self) -> None:
         payload = _fs_payload(

@@ -103,7 +103,7 @@ python -m pip install --user pyserial
 
 - 内置 `mpyrepl` Python 客户端是当前开发板传输路径。
 - REPL, 运行活动文件, 串口检测, 文件浏览和同步都使用同一套传输栈。
-- 标准库依赖的 `agent` CLI 可以通过 `.mpy-workbench/serial-manager.json` 连接扩展持有的 manager,不会重新打开串口。
+- 标准库依赖的 `agent` CLI 可以通过 `.mpy-workbench/serial-manager.json` 连接共享 manager,也能用 `connect PORT` 冷启动 manager;Agent 本身不会直接占用串口。
 - 运行代码按职责组织在 `scripts/mpyrepl/{clients,manager,runtime,completion,repl}` 下,`scripts/mpyrepl/__main__.py` 保持为稳定的薄入口。
 - Python 客户端提供：
   - 主机侧多行编辑

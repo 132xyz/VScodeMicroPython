@@ -1,6 +1,10 @@
 jest.mock("vscode");
 
-import { isConnectedManagerState, wrapReplClientCommand } from "../src/board/serialManager";
+import {
+  isConnectedManagerState,
+  runtimeWithManagerStatus,
+  wrapReplClientCommand,
+} from "../src/board/serialManager";
 
 describe("serialManager command helpers", () => {
   beforeEach(() => {
@@ -27,5 +31,20 @@ describe("serialManager command helpers", () => {
     expect(isConnectedManagerState("stopped")).toBe(false);
     expect(isConnectedManagerState("failed")).toBe(false);
     expect(isConnectedManagerState("closing")).toBe(false);
+  });
+
+  test("manager status updates the active runtime device without changing its endpoint", () => {
+    const runtime = {
+      device: "COM5",
+      endpoint: { host: "127.0.0.1", port: 50123, token: "tok" },
+      descriptorPath: "/workspace/.mpy-workbench/serial-manager.json",
+    };
+
+    const updated = runtimeWithManagerStatus(runtime, { state: "ready", port: " COM7 " });
+
+    expect(updated).toEqual({ ...runtime, device: "COM7" });
+    expect(updated?.endpoint).toBe(runtime.endpoint);
+    expect(runtimeWithManagerStatus(updated, { state: "stopped", port: "COM7" })).toBe(updated);
+    expect(runtimeWithManagerStatus(undefined, { state: "ready", port: "COM7" })).toBeUndefined();
   });
 });

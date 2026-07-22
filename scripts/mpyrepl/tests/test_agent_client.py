@@ -54,7 +54,12 @@ class FakeClient:
     def call(self, method: str, params=None, timeout: float = 30.0):
         self.calls.append((method, params or {}, timeout))
         if method == "manager.hello":
-            return {"protocolVersion": 1, "managerInstanceId": "instance-1", "role": "agent"}
+            return {
+                "protocolVersion": 1,
+                "managerInstanceId": "instance-1",
+                "role": "agent",
+                "status": {"state": "ready", "port": "COM5", "busy": False},
+            }
         if method == "manager.status":
             return {"state": "ready", "busy": False, "queuedOperationCount": 0}
         if method == "repl.exec":
@@ -71,6 +76,35 @@ class DeviceErrorClient(FakeClient):
         if method == "repl.exec":
             return {"stdout": "", "stderr": "Traceback\r\n"}
         return result
+
+
+class FakeProcess:
+    def __init__(self, pid: int = 456, exit_code=None) -> None:
+        self.pid = pid
+        self.exit_code = exit_code
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return self.exit_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.exit_code = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.exit_code = -9
+
+    def wait(self, timeout=None):
+        return self.exit_code
+
+
+class BrokenHelloClient(FakeClient):
+    def call(self, method: str, params=None, timeout: float = 30.0):
+        if method == "manager.hello":
+            raise ConnectionError("stale endpoint")
+        return super().call(method, params, timeout)
 
 
 def write_descriptor(root: Path, **overrides) -> Path:
@@ -154,6 +188,14 @@ class AgentClientTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(agent_client.discover_session_file(workspace=str(root)), expected)
 
+    def test_cold_start_session_target_defaults_to_current_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                target = agent_client.resolve_session_target(cwd=root)
+
+        self.assertEqual(target, root.resolve() / ".mpy-workbench" / "serial-manager.json")
+
     def test_rejects_non_loopback_and_protocol_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -209,6 +251,10 @@ class AgentClientTests(unittest.TestCase):
                 (["status"], "manager.status"),
                 (["wait-idle", "--idle-timeout", "1"], "manager.status"),
                 (["interrupt"], "device.interrupt"),
+                (["connect", "COM7"], "device.connect"),
+                (["disconnect"], "device.disconnect"),
+                (["reconnect"], "device.reconnect"),
+                (["shutdown"], "manager.shutdown"),
                 (["soft-reset"], "device.softReset"),
                 (["exec-file", str(source_file)], "repl.exec"),
                 (["ls", "/sd"], "fs.listdir"),
@@ -225,6 +271,178 @@ class AgentClientTests(unittest.TestCase):
                     args = agent_client.build_agent_parser().parse_args(argv)
                     agent_client.execute_agent_command(client, args)
                     self.assertEqual(client.calls[-1][0], expected_method)
+
+    def test_reconnect_uses_operation_timeout_and_manager_queue(self) -> None:
+        args = agent_client.build_agent_parser().parse_args(
+            ["--busy", "reject", "--queue-timeout", "3", "--timeout", "20", "reconnect"]
+        )
+        client = FakeClient("127.0.0.1", 1, "x")
+
+        agent_client.execute_agent_command(client, args)
+
+        method, params, timeout = client.calls[-1]
+        self.assertEqual(method, "device.reconnect")
+        self.assertEqual(params["queuePolicy"], "reject")
+        self.assertEqual(params["queueTimeoutMs"], 3000)
+        self.assertEqual(params["reconnectTimeoutMs"], 20000)
+        self.assertEqual(timeout, 28.0)
+
+    def test_connect_existing_manager_sends_selected_port_and_baudrate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            descriptor = write_descriptor(Path(temp_dir))
+            args = agent_client.build_agent_parser().parse_args(
+                ["--session", str(descriptor), "--timeout", "20", "connect", "COM7", "--baudrate", "230400"]
+            )
+
+            exit_code, payload = agent_client.run_agent(args, FakeClient)
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        method, params, _ = FakeClient.instances[-1].calls[-1]
+        self.assertEqual(method, "device.connect")
+        self.assertEqual(params["port"], "COM7")
+        self.assertEqual(params["baudrate"], 230400)
+        self.assertEqual(params["connectTimeoutMs"], 20000)
+
+    def test_connect_cold_starts_manager_and_does_not_reopen_ready_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = agent_client.build_agent_parser().parse_args(
+                ["--workspace", str(root), "--timeout", "20", "connect", "COM5"]
+            )
+            calls: list[tuple[Path, str, int, float]] = []
+            process = FakeProcess(pid=456)
+
+            def bootstrap(path: Path, port: str, baudrate: int, timeout: float):
+                calls.append((path, port, baudrate, timeout))
+                descriptor = {
+                    "schemaVersion": 1,
+                    "protocolVersion": 1,
+                    "managerInstanceId": "instance-1",
+                    "host": "127.0.0.1",
+                    "port": 12345,
+                    "token": "secret",
+                    "managerPid": process.pid,
+                    "device": "COM5",
+                }
+                return agent_client.ManagerBootstrapResult(descriptor, process)  # type: ignore[arg-type]
+
+            exit_code, payload = agent_client.run_agent(args, FakeClient, bootstrap)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["result"]["state"], "ready")
+        expected_session = root.resolve() / ".mpy-workbench" / "serial-manager.json"
+        self.assertEqual(calls, [(expected_session, "COM5", 115200, 20.0)])
+        self.assertEqual(FakeClient.instances[-1].calls[-1][0], "manager.hello")
+
+    def test_bootstrap_manager_accepts_self_published_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = Path(temp_dir) / ".mpy-workbench" / "serial-manager.json"
+            process = FakeProcess(pid=789)
+
+            def factory(path: Path, port: str, baudrate: int, log_path: Path):
+                self.assertEqual(port, "COM8")
+                self.assertEqual(baudrate, 230400)
+                write_descriptor(Path(temp_dir), device="COM8", managerPid=process.pid)
+                return process
+
+            result = agent_client.bootstrap_manager(
+                session_path,
+                "COM8",
+                230400,
+                1.0,
+                factory,  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(result.descriptor["device"], "COM8")
+        self.assertIs(result.process, process)
+
+    def test_bootstrap_manager_uses_competing_descriptor_and_stops_own_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_path = root / ".mpy-workbench" / "serial-manager.json"
+            process = FakeProcess(pid=789)
+
+            def factory(path: Path, port: str, baudrate: int, log_path: Path):
+                write_descriptor(root, device=port, managerPid=999)
+                return process
+
+            result = agent_client.bootstrap_manager(session_path, "COM8", 115200, 1.0, factory)  # type: ignore[arg-type]
+
+        self.assertIsNone(result.process)
+        self.assertTrue(process.terminated)
+        self.assertEqual(result.descriptor["managerPid"], 999)
+
+    def test_bootstrap_manager_reports_process_failure_and_log_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_path = Path(temp_dir) / ".mpy-workbench" / "serial-manager.json"
+
+            def factory(path: Path, port: str, baudrate: int, log_path: Path):
+                log_path.write_text("port busy", encoding="utf-8")
+                return FakeProcess(pid=789, exit_code=2)
+
+            with self.assertRaisesRegex(agent_client.AgentCliError, "port busy") as raised:
+                agent_client.bootstrap_manager(session_path, "COM8", 115200, 0.01, factory)  # type: ignore[arg-type]
+
+        self.assertEqual(raised.exception.code, "manager_start_failed")
+
+    def test_spawn_manager_uses_current_python_and_suppresses_ready_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_path = root / "serial-manager.json"
+            log_path = root / "startup.log"
+            process = FakeProcess(pid=123)
+            with mock.patch("mpyrepl.clients.agent.subprocess.Popen", return_value=process) as popen:
+                result = agent_client._spawn_manager_process(session_path, "COM9", 230400, log_path)
+
+        command = popen.call_args.args[0]
+        options = popen.call_args.kwargs
+        self.assertIs(result, process)
+        self.assertEqual(command[0], sys.executable)
+        self.assertIn("--session-file", command)
+        self.assertIn(str(session_path), command)
+        self.assertIn("COM9", command)
+        self.assertEqual(options["stdout"], agent_client.subprocess.DEVNULL)
+        self.assertTrue(options["close_fds"])
+        if os.name == "nt":
+            self.assertIn("creationflags", options)
+        else:
+            self.assertTrue(options["start_new_session"])
+
+    def test_connect_replaces_confirmed_stale_descriptor_before_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            descriptor_path = write_descriptor(root)
+            args = agent_client.build_agent_parser().parse_args(
+                ["--session", str(descriptor_path), "connect", "COM6"]
+            )
+            process = FakeProcess(pid=456)
+            created = {
+                "schemaVersion": 1,
+                "protocolVersion": 1,
+                "managerInstanceId": "instance-1",
+                "host": "127.0.0.1",
+                "port": 23456,
+                "token": "new-secret",
+                "managerPid": process.pid,
+                "device": "COM6",
+            }
+            client_calls = 0
+
+            def client_factory(*args, **kwargs):
+                nonlocal client_calls
+                client_calls += 1
+                return BrokenHelloClient(*args, **kwargs) if client_calls == 1 else FakeClient(*args, **kwargs)
+
+            def bootstrap(path: Path, port: str, baudrate: int, timeout: float):
+                self.assertFalse(path.exists())
+                return agent_client.ManagerBootstrapResult(created, process)  # type: ignore[arg-type]
+
+            exit_code, payload = agent_client.run_agent(args, client_factory, bootstrap)
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(client_calls, 2)
 
     def test_exec_device_stderr_is_a_failed_agent_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

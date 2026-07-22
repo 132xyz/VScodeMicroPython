@@ -103,7 +103,7 @@ REPL 提示符由 prompt-toolkit 实现，而不是完全依赖开发板侧的�
 
 扩展连接开发板后,隐藏的 manager 进程独占物理串口.VS Code、人工 REPL 和 Agent CLI 都通过本机 NDJSON RPC 连接这个 manager,不会分别打开 COM 口.代码执行和文件操作由 manager 串行调度,中断仍可通过带外请求立即发送.
 
-人工 REPL 会接收所有设备 stdout/stderr,包括 Agent 执行代码以及设备后台线程产生的输出.Agent 的一次性命令默认只解析自己的最终 RPC 结果,不会把其他客户端的输出混入 JSON.
+人工 REPL 使用后台读取线程持续消费 manager 事件,因此停留在提示符且没有输入时,设备 stdout/stderr 也会直接显示,不再等待下一次输入或补全请求.prompt-toolkit 会在实时输出后重绘当前正在编辑的内容.这包括 Agent 执行代码和设备后台线程产生的输出.Agent 的一次性命令默认只解析自己的最终 RPC 结果,不会把其他客户端的输出混入 JSON.
 
 ### 4. Unicode 处理
 
@@ -160,11 +160,12 @@ python scripts/mpyrepl/__main__.py --port COM4 async-repl --stub-root .mpy-workb
 
 ## Agent 命令行接入
 
-manager 就绪后,扩展会原子写入工作区的 `.mpy-workbench/serial-manager.json`.Agent 命令从当前目录向上查找该文件,也可以使用 `--workspace`、`--session` 或 `MPY_MANAGER_SESSION` 显式指定.描述文件无效时命令会失败,不会回退为直接打开串口.
+manager 就绪后,扩展或 manager 自身会原子写入工作区的 `.mpy-workbench/serial-manager.json`.Agent 命令从当前目录向上查找该文件,也可以使用 `--workspace`、`--session` 或 `MPY_MANAGER_SESSION` 显式指定.除 `connect PORT` 可在缺少会话时冷启动 manager 外,描述文件无效时命令会失败,不会回退为直接打开串口.
 
 Agent 路径只使用 Python 标准库,不会加载 prompt-toolkit、Pygments 或其他 TUI 依赖.常用命令:
 
 ```bash
+python scripts/mpyrepl/__main__.py agent --workspace C:\qzrobot\mpy --timeout 20 connect COM5
 python scripts/mpyrepl/__main__.py agent status
 python scripts/mpyrepl/__main__.py agent exec --code "print(1)"
 python scripts/mpyrepl/__main__.py agent exec-file mpy/test.py
@@ -172,6 +173,9 @@ python scripts/mpyrepl/__main__.py agent ls /sd
 python scripts/mpyrepl/__main__.py agent get /sd/main.py ./main.py
 python scripts/mpyrepl/__main__.py agent put ./main.py /sd/main.py
 python scripts/mpyrepl/__main__.py agent rm /sd/old.py --yes
+python scripts/mpyrepl/__main__.py agent disconnect
+python scripts/mpyrepl/__main__.py agent --timeout 20 reconnect
+python scripts/mpyrepl/__main__.py agent shutdown
 ```
 
 `--busy wait`默认在 manager 端进行有界排队,`--queue-timeout 30`控制开始执行前的最长等待时间,`--busy reject`用于忙碌时立即失败.`--timeout`控制操作开始后的等待时间.标准输出始终是一条最终 JSON;使用 `--progress`时,匹配当前传输的进度 JSONL 写入 stderr.

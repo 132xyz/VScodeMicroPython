@@ -259,6 +259,72 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state, "failed")
         self.assertTrue(transport_holder["transport"].closed)
 
+    async def test_reconnect_retries_until_reenumerated_device_is_ready(self) -> None:
+        transports: list[FakeTransport] = []
+
+        def factory(config: ReplConfig) -> FakeTransport:
+            transport: FakeTransport
+            if len(transports) < 2:
+                transport = OpenErrorTransport(config)
+            else:
+                transport = FakeTransport(config)
+            transports.append(transport)
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+
+        status = await session.reconnect(0.1, retry_interval=0.001)
+
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(len(transports), 3)
+        self.assertTrue(transports[0].closed)
+        self.assertTrue(transports[1].closed)
+        self.assertTrue(transports[2].opened)
+        await session.close()
+
+    async def test_connect_switches_port_and_disconnect_keeps_manager_stopped(self) -> None:
+        transports: list[FakeTransport] = []
+
+        def factory(config: ReplConfig) -> FakeTransport:
+            transport = FakeTransport(config)
+            transports.append(transport)
+            return transport
+
+        session = ManagerSession(
+            ReplConfig(port="COM21", baudrate=115200),
+            emit_event=lambda event, payload: self.events.append((event, payload)),
+            transport_factory=factory,
+        )
+        await session.open()
+
+        connected = await session.connect(" COM22 ", 230400, 0.1)
+        disconnected = await session.disconnect()
+
+        self.assertEqual(connected["state"], "ready")
+        self.assertEqual(connected["port"], "COM22")
+        self.assertEqual(connected["baudrate"], 230400)
+        self.assertEqual(disconnected["state"], "stopped")
+        self.assertEqual(disconnected["port"], "COM22")
+        self.assertEqual(len(transports), 2)
+        self.assertTrue(transports[0].closed)
+        self.assertTrue(transports[1].closed)
+
+    async def test_connect_rejects_invalid_target_parameters(self) -> None:
+        with self.assertRaises(RpcMethodError) as empty_port:
+            await self.session.connect(" ", 115200, 1.0)
+        with self.assertRaises(RpcMethodError) as bad_baudrate:
+            await self.session.connect("COM22", 0, 1.0)
+        with self.assertRaises(RpcMethodError) as bad_timeout:
+            await self.session.connect("COM22", 115200, 0)
+
+        self.assertEqual(empty_port.exception.code, "invalid_params")
+        self.assertEqual(bad_baudrate.exception.code, "invalid_params")
+        self.assertEqual(bad_timeout.exception.code, "invalid_params")
+
     async def test_helper_load_failure_sets_failed_state(self) -> None:
         def factory(config: ReplConfig) -> HelperErrorTransport:
             self.transport = HelperErrorTransport(config)

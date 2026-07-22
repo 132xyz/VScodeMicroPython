@@ -72,6 +72,7 @@ export type SerialManagerStartOptions = {
   stubRoot?: string;
   completionRoots?: string[];
   helperVersion?: string;
+  descriptorPath?: string;
   host?: string;
   token?: string;
   startupTimeoutMs?: number;

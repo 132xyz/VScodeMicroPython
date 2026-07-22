@@ -7,12 +7,15 @@ import itertools
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from mpyrepl.manager.descriptor import remove_descriptor
 from mpyrepl.manager.protocol import PROTOCOL_VERSION, decode_json_line, encode_json_line
 
 
@@ -20,6 +23,10 @@ DESCRIPTOR_SCHEMA_VERSION = 1
 DESCRIPTOR_NAME = "serial-manager.json"
 WORKBENCH_DIR = ".mpy-workbench"
 SESSION_ENV = "MPY_MANAGER_SESSION"
+DEFAULT_BAUDRATE = 115200
+STARTUP_POLL_INTERVAL = 0.1
+STARTUP_RETRY_INTERVAL = 0.25
+STARTUP_LOG_NAME = "serial-manager-startup.log"
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -55,6 +62,14 @@ class AgentArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:
         raise AgentCliError("usage", message, EXIT_USAGE)
+
+
+@dataclass(frozen=True)
+class ManagerBootstrapResult:
+    """Descriptor produced while starting a manager for `agent connect`."""
+
+    descriptor: dict[str, Any]
+    process: subprocess.Popen[bytes] | None
 
 
 class AgentManagerClient:
@@ -194,6 +209,12 @@ def build_agent_parser() -> argparse.ArgumentParser:
     mv_parser.add_argument("target_path")
 
     commands.add_parser("interrupt")
+    connect_parser = commands.add_parser("connect", help="Connect the shared manager to a serial port")
+    connect_parser.add_argument("device_port")
+    connect_parser.add_argument("--baudrate", type=int, default=None)
+    commands.add_parser("disconnect", help="Release the serial port but keep the manager running")
+    commands.add_parser("reconnect", help="Reopen the manager-owned serial connection")
+    commands.add_parser("shutdown", help="Stop the shared serial manager")
     commands.add_parser("soft-reset")
     return parser
 
@@ -218,6 +239,24 @@ def discover_session_file(session: str = "", workspace: str = "", cwd: Path | No
         "no active serial manager descriptor was found",
         EXIT_DISCOVERY,
     )
+
+
+def resolve_session_target(session: str = "", workspace: str = "", cwd: Path | None = None) -> Path:
+    """Resolve where a cold-started manager should publish its descriptor."""
+    if session:
+        return Path(session).expanduser().resolve()
+    from_env = os.environ.get(SESSION_ENV, "").strip()
+    if from_env:
+        return Path(from_env).expanduser().resolve()
+    if workspace:
+        return (Path(workspace).expanduser().resolve() / WORKBENCH_DIR / DESCRIPTOR_NAME)
+    current = (cwd or Path.cwd()).resolve()
+    try:
+        return discover_session_file(cwd=current)
+    except AgentCliError as exc:
+        if exc.code != "manager_not_found":
+            raise
+    return current / WORKBENCH_DIR / DESCRIPTOR_NAME
 
 
 def load_session_descriptor(path: Path) -> dict[str, Any]:
@@ -266,9 +305,28 @@ def execute_agent_command(client: AgentManagerClient, args: argparse.Namespace) 
         return _wait_idle(client, args.idle_timeout)
     if command == "interrupt":
         return client.call("device.interrupt", timeout=5.0)
+    if command == "shutdown":
+        return client.call("manager.shutdown", timeout=5.0)
 
     params = _queue_params(args)
     timeout = _rpc_timeout(args)
+    if command == "connect":
+        if args.baudrate is not None and args.baudrate <= 0:
+            raise AgentCliError("usage", "--baudrate must be greater than zero", EXIT_USAGE)
+        params.update(
+            {
+                "port": args.device_port,
+                "connectTimeoutMs": int(args.timeout * 1000),
+            }
+        )
+        if args.baudrate is not None:
+            params["baudrate"] = args.baudrate
+        return client.call("device.connect", params, timeout=timeout)
+    if command == "disconnect":
+        return client.call("device.disconnect", params, timeout=timeout)
+    if command == "reconnect":
+        params["reconnectTimeoutMs"] = int(args.timeout * 1000)
+        return client.call("device.reconnect", params, timeout=timeout)
     if command == "soft-reset":
         return client.call("device.softReset", params, timeout=timeout)
     if command in {"exec", "exec-file"}:
@@ -294,6 +352,140 @@ def execute_agent_command(client: AgentManagerClient, args: argparse.Namespace) 
     if command == "mv":
         return client.call("fs.rename", {**params, "src": args.source_path, "dst": args.target_path}, timeout=timeout)
     raise AgentCliError("usage", "unsupported agent command: %s" % command, EXIT_USAGE)
+
+
+def _manager_script_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "__main__.py"
+
+
+def _package_version(script_path: Path) -> str:
+    package_json = script_path.parents[2] / "package.json"
+    try:
+        payload = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return str(version).strip() if isinstance(version, str) and version.strip() else "unknown"
+
+
+def _spawn_manager_process(
+    session_path: Path,
+    device_port: str,
+    baudrate: int,
+    log_path: Path,
+) -> subprocess.Popen[bytes]:
+    """Start one detached manager attempt without exposing its ready token."""
+    script_path = _manager_script_path()
+    owner_version = _package_version(script_path)
+    command = [
+        sys.executable,
+        str(script_path),
+        "--port",
+        device_port,
+        "--baudrate",
+        str(baudrate),
+        "manager",
+        "--session-file",
+        str(session_path),
+        "--owner-version",
+        owner_version,
+        "--script-path",
+        str(script_path),
+        "--helper-version",
+        owner_version,
+    ]
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "cwd": str(script_path.parents[2]),
+        "env": env,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0,
+        )
+    else:
+        options["start_new_session"] = True
+    with log_path.open("ab") as error_stream:
+        return subprocess.Popen(command, stderr=error_stream, **options)
+
+
+def _terminate_started_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2.0)
+
+
+def _startup_log_detail(log_path: Path) -> str:
+    try:
+        data = log_path.read_bytes()[-4096:]
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace").strip()
+
+
+def bootstrap_manager(
+    session_path: Path,
+    device_port: str,
+    baudrate: int,
+    timeout: float,
+    process_factory: Callable[[Path, str, int, Path], subprocess.Popen[bytes]] = _spawn_manager_process,
+) -> ManagerBootstrapResult:
+    """Start a manager and wait for its self-published descriptor."""
+    target_port = device_port.strip()
+    if not target_port:
+        raise AgentCliError("usage", "serial port must not be empty", EXIT_USAGE)
+    if baudrate <= 0:
+        raise AgentCliError("usage", "--baudrate must be greater than zero", EXIT_USAGE)
+    if timeout <= 0:
+        raise AgentCliError("usage", "--timeout must be greater than zero", EXIT_USAGE)
+
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = session_path.parent / STARTUP_LOG_NAME
+    try:
+        log_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        process = process_factory(session_path, target_port, baudrate, log_path)
+        while time.monotonic() < deadline:
+            if session_path.is_file():
+                descriptor = load_session_descriptor(session_path)
+                manager_pid = descriptor.get("managerPid")
+                if isinstance(manager_pid, int):
+                    if manager_pid != process.pid:
+                        _terminate_started_process(process)
+                        return ManagerBootstrapResult(descriptor, None)
+                    return ManagerBootstrapResult(descriptor, process)
+            exit_code = process.poll()
+            if exit_code is not None:
+                last_error = "manager exited before publishing its descriptor with code %s" % exit_code
+                break
+            time.sleep(STARTUP_POLL_INTERVAL)
+        if process.poll() is None:
+            _terminate_started_process(process)
+            break
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(STARTUP_RETRY_INTERVAL, remaining))
+
+    detail = _startup_log_detail(log_path)
+    message = last_error or "manager did not publish its descriptor before timeout"
+    if detail:
+        message = "%s: %s" % (message, detail)
+    raise AgentCliError("manager_start_failed", message, EXIT_TRANSPORT)
 
 
 def _read_source_file(local_path: str) -> str:
@@ -328,14 +520,16 @@ def _exit_for_rpc(code: str) -> int:
     return EXIT_RPC
 
 
-def run_agent(args: argparse.Namespace, client_factory: Callable[..., AgentManagerClient] = AgentManagerClient) -> tuple[int, dict[str, Any]]:
-    session_path = discover_session_file(args.session, args.workspace)
-    descriptor = load_session_descriptor(session_path)
+def _open_manager_client(
+    descriptor: dict[str, Any],
+    progress: bool,
+    client_factory: Callable[..., AgentManagerClient],
+) -> tuple[AgentManagerClient, dict[str, Any]]:
     client = client_factory(
         str(descriptor["host"]),
         int(descriptor["port"]),
         str(descriptor["token"]),
-        progress=bool(args.progress),
+        progress=progress,
     )
     try:
         hello = client.call("manager.hello", {"role": "agent"}, timeout=5.0)
@@ -344,7 +538,84 @@ def run_agent(args: argparse.Namespace, client_factory: Callable[..., AgentManag
         expected_instance = descriptor.get("managerInstanceId")
         if expected_instance and hello.get("managerInstanceId") != expected_instance:
             raise AgentCliError("stale_session", "session descriptor belongs to another manager instance", EXIT_DISCOVERY)
-        result = execute_agent_command(client, args)
+        return client, hello
+    except Exception:
+        client.close()
+        raise
+
+
+def _remove_stale_descriptor(session_path: Path, descriptor: dict[str, Any]) -> None:
+    token = descriptor.get("token")
+    instance_id = descriptor.get("managerInstanceId")
+    if isinstance(token, str) and token:
+        remove_descriptor(
+            session_path,
+            expected_token=token,
+            expected_instance_id=instance_id if isinstance(instance_id, str) else "",
+        )
+
+
+def run_agent(
+    args: argparse.Namespace,
+    client_factory: Callable[..., AgentManagerClient] = AgentManagerClient,
+    bootstrap_factory: Callable[[Path, str, int, float], ManagerBootstrapResult] = bootstrap_manager,
+) -> tuple[int, dict[str, Any]]:
+    is_connect = args.agent_command == "connect"
+    session_path = (
+        resolve_session_target(args.session, args.workspace)
+        if is_connect
+        else discover_session_file(args.session, args.workspace)
+    )
+    descriptor: dict[str, Any] | None
+    try:
+        descriptor = load_session_descriptor(session_path)
+    except AgentCliError as exc:
+        if not is_connect or exc.code != "manager_not_found":
+            raise
+        descriptor = None
+
+    client: AgentManagerClient | None = None
+    hello: dict[str, Any] | None = None
+    if descriptor is not None:
+        try:
+            client, hello = _open_manager_client(descriptor, bool(args.progress), client_factory)
+        except (AgentCliError, ManagerRequestError):
+            raise
+        except (ConnectionError, OSError, RuntimeError):
+            if not is_connect:
+                raise
+            _remove_stale_descriptor(session_path, descriptor)
+            descriptor = None
+
+    bootstrap: ManagerBootstrapResult | None = None
+    if descriptor is None:
+        if not is_connect:
+            raise AgentCliError("manager_not_found", "no active serial manager descriptor was found", EXIT_DISCOVERY)
+        _queue_params(args)
+        target_port = str(args.device_port or "").strip()
+        baudrate = DEFAULT_BAUDRATE if args.baudrate is None else args.baudrate
+        bootstrap = bootstrap_factory(session_path, target_port, baudrate, args.timeout)
+        descriptor = bootstrap.descriptor
+        try:
+            client, hello = _open_manager_client(descriptor, bool(args.progress), client_factory)
+        except Exception:
+            if bootstrap.process is not None:
+                _terminate_started_process(bootstrap.process)
+                _remove_stale_descriptor(session_path, descriptor)
+            raise
+
+    if client is None or hello is None:
+        raise AgentCliError("manager_unavailable", "failed to attach to the serial manager", EXIT_TRANSPORT)
+
+    try:
+        manager_pid = descriptor.get("managerPid")
+        started_here = bootstrap is not None and bootstrap.process is not None and manager_pid == bootstrap.process.pid
+        if is_connect and started_here:
+            result = hello.get("status")
+            if not isinstance(result, dict):
+                result = client.call("manager.status", timeout=5.0)
+        else:
+            result = execute_agent_command(client, args)
         if args.agent_command in {"exec", "exec-file"} and isinstance(result, dict) and result.get("stderr"):
             return EXIT_DEVICE, {
                 "ok": False,

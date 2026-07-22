@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import secrets
 import sys
+from pathlib import Path
 from typing import Any, Awaitable, Callable, TextIO
 
+from mpyrepl.manager.descriptor import ManagerDescriptorPublisher, create_descriptor
 from mpyrepl.manager.protocol import (
     DEFAULT_HOST,
     ERROR_AUTH,
@@ -73,6 +75,7 @@ class ManagerServer:
         self._queued_operations = 0
         self._shutdown_event = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._device_status_callback: Callable[[dict[str, Any]], None] | None = None
 
     @property
     def host(self) -> str:
@@ -89,6 +92,15 @@ class ManagerServer:
         :return: Port number.
         """
         return self._port
+
+    @property
+    def instance_id(self) -> str:
+        """Return the stable identifier for this manager process."""
+        return self._instance_id
+
+    def set_device_status_callback(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        """Set the callback used to persist device configuration changes."""
+        self._device_status_callback = callback
 
     async def start(self, session: ManagerSession) -> None:
         """Open the session and start listening for clients.
@@ -257,6 +269,9 @@ class ManagerServer:
                     "agent-cli",
                     "client-roles",
                     "bounded-queue",
+                    "device-connect",
+                    "device-disconnect",
+                    "device-reconnect",
                     "filesystem",
                     "repl-exec",
                 ],
@@ -275,6 +290,31 @@ class ManagerServer:
             return await session.cancel()
         if method == "device.interrupt":
             return await session.interrupt()
+        if method == "device.connect":
+            connect_timeout_ms = _connect_timeout_ms(params)
+            port = str(params.get("port") or "")
+            baudrate = _optional_int(params.get("baudrate"))
+            try:
+                return await self._run_serial_operation(
+                    method,
+                    params,
+                    lambda: session.connect(port, baudrate, connect_timeout_ms / 1000.0),
+                    writer,
+                )
+            finally:
+                self._notify_device_status(session.status())
+        if method == "device.disconnect":
+            result = await self._run_serial_operation(method, params, session.disconnect, writer)
+            self._notify_device_status(session.status())
+            return result
+        if method == "device.reconnect":
+            reconnect_timeout_ms = _connect_timeout_ms(params)
+            return await self._run_serial_operation(
+                method,
+                params,
+                lambda: session.reconnect(reconnect_timeout_ms / 1000.0),
+                writer,
+            )
         if method == "device.softReset":
             return await self._run_serial_operation(method, params, session.soft_reset, writer)
         if method == "repl.exec":
@@ -310,6 +350,14 @@ class ManagerServer:
                 writer,
             )
         raise RpcMethodError("unsupported method: %s" % method, "unsupported")
+
+    def _notify_device_status(self, status: dict[str, Any]) -> None:
+        callback = self._device_status_callback
+        if callback is not None:
+            try:
+                callback(status)
+            except OSError:
+                pass
 
     async def _run_serial_operation(
         self,
@@ -431,9 +479,19 @@ def _optional_float(value: Any) -> float | None:
 
 
 def _optional_int(value: Any) -> int | None:
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
+
+
+def _connect_timeout_ms(params: dict[str, Any]) -> float:
+    value = params.get("connectTimeoutMs", params.get("reconnectTimeoutMs"))
+    timeout_ms = _optional_float(value)
+    if timeout_ms is None:
+        timeout_ms = 15000.0
+    if timeout_ms <= 0:
+        raise RpcMethodError("connectTimeoutMs must be greater than zero", "invalid_params")
+    return timeout_ms
 
 
 def _first_string(params: dict[str, Any], *names: str, default: str = "") -> str:
@@ -494,6 +552,9 @@ async def run_manager_async(
     completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
     helper_version: str = "",
+    session_file: str = "",
+    owner_version: str = "",
+    script_path: str = "",
     ready_stream: TextIO = sys.stdout,
 ) -> int:
     """Run the hidden serial manager server.
@@ -507,6 +568,9 @@ async def run_manager_async(
     :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
     :param helper_version: Version string shown by the injected helper.
+    :param session_file: Optional manager descriptor path.
+    :param owner_version: Extension or CLI package version for the descriptor.
+    :param script_path: Manager entry script path for the descriptor.
     :param ready_stream: Stream for the ready line.
     :return: Process exit code.
     """
@@ -521,10 +585,33 @@ async def run_manager_async(
         helper_version=helper_version,
         emit_event=server.emit_event,
     )
-    await server.start(session)
-    ready_stream.write(ready_line(server.host, server.port, manager_token))
-    ready_stream.flush()
-    return await server.serve_until_shutdown()
+    publisher: ManagerDescriptorPublisher | None = None
+    try:
+        await server.start(session)
+        if session_file:
+            descriptor = create_descriptor(
+                protocol_version=PROTOCOL_VERSION,
+                manager_instance_id=server.instance_id,
+                owner_version=owner_version or helper_version,
+                device=config.port,
+                host=server.host,
+                port=server.port,
+                token=manager_token,
+                script_path=script_path or str(Path(sys.argv[0]).resolve()),
+            )
+            publisher = ManagerDescriptorPublisher(session_file, descriptor)
+            publisher.publish()
+            server.set_device_status_callback(
+                lambda status: publisher.update_device(str(status.get("port") or ""))
+            )
+        ready_stream.write(ready_line(server.host, server.port, manager_token))
+        ready_stream.flush()
+        return await server.serve_until_shutdown()
+    finally:
+        server.set_device_status_callback(None)
+        await server.close()
+        if publisher is not None:
+            publisher.close()
 
 
 def run_manager(
@@ -537,6 +624,9 @@ def run_manager(
     completion_roots: list[str] | None = None,
     dir_query_timeout: float = 2.0,
     helper_version: str = "",
+    session_file: str = "",
+    owner_version: str = "",
+    script_path: str = "",
 ) -> int:
     """Synchronous CLI wrapper for the hidden serial manager.
 
@@ -549,6 +639,9 @@ def run_manager(
     :param completion_roots: Additional local completion roots.
     :param dir_query_timeout: Device completion timeout.
     :param helper_version: Version string shown by the injected helper.
+    :param session_file: Optional manager descriptor path.
+    :param owner_version: Extension or CLI package version for the descriptor.
+    :param script_path: Manager entry script path for the descriptor.
     :return: Process exit code.
     """
     return asyncio.run(
@@ -562,5 +655,8 @@ def run_manager(
             completion_roots=completion_roots,
             dir_query_timeout=dir_query_timeout,
             helper_version=helper_version,
+            session_file=session_file,
+            owner_version=owner_version,
+            script_path=script_path,
         )
     )

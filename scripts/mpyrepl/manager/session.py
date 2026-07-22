@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any, Callable
 
 from prompt_toolkit.completion import CompleteEvent
@@ -26,6 +27,7 @@ from mpyrepl.runtime.transport import SerialReplTransport, TransportError, Trans
 EventCallback = Callable[[str, dict[str, Any]], None]
 TransportFactory = Callable[[ReplConfig], SerialReplTransport]
 CONNECTION_PROBE_INTERVAL = 0.5
+RECONNECT_RETRY_INTERVAL = 0.25
 
 
 def _decode_chunk(decoder: Utf8StreamDecoder, chunk: bytes) -> str:
@@ -161,9 +163,94 @@ class ManagerSession:
 
         :return: None
         """
-        await self._stop_connection_monitor()
-        self._state = "closing"
+        await self._release_transport(announce_closing=True)
+
+    async def reconnect(
+        self,
+        timeout: float,
+        retry_interval: float = RECONNECT_RETRY_INTERVAL,
+    ) -> dict[str, Any]:
+        """Reopen the configured serial port until the device is ready.
+
+        :param timeout: Maximum time to wait for USB serial re-enumeration.
+        :param retry_interval: Delay between failed open attempts.
+        :return: Ready session status.
+        """
+        return await self.connect(
+            self._config.port,
+            self._config.baudrate,
+            timeout,
+            retry_interval=retry_interval,
+        )
+
+    async def connect(
+        self,
+        port: str,
+        baudrate: int | None,
+        timeout: float,
+        retry_interval: float = RECONNECT_RETRY_INTERVAL,
+    ) -> dict[str, Any]:
+        """Connect the manager to an explicitly selected serial port.
+
+        :param port: Serial port name or URL.
+        :param baudrate: Optional serial baud rate.
+        :param timeout: Maximum time to wait for the device.
+        :param retry_interval: Delay between failed open attempts.
+        :return: Ready session status.
+        """
+        target_port = port.strip()
+        target_baudrate = self._config.baudrate if baudrate is None else baudrate
+        if not target_port:
+            raise RpcMethodError("serial port must not be empty", "invalid_params")
+        if target_baudrate <= 0:
+            raise RpcMethodError("baudrate must be greater than zero", "invalid_params")
+        if timeout <= 0:
+            raise RpcMethodError("connect timeout must be greater than zero", "invalid_params")
+
+        await self._release_transport(announce_closing=False)
+        self._config = replace(self._config, port=target_port, baudrate=target_baudrate)
+        self._symbols.clear()
         self._emit_status()
+        return await self._open_with_retry(timeout, retry_interval)
+
+    async def disconnect(self) -> dict[str, Any]:
+        """Release the serial port while keeping the manager RPC server alive.
+
+        :return: Stopped session status.
+        """
+        await self._release_transport(announce_closing=False)
+        self._symbols.clear()
+        return self.status()
+
+    async def _open_with_retry(self, timeout: float, retry_interval: float) -> dict[str, Any]:
+        """Open the configured device repeatedly until ready or timed out."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        last_error: Exception | None = None
+        while True:
+            try:
+                await self.open()
+                return self.status()
+            except Exception as exc:
+                last_error = exc
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(max(retry_interval, 0.01), remaining))
+
+        detail = str(last_error) if last_error is not None else "device did not become ready"
+        raise RpcMethodError(
+            "failed to connect %s within %.1f seconds (%s)" % (self._config.port, timeout, detail),
+            "transport",
+            {"port": self._config.port, "timeoutSeconds": timeout},
+        ) from last_error
+
+    async def _release_transport(self, announce_closing: bool) -> None:
+        """Release the current serial transport without stopping the manager."""
+        await self._stop_connection_monitor()
+        if announce_closing:
+            self._state = "closing"
+            self._emit_status()
         transport = self._transport
         if transport is not None:
             if self._gate.busy:
@@ -182,6 +269,9 @@ class ManagerSession:
                 await asyncio.to_thread(transport.close)
             except Exception:
                 pass
+        self._fs_client = None
+        self._completer = None
+        self._idle_output_decoder = Utf8StreamDecoder()
         self._state = "stopped"
         self._emit_status()
 

@@ -4,7 +4,7 @@
 
 ## 用途
 
-Agent CLI 允许另一个本机进程复用 MicroPython 工作台已经持有的串口连接.它只连接扩展提供的本机回环 NDJSON manager,不会自行打开或探测物理串口.
+Agent CLI 允许另一个本机进程复用 MicroPython 工作台的共享串口 manager.它可以附着扩展启动的 manager,也可以通过 `connect` 冷启动后台 manager.只有 manager 进程打开物理串口,Agent 客户端不会直接使用 pyserial 占用设备.
 
 `agent` 的早期入口仅使用 Python 标准库,不会导入 `pyserial`、prompt-toolkit、Pygments 或其他 TUI 依赖.
 
@@ -36,7 +36,9 @@ CLI 按以下顺序解析 manager 描述文件:
 3. `--workspace PATH`
 4. 从当前目录逐级向上查找 `.mpy-workbench/serial-manager.json`
 
-manager 就绪后扩展会原子写入描述文件,manager 停止时将其删除.CLI 会校验 schema 和协议版本,要求地址为本机回环地址,使用描述文件中的 token 认证,并核对 manager 实例 ID.描述文件缺失、无效、过期或版本不兼容时会直接失败,不会退回到直接访问串口.
+扩展或 manager 自身会在就绪后原子写入描述文件,manager 退出时按 token 和实例 ID 条件清理.CLI 会校验 schema 和协议版本,要求地址为本机回环地址,使用描述文件中的 token 认证,并核对 manager 实例 ID.
+
+除 `connect` 外,描述文件缺失、无效、过期或版本不兼容都会直接失败.`connect` 在没有描述文件或确认 endpoint 已失效时会启动新的后台 manager;显式 `--workspace` 时发布到该工作区,否则使用当前目录.它不会回退到旧的直接串口命令.
 
 ## 命令
 
@@ -55,11 +57,16 @@ manager 就绪后扩展会原子写入描述文件,manager 停止时将其删除
 | `rm` | `DEVICE_PATH --yes [--recursive]` | 删除文件或目录,必须显式确认. |
 | `mv` | `SOURCE_PATH TARGET_PATH` | 重命名或移动设备路径. |
 | `interrupt` | 无 | 立即发送带外 Ctrl-C. |
+| `connect` | `PORT [--baudrate N]` | 连接或切换到指定串口;没有 manager 时自动冷启动. |
+| `disconnect` | 无 | 释放物理串口,保留 manager 和描述文件. |
+| `reconnect` | 无 | 由 manager 关闭旧句柄并重连原串口,等待时长由 `--timeout` 控制. |
+| `shutdown` | 无 | 关闭共享 manager;会断开人工 REPL 和其他 Agent. |
 | `soft-reset` | 无 | 排队执行设备软重置. |
 
 示例:
 
 ```bash
+python scripts/mpyrepl/__main__.py agent --workspace C:\qzrobot\mpy --timeout 20 connect COM5 --baudrate 115200
 python scripts/mpyrepl/__main__.py agent status
 python scripts/mpyrepl/__main__.py agent --busy reject exec --code "print(1)"
 python scripts/mpyrepl/__main__.py agent --queue-timeout 60 --timeout 300 exec-file mpy/main.py
@@ -68,11 +75,18 @@ python scripts/mpyrepl/__main__.py agent put ./main.py /sd/main.py
 python scripts/mpyrepl/__main__.py agent mkdir /sd/logs
 python scripts/mpyrepl/__main__.py agent rm /sd/old --recursive --yes
 python scripts/mpyrepl/__main__.py agent interrupt
+python scripts/mpyrepl/__main__.py agent disconnect
+python scripts/mpyrepl/__main__.py agent --timeout 20 reconnect
+python scripts/mpyrepl/__main__.py agent shutdown
 ```
 
 ## 排队与输出行为
 
-代码执行、文件系统操作、软重置和补全共用 manager 端的串口操作锁.默认 `--busy wait` 使用由 `--queue-timeout` 限制的有界排队;`--busy reject` 会立即返回 `busy` 错误.排队期间客户端断开时,对应请求会被取消.`interrupt` 绕过队列,因此可用于停止正在运行的设备代码.
+代码执行、文件系统操作、连接、断开、重连、软重置和补全共用 manager 端的串口操作锁.默认 `--busy wait` 使用由 `--queue-timeout` 限制的有界排队;`--busy reject` 会立即返回 `busy` 错误.排队期间客户端断开时,对应请求会被取消.`interrupt` 绕过队列,因此可用于停止正在运行的设备代码.
+
+执行 `machine.reset()` 或设备重新枚举后,manager 可能暂时进入 `stopped`.`reconnect` 会释放 manager 持有的旧串口句柄,在 `--timeout` 范围内重复打开同一个已配置端口,然后重新进入 raw REPL 并注入 helper.整个过程仍由现有 manager 完成,Agent 不会直接打开 COM 口,也不需要操作 VS Code 界面.
+
+设备重新枚举为不同 COM 编号时使用 `connect NEW_PORT`.`disconnect` 只释放串口并保持 endpoint 可用;`shutdown` 才会停止 manager.冷启动错误保存在 `.mpy-workbench/serial-manager-startup.log`,ready token 不会写入该日志.
 
 人工 REPL 保持为完整实时控制台,会接收所有客户端触发的设备 stdout/stderr,也包括后台线程输出.Agent 命令按自己的请求 ID 过滤 manager 事件,并且只向 stdout 写一条最终 JSON,因此其他设备输出不会破坏机器可读结果.启用 `--progress` 后,匹配当前请求的进度事件以 JSONL 写入 stderr.
 
@@ -108,6 +122,7 @@ python scripts/mpyrepl/__main__.py agent interrupt
 
 - manager 绑定本机回环地址,CLI 会拒绝非回环描述文件.
 - 描述文件包含 bearer token.必须保持 `.mpy-workbench/` 被 Git 忽略,不要打印、提交或共享该文件.
-- Agent CLI 只能在扩展持有的 manager 存活期间连接.使用前先在扩展中打开串口或 REPL.
+- `connect` 可在扩展尚未打开串口时创建后台 manager;扩展后续会通过同一描述文件附着该实例.
 - Agent 客户端断开不会关闭 manager 或人工 REPL.
+- `shutdown` 是显式的全局生命周期操作,会关闭共享 manager 及其所有客户端.
 - manager 持有串口时,不要再启动第二个直接连接同一 COM 设备的串口客户端.

@@ -131,6 +131,25 @@ class SupportModuleTests(unittest.TestCase):
         self.assertEqual(args.dir_query_timeout, 3.5)
         self.assertEqual(args.helper_version, "0.4.22")
 
+    def test_cli_manager_parses_descriptor_options(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--port",
+                "COM5",
+                "manager",
+                "--session-file",
+                "session.json",
+                "--owner-version",
+                "0.4.34",
+                "--script-path",
+                "mpyrepl.py",
+            ]
+        )
+
+        self.assertEqual(args.session_file, "session.json")
+        self.assertEqual(args.owner_version, "0.4.34")
+        self.assertEqual(args.script_path, "mpyrepl.py")
+
     def test_cli_exec_parses_follow_timeout(self) -> None:
         parser = build_parser()
         args = parser.parse_args(

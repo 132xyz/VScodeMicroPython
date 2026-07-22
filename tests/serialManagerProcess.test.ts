@@ -79,6 +79,7 @@ describe("SerialManagerProcess", () => {
       scriptPath: "/extension/scripts/mpyrepl/__main__.py",
       stubRoot: "/workspace/stubs",
       completionRoots: ["/workspace/mpy", "/workspace/mpy/lib"],
+      descriptorPath: "/workspace/.mpy-workbench/serial-manager.json",
     });
 
     await Promise.resolve();
@@ -105,6 +106,12 @@ describe("SerialManagerProcess", () => {
         "/workspace/mpy/lib",
         "--helper-version",
         "0.4.22",
+        "--session-file",
+        "/workspace/.mpy-workbench/serial-manager.json",
+        "--owner-version",
+        "0.4.22",
+        "--script-path",
+        "/extension/scripts/mpyrepl/__main__.py",
       ]),
       expect.objectContaining({ windowsHide: true }),
     );
