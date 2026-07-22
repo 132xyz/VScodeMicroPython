@@ -1,0 +1,1 @@
+"""Manager client entry points."""

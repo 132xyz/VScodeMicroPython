@@ -1,4 +1,6 @@
 export const MANAGER_READY_MARKER = "__MPY_MANAGER_READY__";
+export const SERIAL_MANAGER_PROTOCOL_VERSION = 1;
+export const SERIAL_MANAGER_DESCRIPTOR_SCHEMA_VERSION = 1;
 
 export type SerialManagerState =
   | "stopped"
@@ -21,6 +23,34 @@ export type SerialManagerStatus = {
   baudrate?: number;
   busy?: boolean;
   operation?: string;
+  clientCount?: number;
+  extensionClientCount?: number;
+  replClientCount?: number;
+  agentClientCount?: number;
+  queuedOperationCount?: number;
+  protocolVersion?: number;
+};
+
+export type SerialManagerHello = {
+  protocolVersion: number;
+  managerInstanceId: string;
+  role: "extension" | "repl" | "agent";
+  capabilities: string[];
+  status: SerialManagerStatus;
+};
+
+export type SerialManagerDescriptor = {
+  schemaVersion: number;
+  protocolVersion: number;
+  managerInstanceId: string;
+  extensionVersion: string;
+  device: string;
+  host: string;
+  port: number;
+  token: string;
+  managerPid?: number;
+  scriptPath: string;
+  createdAt: string;
 };
 
 export type SerialManagerRpcError = {
@@ -51,4 +81,5 @@ export type SerialManagerStartOptions = {
 export type SerialManagerRuntime = {
   device: string;
   endpoint: SerialManagerEndpoint;
+  descriptorPath?: string;
 };

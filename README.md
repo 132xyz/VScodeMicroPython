@@ -76,6 +76,7 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 - `.mpy-workbench/config.json`: legacy workspace override file
 - `.mpy-workbench/esp32sync.json`: sync manifest used by board sync workflows
 - `.mpy-workbench/pyi/`: default installation root for MicroPython stub packages
+- `.mpy-workbench/serial-manager.json`: ephemeral local manager descriptor used by REPL and Agent clients; do not commit or share it
 
 ### REPL, Run, and auto-suspend
 
@@ -103,14 +104,16 @@ Workspace-specific metadata is stored under `.mpy-workbench/`:
 
 - The bundled Python `mpyrepl` client is the built-in board transport.
 - REPL, Run Active File, port detection, file browsing, and sync use the same transport stack.
+- A standard-library-only `agent` CLI can attach to the extension-owned manager through `.mpy-workbench/serial-manager.json` without reopening the serial port.
+- Runtime code is organized by responsibility under `scripts/mpyrepl/{clients,manager,runtime,completion,repl}`; `scripts/mpyrepl/__main__.py` remains the stable thin entry point.
 - The Python client provides:
   - host-side multiline editing
   - prompt-toolkit based completion
   - session-aware symbol tracking
-  - control-file based interrupt, soft reset, exit, and filesystem RPC
+  - manager-based interrupt, soft reset, execution, and filesystem RPC
   - safer Unicode output handling on Windows and mixed-encoding hosts
 
-See [docs/custom-python-repl.md](docs/custom-python-repl.md) for the English guide and [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md) for the Chinese guide.
+See [docs/custom-python-repl.md](docs/custom-python-repl.md) for the English guide and [docs/agent-cli.md](docs/agent-cli.md) for the complete Agent CLI reference.
 
 ## Configuration highlights
 
@@ -173,7 +176,7 @@ npm run package
 Current repository testing is split into two parts:
 
 - JavaScript/TypeScript extension tests: Jest + ts-jest under `tests/`
-- Python custom-REPL tests: `scripts/mpyrepl/test_*.py`
+- Python `mpyrepl` tests: `scripts/mpyrepl/tests/test_*.py`
 
 CI runs on GitHub Actions across:
 
@@ -189,6 +192,8 @@ For more detail, see [docs/TEST_README.md](docs/TEST_README.md).
 
 - [docs/custom-python-repl.md](docs/custom-python-repl.md)
 - [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)
+- [docs/agent-cli.md](docs/agent-cli.md)
+- [docs/agent-cli_zh-CN.md](docs/agent-cli_zh-CN.md)
 - [docs/TEST_README.md](docs/TEST_README.md)
 - [docs/mpremote-windows-utf8.md](docs/mpremote-windows-utf8.md)
 - [docs/repl_architecture_plan.md](docs/repl_architecture_plan.md)

@@ -143,6 +143,26 @@ describe("SerialManagerProcess", () => {
     expect(spawn).toHaveBeenCalledTimes(2);
   });
 
+  test("stop can skip graceful wait and terminate the manager immediately", async () => {
+    const child = new FakeChild();
+    (spawn as jest.Mock).mockReturnValue(child);
+    const manager = new SerialManagerProcess();
+    const started = manager.start({
+      device: "COM21",
+      baudRate: 115200,
+      token: "tok",
+      scriptPath: "/extension/scripts/mpyrepl/__main__.py",
+    });
+
+    await Promise.resolve();
+    child.stdout.emit("data", Buffer.from(`${MANAGER_READY_MARKER}{"host":"127.0.0.1","port":50123,"token":"tok"}\n`));
+    await started;
+
+    await manager.stop(3000, { gracefulWaitMs: 0 });
+
+    expect(child.kill).toHaveBeenCalled();
+  });
+
   test("classifies transient Windows serial open failures", () => {
     expect(isTransientSerialOpenError(new Error("PermissionError(13, '拒绝访问。', None, 5)"))).toBe(true);
     expect(isTransientSerialOpenError(new Error("failed to inject repl helper"))).toBe(false);

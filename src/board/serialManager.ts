@@ -1,8 +1,18 @@
 import * as vscode from "vscode";
 import { SerialManagerClient } from "./serialManagerClient";
+import {
+  getSerialManagerDescriptorPath,
+  readSerialManagerDescriptor,
+  removeSerialManagerDescriptor,
+  writeSerialManagerDescriptor,
+} from "./serialManagerDescriptor";
 import { SerialManagerProcess, getExtensionVersion, getMpyReplScriptPath, quoteShellArg, splitCommand } from "./serialManagerProcess";
 import {
+  SERIAL_MANAGER_DESCRIPTOR_SCHEMA_VERSION,
+  SERIAL_MANAGER_PROTOCOL_VERSION,
+  SerialManagerDescriptor,
   SerialManagerEndpoint,
+  SerialManagerHello,
   SerialManagerRuntime,
   SerialManagerStatus,
 } from "./serialManagerTypes";
@@ -10,6 +20,7 @@ import {
 let activeProcess: SerialManagerProcess | undefined;
 let activeClient: SerialManagerClient | undefined;
 let activeRuntime: SerialManagerRuntime | undefined;
+let activeTransportConnected = false;
 
 function getBaudRate(): number {
   return vscode.workspace.getConfiguration("microPythonWorkBench").get<number>("baudRate", 115200);
@@ -39,6 +50,37 @@ async function getActiveStubPath(): Promise<string | undefined> {
   }
 }
 
+function publishSerialState(open: boolean): void {
+  if (activeTransportConnected === open) return;
+  activeTransportConnected = open;
+  setSerialContext(open);
+  try {
+    void vscode.commands.executeCommand("microPythonWorkBench._serialStateChanged", open);
+  } catch {
+    // The internal UI command is unavailable during extension shutdown.
+  }
+}
+
+export function isConnectedManagerState(state: string): boolean {
+  return state === "ready" || state === "busy" || state === "cancelling";
+}
+
+function bindManagerState(
+  client: SerialManagerClient,
+  descriptorPath: string | undefined,
+  token: string,
+): void {
+  client.on("status", (status: SerialManagerStatus) => {
+    if (client !== activeClient) return;
+    publishSerialState(isConnectedManagerState(String(status.state || "")));
+  });
+  client.on("close", () => {
+    if (client !== activeClient) return;
+    publishSerialState(false);
+    void removeSerialManagerDescriptor(descriptorPath, token);
+  });
+}
+
 async function getActiveCompletionRoots(): Promise<string[]> {
   try {
     const { codeCompletionManager } = await import("../completion/codeCompletion");
@@ -53,7 +95,7 @@ export function getActiveManagerRuntime(): SerialManagerRuntime | undefined {
 }
 
 export function isSerialManagerActive(): boolean {
-  return !!activeRuntime && !!activeClient?.connected;
+  return !!activeRuntime && !!activeClient?.connected && activeTransportConnected;
 }
 
 export function isRecoverableSerialManagerError(error: unknown): boolean {
@@ -64,12 +106,17 @@ export function isRecoverableSerialManagerError(error: unknown): boolean {
 }
 
 export async function ensureManagerStarted(device: string): Promise<SerialManagerRuntime> {
-  if (activeRuntime?.device === device && activeClient?.connected) {
+  if (activeRuntime?.device === device && activeClient?.connected && activeTransportConnected) {
     return activeRuntime;
   }
-  if (activeRuntime && activeRuntime.device !== device) {
+  if (activeRuntime || activeClient || activeProcess) {
     await closeManager();
   }
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const descriptorPath = workspaceRoot ? getSerialManagerDescriptorPath(workspaceRoot) : undefined;
+  const attached = await attachExistingManager(device, descriptorPath);
+  if (attached) return attached;
 
   const managerProcess = activeProcess || new SerialManagerProcess();
   activeProcess = managerProcess;
@@ -82,11 +129,50 @@ export async function ensureManagerStarted(device: string): Promise<SerialManage
     helperVersion: getExtensionVersion(),
   });
   const client = new SerialManagerClient(endpoint);
-  await client.connect();
   activeClient = client;
-  activeRuntime = { device, endpoint };
-  setSerialContext(true);
-  return activeRuntime;
+  activeRuntime = { device, endpoint, descriptorPath };
+  bindManagerState(client, descriptorPath, endpoint.token);
+  try {
+    await client.connect();
+    const hello = await client.call<SerialManagerHello>("manager.hello", { role: "extension" }, 5000);
+    if (hello.protocolVersion !== SERIAL_MANAGER_PROTOCOL_VERSION) {
+      throw new Error(`Unsupported serial manager protocol: ${hello.protocolVersion}`);
+    }
+    const status = hello.status;
+    publishSerialState(isConnectedManagerState(String(status.state || "")));
+    if (descriptorPath) {
+      const descriptor: SerialManagerDescriptor = {
+        schemaVersion: SERIAL_MANAGER_DESCRIPTOR_SCHEMA_VERSION,
+        protocolVersion: SERIAL_MANAGER_PROTOCOL_VERSION,
+        managerInstanceId: hello.managerInstanceId,
+        extensionVersion: getExtensionVersion(),
+        device,
+        host: endpoint.host,
+        port: endpoint.port,
+        token: endpoint.token,
+        managerPid: managerProcess.currentPid,
+        scriptPath: getMpyReplScriptPath(),
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        await writeSerialManagerDescriptor(descriptorPath, descriptor);
+      } catch (error) {
+        console.warn("[mpy] Failed to publish the serial manager descriptor", error);
+      }
+    }
+    return activeRuntime;
+  } catch (error) {
+    if (activeClient === client) {
+      activeClient = undefined;
+      activeRuntime = undefined;
+      activeProcess = undefined;
+      publishSerialState(false);
+    }
+    await removeSerialManagerDescriptor(descriptorPath, endpoint.token);
+    client.dispose();
+    await managerProcess.stop(3000, { gracefulWaitMs: 0 });
+    throw error;
+  }
 }
 
 export function getManagerClient(): SerialManagerClient | undefined {
@@ -95,26 +181,72 @@ export function getManagerClient(): SerialManagerClient | undefined {
 
 export async function getManagerStatus(): Promise<SerialManagerStatus | undefined> {
   if (!activeClient) return undefined;
-  return await activeClient.call<SerialManagerStatus>("manager.status", {}, 5000);
+  const status = await activeClient.call<SerialManagerStatus>("manager.status", {}, 5000);
+  publishSerialState(isConnectedManagerState(String(status.state || "")));
+  return status;
+}
+
+async function attachExistingManager(
+  device: string,
+  descriptorPath: string | undefined,
+): Promise<SerialManagerRuntime | undefined> {
+  if (!descriptorPath) return undefined;
+  const descriptor = await readSerialManagerDescriptor(descriptorPath);
+  if (!descriptor?.token || !descriptor.host || !descriptor.port) return undefined;
+  const endpoint: SerialManagerEndpoint = {
+    host: descriptor.host,
+    port: descriptor.port,
+    token: descriptor.token,
+  };
+  const client = new SerialManagerClient(endpoint);
+  try {
+    await client.connect();
+    const hello = await client.call<SerialManagerHello>("manager.hello", { role: "extension" }, 5000);
+    const matches = hello.protocolVersion === SERIAL_MANAGER_PROTOCOL_VERSION
+      && hello.managerInstanceId === descriptor.managerInstanceId
+      && descriptor.device === device;
+    if (!matches) {
+      await client.call("manager.shutdown", {}, 3000).catch(() => undefined);
+      client.dispose();
+      await removeSerialManagerDescriptor(descriptorPath, descriptor.token);
+      return undefined;
+    }
+    activeClient = client;
+    activeRuntime = { device, endpoint, descriptorPath };
+    activeProcess = undefined;
+    bindManagerState(client, descriptorPath, endpoint.token);
+    publishSerialState(isConnectedManagerState(String(hello.status?.state || "")));
+    return activeRuntime;
+  } catch {
+    client.dispose();
+    await removeSerialManagerDescriptor(descriptorPath, descriptor.token);
+    return undefined;
+  }
 }
 
 export async function closeManager(): Promise<void> {
   const client = activeClient;
   const managerProcess = activeProcess;
   const runtime = activeRuntime;
+  let shutdownRequested = false;
+  let releaseConfirmed = false;
   activeClient = undefined;
   activeRuntime = undefined;
   activeProcess = undefined;
-  setSerialContext(false);
+  publishSerialState(false);
   if (runtime?.endpoint) {
     try {
       await callEndpoint(runtime.endpoint, "manager.shutdown", {}, 3000);
+      shutdownRequested = true;
+      releaseConfirmed = true;
     } catch {
       // Fall back to process termination below.
     }
   } else if (client?.connected) {
     try {
       await client.call("manager.shutdown", {}, 3000);
+      shutdownRequested = true;
+      releaseConfirmed = true;
     } catch {
       // Fall back to process termination below.
     }
@@ -123,7 +255,11 @@ export async function closeManager(): Promise<void> {
     client.dispose();
   }
   if (managerProcess) {
-    await managerProcess.stop();
+    await managerProcess.stop(3000, { gracefulWaitMs: shutdownRequested ? 3000 : 0 });
+    releaseConfirmed = true;
+  }
+  if (runtime && releaseConfirmed) {
+    await removeSerialManagerDescriptor(runtime.descriptorPath, runtime.endpoint.token);
   }
 }
 

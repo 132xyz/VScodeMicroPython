@@ -12,8 +12,8 @@
 	- 目标：覆盖扩展配置、同步逻辑、开发板操作、代码补全和 VS Code 交互层
 - Python `mpyrepl` 测试
 	- 框架：标准库 `unittest` + `trace`
-	- 目录：`scripts/mpyrepl/test_*.py`
-	- 目标：覆盖实验性自定义 Python REPL 的 transport、session、completion、控制通道和入口逻辑
+	- 目录：`scripts/mpyrepl/tests/test_*.py`
+	- 目标：覆盖 manager、Agent/人工客户端、transport、filesystem、session、completion 和入口分发
 
 ## 常用命令
 
@@ -32,7 +32,7 @@ npm run test:js:coverage
 ### 运行 Python `mpyrepl` 测试并输出本地源码覆盖率
 
 ```bash
-python -m pip install -r scripts/mpyrepl/requirements-test.txt
+python -m pip install -r scripts/mpyrepl/tests/requirements.txt
 npm run test:py
 ```
 
@@ -89,7 +89,7 @@ npm run test:watch
 
 ### Python `mpyrepl` 测试
 
-当前 `scripts/mpyrepl/` 下已覆盖的主要方向包括：
+当前 `scripts/mpyrepl/tests/` 下已覆盖的主要方向包括：
 
 - `test_transport_behavior.py`
 	- raw REPL transport、超时、soft reset、协议边界
@@ -98,22 +98,24 @@ npm run test:watch
 - `test_support_modules.py`
 	- CLI 参数解析、补全模块、控制模块等辅助组件
 - `test_main_helpers.py`
-	- `__main__.py` 入口、异步 REPL 主循环、控制通道、Unicode 输出回退、soft reset 路径
+	- `app.py` 分发、异步 REPL 主循环、控制通道、Unicode 输出回退、soft reset 路径
+- `test_manager_protocol.py`、`test_manager_server.py`、`test_manager_session.py`
+	- NDJSON 协议、客户端角色、串口操作排队、事件广播和共享设备会话
+- `test_agent_client.py`、`test_repl_client.py`
+	- 会话发现、JSON 契约、Agent 命令映射和人工 REPL manager 连接
+- `test_fs_ops.py`、`test_operation_gate.py`
+	- 文件传输、进度事件和串口操作串行化
 
 ## 当前验证快照
 
 以下数字是本次文档刷新时的本地验证快照，不代表长期冻结指标：
 
 - JS / TS
-	- 20 个 test suites
-	- 74 个 tests
-	- statements: 42.65%
-	- branches: 28.79%
-	- functions: 43.60%
-	- lines: 44.57%
+	- 26 个 test suites
+	- 110 个 tests
 - Python `mpyrepl`
-	- 53 个 tests
-	- 本地 `scripts/mpyrepl` 源码覆盖率：81.0%
+	- 187 个 tests
+	- 重构后的递归包源码覆盖率：81.8%
 
 ## 测试基础设施与约定
 
@@ -126,9 +128,9 @@ npm run test:watch
 
 ### Python 侧
 
-- `scripts/mpyrepl/run_python_tests_with_coverage.py`
-	- 使用 `trace` 统计 `scripts/mpyrepl/` 本地源码覆盖率
-- `scripts/mpyrepl/requirements-test.txt`
+- `scripts/mpyrepl/tests/run_with_coverage.py`
+	- 递归统计 `scripts/mpyrepl/` 运行包源码,排除 `_vendor/` 和 `tests/`
+- `scripts/mpyrepl/tests/requirements.txt`
 	- 当前测试依赖 `pyserial`
 
 ## 当前测试策略

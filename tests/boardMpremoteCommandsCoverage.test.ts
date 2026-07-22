@@ -30,6 +30,7 @@ jest.mock('../src/board/serialManager', () => ({
   buildReplClientCommand: jest.fn(),
   closeManager: jest.fn(),
   ensureManagerStarted: jest.fn(),
+  getManagerStatus: jest.fn(),
   executeInManager: jest.fn(),
   interruptManager: jest.fn(),
   isSerialManagerActive: jest.fn(),
@@ -93,6 +94,7 @@ const serialManager = require('../src/board/serialManager') as {
   buildReplClientCommand: jest.Mock;
   closeManager: jest.Mock;
   ensureManagerStarted: jest.Mock;
+  getManagerStatus: jest.Mock;
   executeInManager: jest.Mock;
   interruptManager: jest.Mock;
   isSerialManagerActive: jest.Mock;
@@ -171,6 +173,13 @@ describe('board mpremoteCommands coverage', () => {
       device: 'COM4',
       endpoint: { host: '127.0.0.1', port: 50123, token: 'tok' },
     });
+    serialManager.getManagerStatus.mockResolvedValue({
+      state: 'ready',
+      busy: false,
+      operation: '',
+      clientCount: 2,
+      replClientCount: 1,
+    });
     serialManager.buildReplClientCommand.mockResolvedValue('python repl-client --endpoint 127.0.0.1:50123 --token tok');
     serialManager.closeManager.mockResolvedValue(undefined);
     serialManager.executeInManager.mockResolvedValue({ stdout: '', stderr: '' });
@@ -220,7 +229,10 @@ describe('board mpremoteCommands coverage', () => {
     const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
 
     const replTerminal = await commands.getReplTerminal();
-    expect(vscode.window.createTerminal).toHaveBeenCalledWith(expect.objectContaining({ name: 'ESP32 REPL' }));
+    expect(vscode.window.createTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'ESP32 REPL',
+      hideFromUser: true,
+    }));
     expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
     expect(replTerminal.sendText).toHaveBeenCalledWith(expect.stringContaining('repl-client'), true);
     expect(commands.isReplOpen()).toBe(true);
@@ -242,6 +254,24 @@ describe('board mpremoteCommands coverage', () => {
     await closePromise;
     expect(replTerminal.dispose).toHaveBeenCalled();
     expect(serialManager.closeManager).toHaveBeenCalled();
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', false);
+  });
+
+  test('opening serial closes a stale REPL before reconnecting the manager', async () => {
+    const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    const replTerminal = await commands.getReplTerminal();
+    serialManager.closeManager.mockClear();
+    serialManager.ensureManagerStarted.mockClear();
+
+    const reconnectPromise = commands.openSerialConnection();
+    await jest.runOnlyPendingTimersAsync();
+    await reconnectPromise;
+
+    expect(replTerminal.dispose).toHaveBeenCalled();
+    expect(serialManager.closeManager).toHaveBeenCalledTimes(1);
+    expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
+    expect(serialManager.closeManager.mock.invocationCallOrder[0])
+      .toBeLessThan(serialManager.ensureManagerStarted.mock.invocationCallOrder[0]);
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', false);
   });
 
@@ -278,7 +308,8 @@ describe('board mpremoteCommands coverage', () => {
     expect(serialManager.ensureManagerStarted).toHaveBeenCalledWith('COM4');
   });
 
-  test('runActiveFile uses serial manager exec through the built-in repl transport', async () => {
+  test('runActiveFile queues a verbatim file run through the REPL client', async () => {
+    const filePath = 'C:\\workspace\\中文 demo.py';
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {
         if (key === 'microPythonWorkBench.connect') return 'serial:///COM4';
@@ -288,13 +319,12 @@ describe('board mpremoteCommands coverage', () => {
       }),
     }));
     fs.existsSync.mockReturnValue(true);
-    fs.promises.readFile.mockResolvedValue('print("中文")\n');
     (vscode.extensions as any).getExtension = jest.fn(() => ({ extensionPath: '/extension' }));
     (vscode.extensions as any).all = [];
 
     (vscode.window as any).activeTextEditor = {
       document: {
-        uri: { fsPath: '/workspace/main.py' },
+        uri: { fsPath: filePath },
         save: jest.fn().mockResolvedValue(undefined),
       },
     };
@@ -303,16 +333,29 @@ describe('board mpremoteCommands coverage', () => {
     const replTerminal = await commands.getReplTerminal();
     fs.promises.writeFile.mockClear();
     (vscode.window.createTerminal as jest.Mock).mockClear();
+    serialManager.getManagerStatus
+      .mockResolvedValueOnce({ state: 'ready', busy: false, clientCount: 2, replClientCount: 0 })
+      .mockResolvedValueOnce({ state: 'ready', busy: false, clientCount: 3, replClientCount: 0 })
+      .mockResolvedValueOnce({ state: 'ready', busy: false, clientCount: 3, replClientCount: 1 });
 
-    await commands.runActiveFile();
+    const runPromise = commands.runActiveFile();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(replTerminal.sendText).not.toHaveBeenCalledWith(
+      expect.stringContaining(':mpy-run-file'),
+      true,
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    await runPromise;
 
-    expect(fs.promises.readFile).toHaveBeenCalledWith('/workspace/main.py', 'utf8');
     expect(vscode.window.createTerminal).not.toHaveBeenCalledWith(
       expect.objectContaining({ name: 'ESP32 Run File' }),
     );
     expect(replTerminal.show).toHaveBeenCalled();
-
-    expect(serialManager.executeInManager).toHaveBeenCalledWith('print("中文")\n');
+    expect(replTerminal.sendText).toHaveBeenCalledWith(
+      `:mpy-run-file ${JSON.stringify(filePath)}`,
+      true,
+    );
+    expect(serialManager.executeInManager).not.toHaveBeenCalled();
 
     const closePromise = commands.closeReplTerminal();
     await jest.runOnlyPendingTimersAsync();
@@ -390,7 +433,9 @@ describe('board mpremoteCommands coverage', () => {
       await commands.runActiveFile();
       const runTerminal = ((vscode.window.terminals as unknown) as MockTerminal[]).find(t => t.name === 'ESP32 Run File');
       expect(runTerminal).toBeUndefined();
-      expect(serialManager.executeInManager).toHaveBeenCalledWith('print("run")\n');
+      const replTerminal = ((vscode.window.terminals as unknown) as MockTerminal[]).find(t => t.name === 'ESP32 REPL');
+      expect(replTerminal?.sendText).toHaveBeenCalledWith(':mpy-run-file "/workspace/main.py"', true);
+      expect(serialManager.executeInManager).not.toHaveBeenCalled();
       await commands.closeReplTerminal();
     } finally {
       jest.useFakeTimers();

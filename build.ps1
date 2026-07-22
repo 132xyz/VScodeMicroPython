@@ -9,13 +9,13 @@ param(
 function Invoke-PythonTests {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand) {
-        & $pythonCommand.Source scripts/mpyrepl/run_python_tests_with_coverage.py
+        & $pythonCommand.Source scripts/mpyrepl/tests/run_with_coverage.py
         return
     }
 
     $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
     if ($pyLauncher) {
-        & $pyLauncher.Source -3 scripts/mpyrepl/run_python_tests_with_coverage.py
+        & $pyLauncher.Source -3 scripts/mpyrepl/tests/run_with_coverage.py
         return
     }
 

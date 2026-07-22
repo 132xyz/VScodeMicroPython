@@ -75,6 +75,7 @@ python -m pip install --user pyserial
 - `.mpy-workbench/config.json`：旧版工作区覆盖配置
 - `.mpy-workbench/esp32sync.json`：同步清单
 - `.mpy-workbench/pyi/`：默认的 MicroPython stub 安装目录
+- `.mpy-workbench/serial-manager.json`：供 REPL 和 Agent 客户端连接的临时本机 manager 描述文件,不要提交或共享
 
 ### REPL、运行与自动挂起
 
@@ -102,14 +103,16 @@ python -m pip install --user pyserial
 
 - 内置 `mpyrepl` Python 客户端是当前开发板传输路径。
 - REPL, 运行活动文件, 串口检测, 文件浏览和同步都使用同一套传输栈。
+- 标准库依赖的 `agent` CLI 可以通过 `.mpy-workbench/serial-manager.json` 连接扩展持有的 manager,不会重新打开串口。
+- 运行代码按职责组织在 `scripts/mpyrepl/{clients,manager,runtime,completion,repl}` 下,`scripts/mpyrepl/__main__.py` 保持为稳定的薄入口。
 - Python 客户端提供：
   - 主机侧多行编辑
   - prompt_toolkit 补全
   - 会话内符号跟踪
-  - 基于控制文件的中断、软重置、退出和文件系统 RPC
+  - 基于共享 manager 的中断、软重置、执行和文件系统 RPC
   - Windows 与混合编码主机下更稳妥的 Unicode 输出
 
-详见英文专题文档 [docs/custom-python-repl.md](docs/custom-python-repl.md) 和中文专题文档 [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)。
+详见中文专题文档 [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md) 和完整的 [Agent CLI 参考](docs/agent-cli_zh-CN.md)。
 
 ## 常用配置项
 
@@ -172,7 +175,7 @@ npm run package
 当前仓库测试分为两条主线：
 
 - JavaScript / TypeScript 扩展测试：基于 Jest + ts-jest，位于 `tests/`
-- Python 自定义 REPL 测试：位于 `scripts/mpyrepl/test_*.py`
+- Python `mpyrepl` 测试：位于 `scripts/mpyrepl/tests/test_*.py`
 
 CI 当前运行于 GitHub Actions，覆盖：
 
@@ -188,6 +191,8 @@ CI 当前运行于 GitHub Actions，覆盖：
 
 - [docs/custom-python-repl.md](docs/custom-python-repl.md)
 - [docs/custom-python-repl_zh-CN.md](docs/custom-python-repl_zh-CN.md)
+- [docs/agent-cli.md](docs/agent-cli.md)
+- [docs/agent-cli_zh-CN.md](docs/agent-cli_zh-CN.md)
 - [docs/TEST_README.md](docs/TEST_README.md)
 - [docs/mpremote-windows-utf8.md](docs/mpremote-windows-utf8.md)
 - [docs/repl_architecture_plan.md](docs/repl_architecture_plan.md)

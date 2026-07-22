@@ -17,6 +17,21 @@ MicroPython 工作台默认使用位于 `scripts/mpyrepl` 下的内置 Python �
 
 REPL, 运行活动文件, 中断/重置, 串口列表, 开发板文件浏览和同步都会走内置 `mpyrepl` helper 路径。旧的实验 REPL 路径已经不是单独可开启的设置项。
 
+## 包目录结构
+
+`scripts/mpyrepl/__main__.py` 是扩展和直接 CLI 调用共用的稳定入口.它负责配置包路径,在加载串口或 TUI 依赖前优先分流 `agent`,其他命令交给 `app.py` 分发.
+
+运行代码按职责划分:
+
+- `clients/`: 人工 REPL 和仅依赖标准库的 Agent 客户端
+- `manager/`: NDJSON 协议、服务端、排队和共享设备会话
+- `runtime/`: 串口传输、文件系统操作、数据模型、解码和操作门控
+- `completion/`: 补全解析、stub 索引、会话符号、回退候选和设备查询
+- `repl/`: 提示会话、编辑行为、语义处理、兼容控制通道和异步运行器
+- `tests/`: Python 单元测试、测试依赖和递归覆盖率运行器
+
+内部导入统一使用唯一的 `mpyrepl.*` 包身份.`_vendor/` 继续保持隔离,仅由需要 prompt-toolkit 和 Pygments 的交互路径通过 bootstrap 加载.
+
 ## 使用要求
 
 - 必须先选择固定串口，不能用 `auto`
@@ -77,25 +92,18 @@ REPL 提示符由 prompt-toolkit 实现，而不是完全依赖开发板侧的�
 
 当 `.pyi` stub 中包含函数或构造函数签名时, 补全菜单会显示参数类型与默认值, 例如 `bpp: int = 3` 和 `timing: int = 1`。
 
+对于当前会话已经导入或定义的对象, REPL 会合并并缓存一次设备 `dir()` 结果。stub 继续提供签名和类型说明, 设备结果补充自定义固件中存在但通用 stub 尚未声明的成员。
+
 因此，当以下两点同时满足时，补全效果最好：
 
 - 扩展里已经开启代码补全
 - 当前 REPL 会话已经导入或定义过你要补全的名字
 
-### 3. 控制通道动作
+### 3. 共享串口管理器
 
-自定义 REPL 启动后，扩展会通过系统临时目录下的 JSON 控制文件与该 Python 进程通信。
+扩展连接开发板后,隐藏的 manager 进程独占物理串口.VS Code、人工 REPL 和 Agent CLI 都通过本机 NDJSON RPC 连接这个 manager,不会分别打开 COM 口.代码执行和文件操作由 manager 串行调度,中断仍可通过带外请求立即发送.
 
-当前支持的控制命令包括：
-
-- `interrupt`
-- `soft-reset`
-- `interrupt-reset`
-- `exit`
-- `exec`
-- `fs`
-
-扩展中的中断、停止、关闭、运行活动文件和文件操作等命令，正是通过这个控制通道作用到持续运行的 REPL 进程上的，而不是每次都直接杀掉整个终端。
+人工 REPL 会接收所有设备 stdout/stderr,包括 Agent 执行代码以及设备后台线程产生的输出.Agent 的一次性命令默认只解析自己的最终 RPC 结果,不会把其他客户端的输出混入 JSON.
 
 ### 4. Unicode 处理
 
@@ -106,6 +114,8 @@ Python 客户端会对 REPL 输出进行增量解码，并在宿主终端编码�
 ### 5. 失败与诊断行为
 
 设备端代码异常会被当作正常 REPL 输出处理。开发板上运行的代码产生 traceback 时, REPL 会打印 traceback, 然后继续保留提示符等待下一条命令。
+
+串口管理器会在协议操作空闲时检测设备连接状态。USB 串口被拔出或驱动返回 `ReadFile`、`WriteFile`、`ClearCommError` 错误时, 扩展会把串口状态更新为断开并关闭已经失效的 REPL 终端。重新插入设备后, 需要重新执行打开串口或打开 REPL 操作。
 
 如果主机侧 REPL 客户端自身崩溃或以非零状态退出, VS Code 会保留终端, 而不是自动关闭。终端里应能看到 Python traceback 和一行简短的 `mpyrepl` 诊断信息。
 
@@ -145,13 +155,34 @@ python scripts/mpyrepl/__main__.py --port COM4 async-repl --stub-root .mpy-workb
 
 - `--baudrate`
 - `--follow-timeout`
-- `--control-file`
+- `--control-file`,仅用于兼容旧的独立 async-REPL 控制路径
 - `--dir-query-timeout`
+
+## Agent 命令行接入
+
+manager 就绪后,扩展会原子写入工作区的 `.mpy-workbench/serial-manager.json`.Agent 命令从当前目录向上查找该文件,也可以使用 `--workspace`、`--session` 或 `MPY_MANAGER_SESSION` 显式指定.描述文件无效时命令会失败,不会回退为直接打开串口.
+
+Agent 路径只使用 Python 标准库,不会加载 prompt-toolkit、Pygments 或其他 TUI 依赖.常用命令:
+
+```bash
+python scripts/mpyrepl/__main__.py agent status
+python scripts/mpyrepl/__main__.py agent exec --code "print(1)"
+python scripts/mpyrepl/__main__.py agent exec-file mpy/test.py
+python scripts/mpyrepl/__main__.py agent ls /sd
+python scripts/mpyrepl/__main__.py agent get /sd/main.py ./main.py
+python scripts/mpyrepl/__main__.py agent put ./main.py /sd/main.py
+python scripts/mpyrepl/__main__.py agent rm /sd/old.py --yes
+```
+
+`--busy wait`默认在 manager 端进行有界排队,`--queue-timeout 30`控制开始执行前的最长等待时间,`--busy reject`用于忙碌时立即失败.`--timeout`控制操作开始后的等待时间.标准输出始终是一条最终 JSON;使用 `--progress`时,匹配当前传输的进度 JSONL 写入 stderr.
+
+发现优先级、完整命令与选项、JSON 契约、退出码和安全限制见 [agent-cli_zh-CN.md](agent-cli_zh-CN.md).
 
 ## 当前限制
 
 - 运行时点式补全依赖实时设备状态，也可能超时。
 - raw REPL 会占用串口；当它处于活动状态时, 文件操作会通过它的控制通道执行。
+- 当前会话描述文件包含仅供本机进程使用的 manager token,必须继续忽略 `.mpy-workbench/`,不要复制到日志或版本库.
 - 如果所选解释器低于 Python 3.9，或缺少 `pyserial`，启动会失败。
 
 ## 故障排查

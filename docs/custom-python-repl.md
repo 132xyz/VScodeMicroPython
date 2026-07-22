@@ -17,6 +17,21 @@ This path exists to avoid the limitations of a plain terminal running `mpremote 
 
 REPL, Run Active File, interrupt/reset, port listing, board file browsing, and sync use the bundled `mpyrepl` helper path. There is no separate opt-in setting for the old experimental REPL path.
 
+## Package layout
+
+`scripts/mpyrepl/__main__.py` is the stable entry used by the extension and direct CLI calls. It configures the package path, routes `agent` before loading serial or TUI dependencies, and delegates all other commands to `app.py`.
+
+Runtime code is grouped by responsibility:
+
+- `clients/`: human REPL and standard-library-only Agent clients
+- `manager/`: NDJSON protocol, server, queueing, and shared device session
+- `runtime/`: serial transport, filesystem operations, models, decoding, and operation gate
+- `completion/`: parser, stub index, session symbols, fallback candidates, and device queries
+- `repl/`: prompt session, editor behavior, semantics, legacy control channel, and async runner
+- `tests/`: Python unit tests, test requirements, and recursive coverage runner
+
+Internal imports use the single `mpyrepl.*` package identity. `_vendor/` remains isolated and is added only by bootstrap for interactive paths that need prompt-toolkit and Pygments.
+
 ## Requirements
 
 - Select a fixed serial port first. The REPL does not start with `auto`.
@@ -77,25 +92,18 @@ The completer currently merges candidates from several sources:
 
 Stub-backed function and constructor completions include parameter details from `.pyi` files when available, such as `bpp: int = 3` and `timing: int = 1` in the completion menu.
 
+For objects already imported or defined in the current session, the REPL merges and caches one device `dir()` result. Stubs continue to provide signatures and type details, while the device result adds custom-firmware members that the generic stub does not declare.
+
 This means completion quality is highest when both of these are true:
 
 - code completion is enabled in the extension
 - the current board session has already imported or defined the names you want to complete
 
-### 3. Control-channel actions
+### 3. Shared serial manager
 
-When the custom REPL is active, the extension talks to it through a JSON control file stored under the system temp directory.
+After the extension connects, a hidden manager process exclusively owns the physical serial port. VS Code, the human REPL, and agent CLI clients use local NDJSON RPC connections to that manager instead of opening the COM port independently. The manager serializes execution and filesystem work while keeping interrupt available out of band.
 
-Supported control commands are:
-
-- `interrupt`
-- `soft-reset`
-- `interrupt-reset`
-- `exit`
-- `exec`
-- `fs`
-
-This is how extension commands such as interrupt, stop, close, Run Active File, and file operations can affect the still-running REPL process without killing the whole terminal first.
+The human REPL receives all device stdout/stderr, including output caused by agent commands and device background threads. One-shot agent commands consume only their own final RPC result by default, so unrelated output cannot corrupt their JSON response.
 
 ### 4. Unicode handling
 
@@ -106,6 +114,8 @@ That makes the custom REPL more robust on hosts where direct console output can 
 ### 5. Failure and diagnostics behavior
 
 Device-side exceptions are treated as normal REPL output. A traceback from code running on the board is printed and the prompt remains open for the next command.
+
+While protocol operations are idle, the serial manager probes the device connection. If the USB serial device is removed or the driver reports a `ReadFile`, `WriteFile`, or `ClearCommError` failure, the extension marks the serial connection as closed and disposes the invalid REPL terminal. Reconnect the device, then run Open Serial or Open REPL again.
 
 If the host-side REPL client itself crashes or exits with a non-zero code, VS Code keeps the terminal open instead of closing it automatically. The terminal should contain the Python traceback and a short `mpyrepl` diagnostic line.
 
@@ -145,13 +155,34 @@ Useful options include:
 
 - `--baudrate`
 - `--follow-timeout`
-- `--control-file`
+- `--control-file` for the legacy standalone async-REPL control path
 - `--dir-query-timeout`
+
+## Agent CLI attachment
+
+After the manager becomes ready, the extension atomically publishes `.mpy-workbench/serial-manager.json` in the workspace. Agent commands search upward from the current directory, or accept `--workspace`, `--session`, or `MPY_MANAGER_SESSION`. An invalid descriptor is an error; the agent path never falls back to opening the serial port.
+
+The agent path uses only the Python standard library and does not load prompt-toolkit, Pygments, or another TUI dependency. Common commands:
+
+```bash
+python scripts/mpyrepl/__main__.py agent status
+python scripts/mpyrepl/__main__.py agent exec --code "print(1)"
+python scripts/mpyrepl/__main__.py agent exec-file mpy/test.py
+python scripts/mpyrepl/__main__.py agent ls /sd
+python scripts/mpyrepl/__main__.py agent get /sd/main.py ./main.py
+python scripts/mpyrepl/__main__.py agent put ./main.py /sd/main.py
+python scripts/mpyrepl/__main__.py agent rm /sd/old.py --yes
+```
+
+`--busy wait` uses the manager's bounded queue by default, `--queue-timeout 30` limits how long a command may wait to start, and `--busy reject` fails immediately while busy. `--timeout` applies after the operation starts. Stdout contains exactly one final JSON object. With `--progress`, matching transfer progress JSONL is written to stderr.
+
+See [agent-cli.md](agent-cli.md) for discovery precedence, every command and option, JSON contracts, exit codes, and security constraints.
 
 ## Current limitations
 
 - Runtime dotted completion depends on live device state and may time out.
 - A raw REPL session owns the serial port; file operations are routed through its control channel when it is active.
+- The session descriptor contains a manager token intended only for local processes. Keep `.mpy-workbench/` ignored and never copy the token into logs or version control.
 - If the chosen interpreter is older than Python 3.9 or lacks `pyserial`, startup will fail.
 
 ## Troubleshooting

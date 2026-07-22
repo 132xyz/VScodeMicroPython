@@ -29,6 +29,7 @@ import {
   softReset,
   runActiveFile,
   isReplOpen,
+  closeReplClientTerminal,
   closeReplTerminal,
   openReplTerminal,
   toLocalRelative,
@@ -506,10 +507,25 @@ export async function activate(context: vscode.ExtensionContext) {
     refreshActionsTree();
   }
 
+  async function applyPortSelection(selectPort: () => Promise<string | undefined>): Promise<void> {
+    const selected = await selectPort();
+    if (!selected) return;
+    await closeReplTerminal(true);
+    await refreshActiveConnectUi();
+  }
+
   if (view) context.subscriptions.push(view);
   if (actionsView) context.subscriptions.push(actionsView);
   if (syncView) context.subscriptions.push(syncView);
   context.subscriptions.push(
+    vscode.commands.registerCommand("microPythonWorkBench._serialStateChanged", async (open: boolean) => {
+      if (!open) {
+        await closeReplClientTerminal();
+      } else {
+        isReplOpen();
+      }
+      refreshActionsTree();
+    }),
     vscode.commands.registerCommand("microPythonWorkBench.refresh", () => {
       utilityCommands.refresh(tree, decorations);
     }),
@@ -561,8 +577,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.cancelAllTasks", debugCommands.cancelAllTasks),
     // 已移除外部 mpremote 安装与状态检查命令
     vscode.commands.registerCommand("microPythonWorkBench.pickPort", async () => {
-      const selected = await boardCommands.pickPort();
-      if (selected) await refreshActiveConnectUi();
+      await applyPortSelection(() => boardCommands.pickPort());
     }),
     vscode.commands.registerCommand("microPythonWorkBench.serialSendCtrlC", replCommands.serialSendCtrlC),
     vscode.commands.registerCommand("microPythonWorkBench.stop", async () => {
@@ -580,8 +595,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.uploadToBoardHere", fileCommands.uploadToBoardHere),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
     vscode.commands.registerCommand("microPythonWorkBench.setPort", async (port: string) => {
-      const selected = await boardCommands.setPort(port);
-      if (selected) await refreshActiveConnectUi();
+      await applyPortSelection(() => boardCommands.setPort(port));
     }),
     // `flashMicroPython` command removed: esptool-based auto-flash was deleted
     vscode.commands.registerCommand("microPythonWorkBench.syncBaseline", syncCommands.syncBaseline),
@@ -633,7 +647,9 @@ export async function activate(context: vscode.ExtensionContext) {
     // Keep welcome button visibility in sync if user changes settings directly
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('microPythonWorkBench.connect')) {
-        refreshActiveConnectUi().catch(() => {});
+        closeReplTerminal(true)
+          .then(() => refreshActiveConnectUi())
+          .catch(error => console.error('[Extension] Failed to reset serial connection after port configuration changed:', error));
       }
     }),
 

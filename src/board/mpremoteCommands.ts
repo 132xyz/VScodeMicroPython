@@ -11,7 +11,7 @@ import {
   buildReplClientCommand,
   closeManager,
   ensureManagerStarted,
-  executeInManager,
+  getManagerStatus,
   interruptManager,
   isSerialManagerActive,
   softResetManager,
@@ -26,6 +26,7 @@ let replWasOpenBeforeRun = false;
 let replUsesCustomClient = false;
 let replControlFile: string | undefined;
 let replControlSequence = 0;
+let runFileCommandPending = false;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Debug logging helper. Controlled by the `microPythonWorkBench.debug` setting (default: false).
@@ -301,15 +302,31 @@ function resetCustomReplState(): void {
 }
 
 async function runActiveFileInCustomRepl(device: string, filePath: string): Promise<void> {
-  const source = await fs.promises.readFile(filePath, 'utf8');
-  await ensureManagerStarted(device);
-  const terminal = await getReplTerminal(undefined, { interrupt: false });
-  terminal.show(true);
-  const result = await executeInManager(source);
-  if (result.stderr) {
-    throw new Error(result.stderr.trim() || `Failed to run ${path.basename(filePath)}`);
+  if (runFileCommandPending) {
+    throw new Error("An active file run is already starting");
   }
-  debugLog("Executed active file through serial manager:", device, filePath);
+  await ensureManagerStarted(device);
+  const status = await getManagerStatus();
+  if (status?.busy) {
+    throw new Error(`Device is busy${status.operation ? ` (${status.operation})` : ""}`);
+  }
+  const terminal = await getReplTerminal(undefined, { interrupt: false });
+  await waitForReplClientReady();
+  runFileCommandPending = true;
+  terminal.sendText(`:mpy-run-file ${JSON.stringify(filePath)}`, true);
+  terminal.show(true);
+  setTimeout(() => { runFileCommandPending = false; }, 750);
+  debugLog("Queued active file through the REPL client:", device, filePath);
+}
+
+async function waitForReplClientReady(timeoutMs: number = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await getManagerStatus();
+    if ((status?.replClientCount ?? 0) >= 1) return;
+    await sleep(50);
+  }
+  throw new Error(`REPL client did not become ready after ${timeoutMs}ms`);
 }
 
 const logAutoSuspend = (...args: any[]) => debugLog("[MPY auto-suspend]", ...args);
@@ -718,7 +735,9 @@ function getRunTerminal(): vscode.Terminal {
     name: "ESP32 Run File",
     shellPath: process.platform === 'win32' ? "powershell.exe" : (process.env.SHELL || '/bin/bash'),
     cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-    env: termEnv
+    env: termEnv,
+    // Prevent the Python extension from injecting venv activation commands.
+    hideFromUser: true
   });
   // mark initialized false so caller can perform one-time terminal setup (eg. chcp)
   runTerminalInitialized = false;
@@ -768,7 +787,9 @@ export async function getReplTerminal(
   replTerminal = vscode.window.createTerminal({
     name: "ESP32 REPL",
     shellPath: process.platform === 'win32' ? "powershell.exe" : (process.env.SHELL || '/bin/bash'),
-    env: termEnv
+    env: termEnv,
+    // The terminal is shown by the caller after the REPL client is queued.
+    hideFromUser: true
   });
   // On Windows PowerShell, set console encoding to UTF-8 before running the connect command
   // so that Unicode output is handled correctly.
@@ -802,6 +823,7 @@ export function isReplOpen(): boolean {
 }
 
 export async function closeReplClientTerminal(userInitiated: boolean = false) {
+  runFileCommandPending = false;
   if (replTerminal) {
     try {
       replTerminal.dispose();
@@ -827,9 +849,13 @@ export async function openSerialConnection(): Promise<void> {
   if (!connect || connect === "auto") {
     throw new Error("Select a specific serial port first (not 'auto')");
   }
+
+  // Opening an explicit serial connection is also the reconnect path. Dispose
+  // any stale REPL client and stop its manager before starting a fresh session.
+  await closeReplTerminal(true);
   await ensureManagerStarted(mp.normalizeConnect(connect));
   setSerialContext(true);
-  setReplContext(isReplTerminalOpen());
+  setReplContext(false);
 }
 
 export async function openReplTerminal() {

@@ -24,10 +24,10 @@ dist/core/test.js
 dist/core/test.js.map
 
 # Python test and coverage artifacts are not needed at runtime.
+scripts/**/__pycache__/**
+scripts/**/*.pyc
 scripts/**/*.cover
-scripts/mpyrepl/test_*.py
-scripts/mpyrepl/run_python_tests_with_coverage.py
-scripts/mpyrepl/requirements-test.txt
+scripts/mpyrepl/tests/**
 
 # Developer-only helper scripts and notes.
 scripts/bench_upload.py

@@ -98,6 +98,10 @@ export class SerialManagerProcess {
     return this.endpoint;
   }
 
+  get currentPid(): number | undefined {
+    return this.child?.pid;
+  }
+
   async start(options: SerialManagerStartOptions): Promise<SerialManagerEndpoint> {
     if (this.child && this.endpoint && this.child.exitCode === null && !this.child.killed) {
       return this.endpoint;
@@ -168,19 +172,23 @@ export class SerialManagerProcess {
     return await this.waitForReady(child, token, options.startupTimeoutMs ?? 15000);
   }
 
-  async stop(timeoutMs = 3000): Promise<void> {
+  async stop(timeoutMs = 3000, options: { gracefulWaitMs?: number } = {}): Promise<void> {
     const child = this.child;
     this.endpoint = undefined;
     this.child = undefined;
     if (!child) return;
     if (child.exitCode !== null || child.killed) return;
-    try {
-      await waitForExit(child, timeoutMs);
-      return;
-    } catch {
-      // Kill below when the manager did not exit after graceful shutdown.
+    const gracefulWaitMs = options.gracefulWaitMs ?? timeoutMs;
+    if (gracefulWaitMs > 0) {
+      try {
+        await waitForExit(child, gracefulWaitMs);
+        return;
+      } catch {
+        // Kill below when the manager did not exit after graceful shutdown.
+      }
     }
     child.kill();
+    if (child.exitCode !== null) return;
     await waitForExit(child, timeoutMs).catch(() => undefined);
   }
 

@@ -1,6 +1,6 @@
 jest.mock("vscode");
 
-import { wrapReplClientCommand } from "../src/board/serialManager";
+import { isConnectedManagerState, wrapReplClientCommand } from "../src/board/serialManager";
 
 describe("serialManager command helpers", () => {
   beforeEach(() => {
@@ -18,5 +18,14 @@ describe("serialManager command helpers", () => {
     } else {
       expect(command).toContain("code=$?");
     }
+  });
+
+  test("manager transport state excludes stopped and failed sessions", () => {
+    expect(isConnectedManagerState("ready")).toBe(true);
+    expect(isConnectedManagerState("busy")).toBe(true);
+    expect(isConnectedManagerState("cancelling")).toBe(true);
+    expect(isConnectedManagerState("stopped")).toBe(false);
+    expect(isConnectedManagerState("failed")).toBe(false);
+    expect(isConnectedManagerState("closing")).toBe(false);
   });
 });

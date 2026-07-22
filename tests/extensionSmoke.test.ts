@@ -122,6 +122,7 @@ jest.mock('../src/commands/boardCommands', () => ({
 }));
 jest.mock('../src/commands/replCommands', () => ({
   replCommands: {
+    openSerial: jest.fn().mockResolvedValue(undefined),
     serialSendCtrlC: jest.fn(),
     stop: jest.fn().mockResolvedValue(undefined),
     softReset: jest.fn(),
@@ -197,6 +198,12 @@ const mpremoteCommandsModule = require('../src/board/mpremoteCommands') as {
   closeReplTerminal: jest.Mock;
   suspendSerialSessionsForAutoSync: jest.Mock;
   restoreSerialSessionsFromSnapshot: jest.Mock;
+};
+const boardCommandsModule = require('../src/commands/boardCommands') as {
+  boardCommands: {
+    pickPort: jest.Mock;
+    setPort: jest.Mock;
+  };
 };
 
 function createStatusBarItem() {
@@ -401,6 +408,42 @@ describe('extension activate smoke coverage', () => {
     expect(mpremoteCommandsModule.suspendSerialSessionsForAutoSync).toHaveBeenCalled();
     expect(mpModule.cpToDevice).toHaveBeenCalledWith('/workspace/src/main.py', '/main.py');
     expect(mpremoteCommandsModule.restoreSerialSessionsFromSnapshot).toHaveBeenCalled();
+  });
+
+  test('port selection closes the current REPL and serial manager state', async () => {
+    const { activate } = require('../src/core/extension') as typeof import('../src/core/extension');
+    const context = {
+      workspaceState: {
+        get: jest.fn(() => undefined),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      subscriptions: [] as Array<{ dispose?: () => void }>,
+      extension: {
+        packageJSON: {
+          contributes: {
+            views: {
+              explorer: [
+                { id: 'microPythonWorkBenchFsView' },
+                { id: 'microPythonWorkBenchActionsView' },
+                { id: 'microPythonWorkBenchSyncView' },
+              ],
+            },
+          },
+        },
+      },
+    } as any;
+    boardCommandsModule.boardCommands.pickPort.mockResolvedValueOnce('COM7');
+    boardCommandsModule.boardCommands.setPort.mockResolvedValueOnce('COM8');
+
+    await activate(context);
+    const pickPort = getRegisteredCommandHandler('microPythonWorkBench.pickPort');
+    const setPort = getRegisteredCommandHandler('microPythonWorkBench.setPort');
+
+    await pickPort();
+    await setPort('COM8');
+
+    expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenNthCalledWith(1, true);
+    expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenNthCalledWith(2, true);
   });
 
   test('deactivate closes the REPL terminal and serial manager path', async () => {
