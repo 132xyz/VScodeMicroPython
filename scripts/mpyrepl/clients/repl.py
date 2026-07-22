@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import os
+import ntpath
 import queue
 import socket
 import sys
@@ -400,6 +400,11 @@ def parse_run_file_command(source: str) -> str | None:
     return file_path
 
 
+def _file_label(file_path: str) -> str:
+    """Return a display label for Windows or POSIX paths on any host OS."""
+    return ntpath.basename(file_path) or file_path
+
+
 def _run_file(
     client: ManagerClient,
     host: str,
@@ -409,7 +414,7 @@ def _run_file(
     file_path: str,
 ) -> bool:
     """Read and execute one local file through the manager-owned transport."""
-    label = os.path.basename(file_path) or file_path
+    label = _file_label(file_path)
     try:
         with open(file_path, "r", encoding="utf-8-sig") as source_file:
             source = source_file.read()

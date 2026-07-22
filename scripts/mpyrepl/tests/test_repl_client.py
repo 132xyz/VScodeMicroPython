@@ -194,6 +194,10 @@ class ReplClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JSON string"):
             repl_client.parse_run_file_command(":mpy-run-file not-json")
 
+    def test_run_file_labels_accept_windows_and_posix_paths(self) -> None:
+        self.assertEqual(repl_client._file_label("C:\\project\\demo.py"), "demo.py")
+        self.assertEqual(repl_client._file_label("/workspace/project/demo.py"), "demo.py")
+
     def test_manager_client_call_handles_events_and_response(self) -> None:
         client = repl_client.ManagerClient("127.0.0.1", 1, "tok")
         fake_socket = FakeSocket()
