@@ -14,7 +14,7 @@ MicroPython 工作台是一个面向 ESP32 类开发板及类似设备的 VS Cod
 - 集成 REPL 终端, 并在同一会话内运行活动文件
 - 开发板操作命令：中断、软重置、重连等
 - 基于 stub 的 MicroPython 代码补全、安装、自动选择与 Pylance 集成
-- 内置 Python REPL 客户端, 支持多行编辑、补全、文件传输和控制通道中断/重置
+- 内置 Python REPL 客户端, 支持多行编辑、补全、成对符号编辑、文件传输和控制通道中断/重置
 
 **连接开发板并运行文件**
 ![运行文件演示](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)

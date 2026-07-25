@@ -15,7 +15,7 @@ Board communication uses the bundled Python `scripts/mpyrepl` client for REPL, R
 - Integrated REPL terminal with Run Active File executed in the same session
 - Board actions such as interrupt, soft reset, and reconnect
 - MicroPython code completion with stub installation, auto-selection, and Pylance integration
-- Built-in Python REPL client with multiline editing, completion, file transfer, and control-channel based interrupt/reset handling
+- Built-in Python REPL client with multiline editing, completion, paired-character editing, file transfer, and control-channel based interrupt/reset handling
 
 **Connect to the board and run a file**
 ![Run file demo](https://github.com/132xyz/VScodeMicroPython/blob/main/assets/run-file.gif?raw=true)

@@ -11,6 +11,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.history import InMemoryHistory
 
+from mpyrepl.repl.auto_pairs import AutoPairEditors, OPEN_TO_CLOSE, QUOTES
 from mpyrepl.repl.indent import INDENT, continuation_default, is_block_complete
 from mpyrepl.repl.lexer import MicroPythonLexer, build_repl_style
 
@@ -108,6 +109,7 @@ def build_prompt_session(
     :return: Prompt session instance.
     """
     bindings = KeyBindings()
+    auto_pairs = AutoPairEditors()
 
     @bindings.add("c-d")
     def _request_soft_reset(event) -> None:
@@ -190,11 +192,31 @@ def build_prompt_session(
     @bindings.add("backspace")
     def _handle_backspace(event) -> None:
         buffer = event.current_buffer
+        if auto_pairs.for_buffer(buffer).delete_pair_or_selection():
+            return
         delete_count = _dedent_backspace_count(buffer.document)
         if delete_count > 0:
             buffer.delete_before_cursor(count=delete_count)
             return
         buffer.delete_before_cursor(count=1)
+
+    for opening in OPEN_TO_CLOSE:
+        def _handle_opening(event, opening=opening) -> None:
+            auto_pairs.for_buffer(event.current_buffer).insert_opening(opening)
+
+        bindings.add(opening)(_handle_opening)
+
+    for closing in OPEN_TO_CLOSE.values():
+        def _handle_closing(event, closing=closing) -> None:
+            auto_pairs.for_buffer(event.current_buffer).insert_closing(closing)
+
+        bindings.add(closing)(_handle_closing)
+
+    for quote in QUOTES:
+        def _handle_quote(event, quote=quote) -> None:
+            auto_pairs.for_buffer(event.current_buffer).insert_quote(quote)
+
+        bindings.add(quote)(_handle_quote)
 
     return PromptSession(
         lexer=MicroPythonLexer(

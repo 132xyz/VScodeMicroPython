@@ -81,15 +81,19 @@ def print_coverage_summary(counts: dict[tuple[str, int], int]) -> float:
     return overall_percent
 
 
-def main() -> int:
-    """Run unittest discovery under trace and print local coverage."""
+def discover_and_run_tests(runner: unittest.TextTestRunner) -> unittest.TestResult:
+    """Discover and run tests while source-module imports are being traced."""
     loader = unittest.defaultTestLoader
     suite = loader.discover(str(TEST_DIR), pattern="test_*.py")
+    return runner.run(suite)
 
+
+def main() -> int:
+    """Run unittest discovery under trace and print local coverage."""
     stream = io.StringIO()
     runner = unittest.TextTestRunner(stream=stream, verbosity=1)
     tracer = trace.Trace(count=True, trace=False)
-    result = tracer.runfunc(runner.run, suite)
+    result = tracer.runfunc(discover_and_run_tests, runner)
 
     output = stream.getvalue()
     if output:

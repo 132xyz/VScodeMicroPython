@@ -78,6 +78,13 @@ Current behavior includes:
 - smart Enter behavior for complete / incomplete blocks
 - Tab indent vs completion selection
 - indentation-aware Backspace handling
+- automatic `()`, `[]`, `{}`, single-quote, and double-quote pairs
+
+Automatic closers are tracked as the line changes. Typing the matching closer
+overtype-moves across that automatic character, while Backspace between an empty
+pair removes both sides. Existing characters from history or pasted text are not
+treated as automatic closers. Selected text is wrapped when an opening delimiter
+or quote is typed, and brackets stay literal inside strings and comments.
 
 ### 2. Completion sources
 
