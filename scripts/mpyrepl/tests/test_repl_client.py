@@ -162,6 +162,18 @@ class TransportLostManagerClient(FakeManagerClient):
         return True
 
 
+class ControlTransportLostManagerClient(FakeManagerClient):
+    fail_method = ""
+
+    def call(self, method: str, params=None):
+        self.calls.append((method, params or {}))
+        if method == "manager.status":
+            return {"state": "ready"}
+        if method == self.fail_method:
+            raise repl_client.ManagerRequestError("transport_lost", "serial connection lost")
+        return True
+
+
 class ExecWaitsForCtrlCManagerClient(FakeManagerClient):
     interrupt_event = threading.Event()
 
@@ -357,10 +369,36 @@ class ReplClientTests(unittest.TestCase):
 
         client = FakeManagerClient.instances[0]
         exec_calls = [call for call in client.calls if call[0] == "repl.exec"]
-        self.assertEqual(code, 0)
+        self.assertEqual(code, repl_client.EXIT_TRANSPORT_LOST)
         self.assertEqual(exec_calls, [("repl.exec", {"source": "print(1)"})])
         self.assertTrue(client.closed)
         self.assertIn("REPL client is closing", stderr.getvalue())
+
+    def test_control_transport_loss_returns_diagnostic_exit_code(self) -> None:
+        cases = (
+            ("device.interrupt", [KeyboardInterrupt()]),
+            ("device.softReset", [PROMPT_SOFT_RESET]),
+        )
+        for method, prompt_values in cases:
+            with self.subTest(method=method):
+                FakeManagerClient.instances.clear()
+                ControlTransportLostManagerClient.fail_method = method
+                prompt = FakePromptSession(prompt_values)
+                stderr = io.StringIO()
+
+                with mock.patch.object(
+                    repl_client,
+                    "ManagerClient",
+                    ControlTransportLostManagerClient,
+                ), mock.patch.object(
+                    repl_client,
+                    "build_prompt_session",
+                    return_value=prompt,
+                ), mock.patch.object(sys, "stderr", stderr):
+                    code = repl_client.run_repl_client("127.0.0.1:5000", "tok")
+
+                self.assertEqual(code, repl_client.EXIT_TRANSPORT_LOST)
+                self.assertIn("REPL client is closing", stderr.getvalue())
 
     def test_run_repl_client_executes_local_file_verbatim(self) -> None:
         FakeManagerClient.instances.clear()

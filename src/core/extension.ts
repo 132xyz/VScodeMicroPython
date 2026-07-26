@@ -29,7 +29,8 @@ import {
   softReset,
   runActiveFile,
   isReplOpen,
-  closeReplClientTerminal,
+  isReplTerminalOpen,
+  preserveReplTerminalForDiagnostics,
   closeReplTerminal,
   openReplTerminal,
   toLocalRelative,
@@ -519,10 +520,13 @@ export async function activate(context: vscode.ExtensionContext) {
   if (syncView) context.subscriptions.push(syncView);
   context.subscriptions.push(
     vscode.commands.registerCommand("microPythonWorkBench._serialStateChanged", async (open: boolean) => {
-      if (!open) {
-        await closeReplClientTerminal();
+      // A manager crash or lost serial transport must not destroy the REPL
+      // terminal. The client command keeps failed sessions open so their
+      // traceback remains visible. Explicit user close commands dispose it.
+      if (open) {
+        isReplTerminalOpen();
       } else {
-        isReplOpen();
+        await preserveReplTerminalForDiagnostics();
       }
       refreshActionsTree();
     }),
@@ -791,7 +795,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export async function deactivate() {
   try {
-    await closeReplTerminal(true);
+    await closeReplTerminal(false);
   } catch (error) {
     console.error("[Extension] Failed to close serial sessions during deactivation:", error);
   }

@@ -275,6 +275,31 @@ describe('board mpremoteCommands coverage', () => {
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('setContext', 'microPythonWorkBench.replOpen', false);
   });
 
+  test('transport failure detaches but preserves the diagnostic REPL terminal', async () => {
+    const commands = require('../src/board/mpremoteCommands') as typeof import('../src/board/mpremoteCommands');
+    const failedTerminal = await commands.getReplTerminal();
+
+    await commands.preserveReplTerminalForDiagnostics();
+
+    expect(failedTerminal.dispose).not.toHaveBeenCalled();
+    expect(commands.isReplTerminalOpen()).toBe(false);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+      'setContext',
+      'microPythonWorkBench.replOpen',
+      false,
+    );
+
+    const replacementTerminal = await commands.getReplTerminal();
+    expect(replacementTerminal).not.toBe(failedTerminal);
+    expect(vscode.window.createTerminal).toHaveBeenCalledTimes(2);
+
+    const automaticClose = commands.closeReplTerminal();
+    await jest.runOnlyPendingTimersAsync();
+    await automaticClose;
+    expect(replacementTerminal.dispose).not.toHaveBeenCalled();
+    expect(serialManager.closeManager).toHaveBeenCalled();
+  });
+
   test('repl terminal starts hidden manager client command', async () => {
     (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
       get: jest.fn((key: string, defaultValue: unknown) => {

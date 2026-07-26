@@ -83,6 +83,8 @@ jest.mock('../src/board/mpremoteCommands', () => ({
   softReset: jest.fn(),
   runActiveFile: jest.fn(),
   isReplOpen: jest.fn(),
+  isReplTerminalOpen: jest.fn(),
+  preserveReplTerminalForDiagnostics: jest.fn().mockResolvedValue(undefined),
   closeReplTerminal: jest.fn().mockResolvedValue(undefined),
   openReplTerminal: jest.fn().mockResolvedValue(undefined),
   toLocalRelative: jest.fn(),
@@ -195,6 +197,9 @@ const localizationModule = require('../src/core/localization') as {
 };
 const mpremoteCommandsModule = require('../src/board/mpremoteCommands') as {
   openReplTerminal: jest.Mock;
+  isReplOpen: jest.Mock;
+  isReplTerminalOpen: jest.Mock;
+  preserveReplTerminalForDiagnostics: jest.Mock;
   closeReplTerminal: jest.Mock;
   suspendSerialSessionsForAutoSync: jest.Mock;
   restoreSerialSessionsFromSnapshot: jest.Mock;
@@ -376,6 +381,7 @@ describe('extension activate smoke coverage', () => {
     const refreshFileTreeCache = getRegisteredCommandHandler('microPythonWorkBench.refreshFileTreeCache');
     const openRepl = getRegisteredCommandHandler('microPythonWorkBench.openRepl');
     const stopSerial = getRegisteredCommandHandler('microPythonWorkBench.stopSerial');
+    const serialStateChanged = getRegisteredCommandHandler('microPythonWorkBench._serialStateChanged');
     const toggleWorkspaceAutoSync = getRegisteredCommandHandler('microPythonWorkBench.toggleWorkspaceAutoSync');
 
     await refreshStubIndex();
@@ -384,6 +390,8 @@ describe('extension activate smoke coverage', () => {
     await refreshFileTreeCache();
     await openRepl();
     await stopSerial();
+    await serialStateChanged(false);
+    await serialStateChanged(true);
     await toggleWorkspaceAutoSync();
 
     expect(stubIndexModule.refreshIndex).toHaveBeenCalled();
@@ -393,6 +401,8 @@ describe('extension activate smoke coverage', () => {
     expect(localizationModule.Localization.showInfo).toHaveBeenCalled();
     expect(mpremoteCommandsModule.openReplTerminal).toHaveBeenCalled();
     expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenCalledWith(true);
+    expect(mpremoteCommandsModule.preserveReplTerminalForDiagnostics).toHaveBeenCalled();
+    expect(mpremoteCommandsModule.isReplTerminalOpen).toHaveBeenCalled();
     expect(context.workspaceState.update).toHaveBeenCalledWith('autoSyncOnSave', false);
 
     fsPromises.access.mockImplementation(async (targetPath: string) => {
@@ -446,12 +456,12 @@ describe('extension activate smoke coverage', () => {
     expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenNthCalledWith(2, true);
   });
 
-  test('deactivate closes the REPL terminal and serial manager path', async () => {
+  test('deactivate releases the manager without explicitly disposing diagnostics', async () => {
     const { deactivate } = require('../src/core/extension') as typeof import('../src/core/extension');
 
     await deactivate();
 
-    expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenCalledWith(true);
+    expect(mpremoteCommandsModule.closeReplTerminal).toHaveBeenCalledWith(false);
   });
 });
 

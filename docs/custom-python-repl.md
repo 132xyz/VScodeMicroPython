@@ -122,9 +122,15 @@ That makes the custom REPL more robust on hosts where direct console output can 
 
 Device-side exceptions are treated as normal REPL output. A traceback from code running on the board is printed and the prompt remains open for the next command.
 
-While protocol operations are idle, the serial manager probes the device connection. If the USB serial device is removed or the driver reports a `ReadFile`, `WriteFile`, or `ClearCommError` failure, the extension marks the serial connection as closed and disposes the invalid REPL terminal. Reconnect the device, then run Open Serial or Open REPL again.
+While protocol operations are idle, the serial manager probes the device connection. If the USB serial device is removed or the driver reports a `ReadFile`, `WriteFile`, or `ClearCommError` failure, the extension marks the serial connection as closed but leaves the REPL terminal open for diagnostics. Reconnect the device, then run Open Serial or Open REPL again.
 
 If the host-side REPL client itself crashes or exits with a non-zero code, VS Code keeps the terminal open instead of closing it automatically. The terminal should contain the Python traceback and a short `mpyrepl` diagnostic line.
+
+Automatic failures, including serial transport loss, manager exit, and failed
+recovery attempts, also leave the REPL terminal open for diagnostics. The
+extension disposes it only for an explicit close/stop or a user-requested port
+switch/reconnect. VS Code itself still controls terminals during window or
+application shutdown.
 
 ## Key controls inside the REPL
 

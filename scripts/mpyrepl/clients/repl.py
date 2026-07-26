@@ -30,6 +30,7 @@ from mpyrepl.repl.session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_se
 
 CTRL_C = "\x03"
 RUN_FILE_PREFIX = ":mpy-run-file "
+EXIT_TRANSPORT_LOST = 2
 _TRANSPORT_LOST = object()
 CtrlCReader = Callable[[Input, float], bool]
 
@@ -319,6 +320,7 @@ def run_repl_client(endpoint: str, token: str) -> int:
     completer = ManagerCompleter(client)
     input_obj = create_input()
     session = build_prompt_session(completer=completer, input=input_obj, complete_while_typing=True)
+    exit_code = 0
     try:
         client.call("manager.hello", {"role": "repl"})
         status = client.call("manager.status")
@@ -342,6 +344,7 @@ def run_repl_client(endpoint: str, token: str) -> int:
                 except ManagerRequestError as exc:
                     _report_manager_error(exc)
                     if exc.code == "transport_lost":
+                        exit_code = EXIT_TRANSPORT_LOST
                         break
                     continue
                 sys.stderr.write("\n[mpyrepl] interrupt sent\n")
@@ -357,6 +360,7 @@ def run_repl_client(endpoint: str, token: str) -> int:
                 except ManagerRequestError as exc:
                     _report_manager_error(exc)
                     if exc.code == "transport_lost":
+                        exit_code = EXIT_TRANSPORT_LOST
                         break
                 continue
             if not stripped:
@@ -371,15 +375,17 @@ def run_repl_client(endpoint: str, token: str) -> int:
 
             if run_file is not None:
                 if not _run_file(client, host, port, token, input_obj, run_file):
+                    exit_code = EXIT_TRANSPORT_LOST
                     break
                 continue
 
             if _execute_source(client, host, port, token, input_obj, source) is _TRANSPORT_LOST:
+                exit_code = EXIT_TRANSPORT_LOST
                 break
     finally:
         client.close()
         input_obj.close()
-    return 0
+    return exit_code
 
 
 def parse_run_file_command(source: str) -> str | None:

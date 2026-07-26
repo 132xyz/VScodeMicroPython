@@ -822,7 +822,25 @@ export function isReplOpen(): boolean {
   return open;
 }
 
+export async function preserveReplTerminalForDiagnostics(): Promise<void> {
+  runFileCommandPending = false;
+  if (replTerminal) {
+    // Drop ownership without disposing the VS Code terminal. This lets a new
+    // REPL be opened while the failed terminal remains available for review.
+    replTerminal = undefined;
+  }
+  await clearCustomReplControlFile();
+  resetCustomReplState();
+  setReplContext(false);
+  setSerialContext(isSerialManagerActive());
+}
+
 export async function closeReplClientTerminal(userInitiated: boolean = false) {
+  if (!userInitiated) {
+    await preserveReplTerminalForDiagnostics();
+    return;
+  }
+
   runFileCommandPending = false;
   if (replTerminal) {
     try {
@@ -833,7 +851,7 @@ export async function closeReplClientTerminal(userInitiated: boolean = false) {
   }
   await clearCustomReplControlFile();
   resetCustomReplState();
-  userClosedRepl = userInitiated || userClosedRepl;
+  userClosedRepl = true;
   setReplContext(false);
   setSerialContext(isSerialManagerActive());
 }

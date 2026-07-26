@@ -416,29 +416,14 @@ export function runMpremote(
         )) {
           console.log(`mpremote command failed (attempt ${attempt}/${maxRetries + 1}), retrying...`);
 
-          // If the error indicates the serial port may be in use, try to cancel any
-          // active mpremote child process managed by MpRemoteManager, then close terminals.
+          // Cancel only the child process owned by this legacy command path.
+          // REPL terminals are diagnostic surfaces and must survive automatic
+          // recovery failures; only explicit user actions may dispose them.
           if (errorStr.includes("it may be in use by another program") || errorStr.includes("failed to access")) {
             try {
-              // Cancel active child process first to free the port
               try { MpRemoteManager.cancelActive(); } catch (e) { console.warn('[DEBUG] runMpremote: cancelActive failed', e); }
-
-              const terms = vscode.window.terminals.slice();
-              for (const t of terms) {
-                const name = (t.name || '').toLowerCase();
-                if (name.includes('esp32 repl') || name.includes('repl') || name.includes('esp32 run') || name.includes('run file')) {
-                  try {
-                    console.log('[DEBUG] runMpremote: Disposing terminal that may hold serial port:', t.name);
-                    // Try gentle interrupt first
-                    try { t.sendText('\x18', false); } catch {}
-                    t.dispose();
-                  } catch (e) {
-                    console.warn('[DEBUG] runMpremote: Failed to dispose terminal', t.name, e);
-                  }
-                }
-              }
             } catch (e) {
-              console.warn('[DEBUG] runMpremote: Error while attempting to cancel child/close terminals:', e);
+              console.warn('[DEBUG] runMpremote: Error while attempting to cancel child process:', e);
             }
           }
 
