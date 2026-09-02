@@ -322,68 +322,71 @@ def run_repl_client(endpoint: str, token: str) -> int:
     session = build_prompt_session(completer=completer, input=input_obj, complete_while_typing=True)
     exit_code = 0
     try:
-        client.call("manager.hello", {"role": "repl"})
-        status = client.call("manager.status")
-        sys.stderr.write(
-            "[mpyrepl] connected to manager on %s:%s (%s)\n"
-            % (host, port, status.get("state", "unknown") if isinstance(status, dict) else "unknown")
-        )
-        sys.stderr.flush()
-        while True:
+        with _patch_repl_output():
             try:
-                with _patch_prompt_output():
-                    source = session.prompt(
-                        ">>> ",
-                        pre_run=lambda: session.default_buffer.load_history_if_not_yet_loaded(),
-                    )
-            except EOFError:
-                break
-            except KeyboardInterrupt:
-                try:
-                    client.call("device.interrupt")
-                except ManagerRequestError as exc:
-                    _report_manager_error(exc)
-                    if exc.code == "transport_lost":
+                client.call("manager.hello", {"role": "repl"})
+                status = client.call("manager.status")
+                sys.stderr.write(
+                    "[mpyrepl] connected to manager on %s:%s (%s)\n"
+                    % (host, port, status.get("state", "unknown") if isinstance(status, dict) else "unknown")
+                )
+                sys.stderr.flush()
+                while True:
+                    try:
+                        source = session.prompt(
+                            ">>> ",
+                            pre_run=lambda: session.default_buffer.load_history_if_not_yet_loaded(),
+                        )
+                    except EOFError:
+                        break
+                    except KeyboardInterrupt:
+                        try:
+                            client.call("device.interrupt")
+                        except ManagerRequestError as exc:
+                            _report_manager_error(exc)
+                            if exc.code == "transport_lost":
+                                exit_code = EXIT_TRANSPORT_LOST
+                                break
+                            continue
+                        sys.stderr.write("\n[mpyrepl] interrupt sent\n")
+                        sys.stderr.flush()
+                        continue
+
+                    stripped = source.strip()
+                    if source == PROMPT_EXIT or stripped in {":q", ":quit", ":exit"}:
+                        break
+                    if source == PROMPT_SOFT_RESET:
+                        try:
+                            client.call("device.softReset")
+                        except ManagerRequestError as exc:
+                            _report_manager_error(exc)
+                            if exc.code == "transport_lost":
+                                exit_code = EXIT_TRANSPORT_LOST
+                                break
+                        continue
+                    if not stripped:
+                        continue
+
+                    try:
+                        run_file = parse_run_file_command(source)
+                    except ValueError as exc:
+                        sys.stderr.write("\n[mpyrepl] invalid run-file command: %s\n" % exc)
+                        sys.stderr.flush()
+                        continue
+
+                    if run_file is not None:
+                        if not _run_file(client, host, port, token, input_obj, run_file):
+                            exit_code = EXIT_TRANSPORT_LOST
+                            break
+                        continue
+
+                    if _execute_source(client, host, port, token, input_obj, source) is _TRANSPORT_LOST:
                         exit_code = EXIT_TRANSPORT_LOST
                         break
-                    continue
-                sys.stderr.write("\n[mpyrepl] interrupt sent\n")
-                sys.stderr.flush()
-                continue
-
-            stripped = source.strip()
-            if source == PROMPT_EXIT or stripped in {":q", ":quit", ":exit"}:
-                break
-            if source == PROMPT_SOFT_RESET:
-                try:
-                    client.call("device.softReset")
-                except ManagerRequestError as exc:
-                    _report_manager_error(exc)
-                    if exc.code == "transport_lost":
-                        exit_code = EXIT_TRANSPORT_LOST
-                        break
-                continue
-            if not stripped:
-                continue
-
-            try:
-                run_file = parse_run_file_command(source)
-            except ValueError as exc:
-                sys.stderr.write("\n[mpyrepl] invalid run-file command: %s\n" % exc)
-                sys.stderr.flush()
-                continue
-
-            if run_file is not None:
-                if not _run_file(client, host, port, token, input_obj, run_file):
-                    exit_code = EXIT_TRANSPORT_LOST
-                    break
-                continue
-
-            if _execute_source(client, host, port, token, input_obj, source) is _TRANSPORT_LOST:
-                exit_code = EXIT_TRANSPORT_LOST
-                break
+            finally:
+                # Stop the event reader before restoring sys.stdout/sys.stderr.
+                client.close()
     finally:
-        client.close()
         input_obj.close()
     return exit_code
 
@@ -594,11 +597,19 @@ def _null_context() -> Iterator[None]:
 
 
 @contextmanager
-def _patch_prompt_output() -> Iterator[None]:
-    """Keep live output prompt-safe, with a fallback for non-console test hosts."""
+def _patch_repl_output() -> Iterator[None]:
+    """Keep all live output prompt-safe for the complete client lifetime."""
+    try:
+        if not sys.stdout.isatty():
+            yield
+            return
+    except (AttributeError, OSError, ValueError):
+        yield
+        return
+
     with ExitStack() as stack:
         try:
-            stack.enter_context(patch_stdout(raw=True))
+            stack.enter_context(patch_stdout(raw=False))
         except Exception:
             pass
         yield

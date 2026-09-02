@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import io
 import os
 import queue
@@ -356,6 +357,78 @@ class ReplClientTests(unittest.TestCase):
         self.assertIn(("repl.exec", {"source": "bad()"}), client.calls)
         self.assertIn(("repl.exec", {"source": "print(2)"}), client.calls)
         self.assertTrue(client.closed)
+
+    def test_run_repl_client_keeps_one_output_scope_until_reader_closes(self) -> None:
+        FakeManagerClient.instances.clear()
+        prompt = FakePromptSession(["print(1)", "print(2)", ":exit"])
+        events: list[str] = []
+
+        class LifecycleManagerClient(FakeManagerClient):
+            def close(self) -> None:
+                events.append("client-close")
+                super().close()
+
+        @contextmanager
+        def output_scope():
+            events.append("output-enter")
+            try:
+                yield
+            finally:
+                events.append("output-exit")
+
+        with mock.patch.object(
+            repl_client,
+            "ManagerClient",
+            LifecycleManagerClient,
+        ), mock.patch.object(
+            repl_client,
+            "build_prompt_session",
+            return_value=prompt,
+        ), mock.patch.object(
+            repl_client,
+            "_patch_repl_output",
+            output_scope,
+        ):
+            code = repl_client.run_repl_client("127.0.0.1:5000", "tok")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(events, ["output-enter", "client-close", "output-exit"])
+        client = FakeManagerClient.instances[0]
+        self.assertEqual(
+            [call for call in client.calls if call[0] == "repl.exec"],
+            [
+                ("repl.exec", {"source": "print(1)"}),
+                ("repl.exec", {"source": "print(2)"}),
+            ],
+        )
+
+    def test_patch_repl_output_uses_text_safe_proxy_for_tty(self) -> None:
+        stdout = io.StringIO()
+        stdout.isatty = mock.Mock(return_value=True)
+
+        @contextmanager
+        def proxy_context():
+            yield
+
+        with mock.patch.object(sys, "stdout", stdout), mock.patch.object(
+            repl_client,
+            "patch_stdout",
+            return_value=proxy_context(),
+        ) as patch_stdout:
+            with repl_client._patch_repl_output():
+                pass
+
+        patch_stdout.assert_called_once_with(raw=False)
+
+    def test_patch_repl_output_skips_proxy_without_tty(self) -> None:
+        with mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(
+            repl_client,
+            "patch_stdout",
+        ) as patch_stdout:
+            with repl_client._patch_repl_output():
+                pass
+
+        patch_stdout.assert_not_called()
 
     def test_run_repl_client_exits_after_transport_loss(self) -> None:
         FakeManagerClient.instances.clear()

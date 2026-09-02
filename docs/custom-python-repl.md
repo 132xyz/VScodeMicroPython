@@ -112,6 +112,8 @@ After the extension connects, a hidden manager process exclusively owns the phys
 
 The human REPL continuously drains manager events on a background reader, so device stdout/stderr appears while the prompt is idle without waiting for another input or completion request. Prompt-toolkit redraws the current editable input above the live output. This includes output caused by Agent commands and device background threads. One-shot Agent commands consume only their own final RPC result by default, so unrelated output cannot corrupt their JSON response.
 
+The human REPL keeps one prompt-toolkit output proxy for the complete client lifetime and restores the standard streams only after the manager event reader stops. ANSI escape sequences from device output are handled as safe text instead of being allowed to change host terminal modes or corrupt the active prompt.
+
 ### 4. Unicode handling
 
 The Python client incrementally decodes REPL output and uses a Unicode-safe stream write fallback when the host console encoding cannot represent the decoded text.
