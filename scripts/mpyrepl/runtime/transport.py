@@ -24,6 +24,21 @@ class TransportError(RuntimeError):
     """Raised when the transport cannot complete a protocol step."""
 
 
+class ReplSyncError(TransportError):
+    """Report REPL synchronization failure without implying serial I/O loss."""
+
+    def __init__(self, message: str, reset_sent: bool = False, reset_observed: bool = False) -> None:
+        """Store whether the failed protocol step may have reset the device.
+
+        :param message: Protocol diagnostic.
+        :param reset_sent: Whether Ctrl-D was sent before the failure.
+        :param reset_observed: Whether the soft reboot marker was received.
+        """
+        super().__init__(message)
+        self.reset_sent = reset_sent
+        self.reset_observed = reset_observed
+
+
 class TransportInterrupted(TransportError):
     """Raised when a user interrupt breaks a long-running follow operation."""
 
@@ -122,7 +137,7 @@ class SerialReplTransport:
         :param ending: Byte suffix to stop on.
         :param timeout: Inter-character timeout in seconds.
         :param overall_timeout: Overall timeout in seconds.
-        :param consumer: Optional callback for streaming one-byte chunks.
+        :param consumer: Optional callback for streaming incoming chunks.
         :param include_ending_in_consumer: Whether to forward the final suffix.
         :return: Accumulated bytes.
         """
@@ -133,16 +148,8 @@ class SerialReplTransport:
 
         while True:
             now = time.monotonic()
-            if timeout is not None and now >= last_char_at + timeout:
-                return bytes(data)
             if overall_timeout is not None and now >= started_at + overall_timeout:
-                return bytes(data)
-            if (
-                interrupt_timeout is not None
-                and self._interrupt_requested_at is not None
-                and now >= max(self._interrupt_requested_at, last_char_at) + interrupt_timeout
-            ):
-                return bytes(data)
+                break
 
             pending = len(self._read_buffer) or self._safe_in_waiting()
             read_size = min(max(1, pending), READ_UNTIL_MAX_CHUNK_SIZE)
@@ -173,7 +180,20 @@ class SerialReplTransport:
                 last_char_at = time.monotonic()
                 continue
 
+            now = time.monotonic()
+            if timeout is not None and now >= last_char_at + timeout:
+                break
+            if (
+                interrupt_timeout is not None
+                and self._interrupt_requested_at is not None
+                and now >= max(self._interrupt_requested_at, last_char_at) + interrupt_timeout
+            ):
+                break
             time.sleep(0.01)
+
+        if consumer is not None and emitted_length < len(data):
+            consumer(bytes(data[emitted_length:]))
+        return bytes(data)
 
     def enter_raw_repl(self, soft_reset: bool, operation_timeout: Optional[float] = None) -> None:
         """Interrupt the board and switch into raw REPL.
@@ -183,6 +203,8 @@ class SerialReplTransport:
         :return: None
         """
         protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
+        deadline = time.monotonic() + protocol_timeout
+        self._in_raw_repl = False
         self._write_serial(b"\r\x03")
         self.drain_input()
         self._write_serial(b"\r\x01")
@@ -190,11 +212,11 @@ class SerialReplTransport:
         if soft_reset:
             data = self.read_until(
                 b"raw REPL; CTRL-B to exit\r\n>",
-                timeout=self._config.read_timeout,
-                overall_timeout=protocol_timeout,
+                timeout=None,
+                overall_timeout=max(0.0, deadline - time.monotonic()),
             )
             if not data.endswith(b"raw REPL; CTRL-B to exit\r\n>"):
-                raise TransportError(
+                raise ReplSyncError(
                     "could not enter raw repl before soft reset; observed=%s"
                     % (_describe_observed_bytes(data),)
                 )
@@ -202,25 +224,36 @@ class SerialReplTransport:
             self._write_serial(b"\x04")
             data = self.read_until(
                 b"soft reboot\r\n",
-                timeout=self._config.read_timeout,
-                overall_timeout=protocol_timeout,
+                timeout=None,
+                overall_timeout=max(0.0, deadline - time.monotonic()),
             )
             if not data.endswith(b"soft reboot\r\n"):
-                raise TransportError(
+                raise ReplSyncError(
                     "could not observe soft reboot banner; observed=%s"
-                    % (_describe_observed_bytes(data),)
+                    % (_describe_observed_bytes(data),),
+                    reset_sent=True,
                 )
 
         data = self.read_until(
             b"raw REPL; CTRL-B to exit\r\n",
-            timeout=self._config.read_timeout,
-            overall_timeout=protocol_timeout,
+            timeout=None,
+            overall_timeout=max(0.0, deadline - time.monotonic()),
         )
         if not data.endswith(b"raw REPL; CTRL-B to exit\r\n"):
-            raise TransportError(
-                "could not enter raw repl; observed=%s" % (_describe_observed_bytes(data),)
+            raise ReplSyncError(
+                "could not enter raw repl; observed=%s" % (_describe_observed_bytes(data),),
+                reset_sent=soft_reset,
+                reset_observed=soft_reset,
             )
 
+        prompt = self.read_until(b">", timeout=None, overall_timeout=max(0.0, deadline - time.monotonic()))
+        if not prompt.endswith(b">"):
+            raise ReplSyncError(
+                "could not observe raw prompt; observed=%s" % _describe_observed_bytes(prompt),
+                reset_sent=soft_reset,
+                reset_observed=soft_reset,
+            )
+        self._read_buffer = b">" + self._read_buffer
         self._in_raw_repl = True
 
     def exit_raw_repl(self) -> None:
@@ -252,43 +285,76 @@ class SerialReplTransport:
         """
         self._interrupt_requested_at = None
 
-    def soft_reset(self, output_consumer: Optional[BytesConsumer] = None) -> None:
+    def soft_reset(
+        self,
+        output_consumer: Optional[BytesConsumer] = None,
+        operation_timeout: Optional[float] = None,
+    ) -> None:
         """Trigger a raw-mode soft reset and wait for the next raw prompt.
 
         :param output_consumer: Optional streaming callback for boot output.
+        :param operation_timeout: Optional deadline override for all reset stages.
         :return: None
         """
         if not self._in_raw_repl:
-            raise TransportError("soft reset requires raw repl")
+            raise ReplSyncError("soft reset requires raw repl")
 
+        protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
+        deadline = time.monotonic() + protocol_timeout
         prompt = self.read_until(
             b">",
-            timeout=self._config.read_timeout,
-            overall_timeout=self._config.operation_timeout,
+            timeout=None,
+            overall_timeout=max(0.0, deadline - time.monotonic()),
         )
         if not prompt.endswith(b">"):
-            raise TransportError("raw prompt not ready for soft reset")
+            raise ReplSyncError(
+                "raw prompt not ready for soft reset; observed=%s" % _describe_observed_bytes(prompt)
+            )
 
         self._write_serial(b"\x04")
+        self._in_raw_repl = False
+        self.clear_interrupt_request()
         data = self.read_until(
             b"soft reboot\r\n",
-            timeout=self._config.read_timeout,
-            overall_timeout=self._config.operation_timeout,
+            timeout=None,
+            overall_timeout=max(0.0, deadline - time.monotonic()),
             consumer=output_consumer,
             include_ending_in_consumer=True,
         )
         if not data.endswith(b"soft reboot\r\n"):
-            raise TransportError("soft reboot banner not observed")
+            raise ReplSyncError(
+                "soft reboot banner not observed; observed=%s" % _describe_observed_bytes(data),
+                reset_sent=True,
+            )
 
         data = self.read_until(
             b"raw REPL; CTRL-B to exit\r\n",
-            timeout=self._config.read_timeout,
-            overall_timeout=self._config.operation_timeout,
+            timeout=None,
+            overall_timeout=max(0.0, deadline - time.monotonic()),
             consumer=output_consumer,
             include_ending_in_consumer=True,
         )
         if not data.endswith(b"raw REPL; CTRL-B to exit\r\n"):
-            raise TransportError("raw repl prompt not restored after soft reset")
+            raise ReplSyncError(
+                "raw repl prompt not restored after soft reset; observed=%s" % _describe_observed_bytes(data),
+                reset_sent=True,
+                reset_observed=True,
+            )
+
+        prompt = self.read_until(
+            b">",
+            timeout=None,
+            overall_timeout=max(0.0, deadline - time.monotonic()),
+            consumer=output_consumer,
+        )
+        if not prompt.endswith(b">"):
+            raise ReplSyncError(
+                "raw repl prompt not restored after soft reset; observed=%s" % _describe_observed_bytes(prompt),
+                reset_sent=True,
+                reset_observed=True,
+            )
+        self._read_buffer = b">" + self._read_buffer
+        self._in_raw_repl = True
 
     def exec_raw(
         self,

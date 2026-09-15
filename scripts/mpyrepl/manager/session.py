@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
@@ -21,7 +21,7 @@ from mpyrepl.runtime.decode import Utf8StreamDecoder
 from mpyrepl.runtime.filesystem import DeviceFsClient, FsOperationError, run_fs_operation
 from mpyrepl.runtime.models import ReplConfig
 from mpyrepl.runtime.operation_gate import SerialOperationGate
-from mpyrepl.runtime.transport import SerialReplTransport, TransportError, TransportInterrupted
+from mpyrepl.runtime.transport import ReplSyncError, SerialReplTransport, TransportError, TransportInterrupted
 
 
 EventCallback = Callable[[str, dict[str, Any]], None]
@@ -86,6 +86,7 @@ class ManagerSession:
         self._emit_event = emit_event or (lambda event, payload: None)
         self._transport_factory = transport_factory
         self._transport: SerialReplTransport | None = None
+        self._repl_needs_sync = False
         self._fs_client: DeviceFsClient | None = None
         self._gate = SerialOperationGate()
         self._symbols = ReplSessionSymbols()
@@ -141,6 +142,7 @@ class ManagerSession:
             raise
 
         self._transport = transport
+        self._repl_needs_sync = False
         self._fs_client = DeviceFsClient(transport, timeout=self._config.operation_timeout)
         self._completer = ReplCompleter(
             self._symbols,
@@ -271,6 +273,7 @@ class ManagerSession:
                 pass
         self._fs_client = None
         self._completer = None
+        self._repl_needs_sync = False
         self._idle_output_decoder = Utf8StreamDecoder()
         self._state = "stopped"
         self._emit_status()
@@ -286,6 +289,7 @@ class ManagerSession:
             "baudrate": self._config.baudrate,
             "busy": self._gate.busy,
             "operation": self._gate.current_operation,
+            "replReady": self._transport is not None and not self._repl_needs_sync,
         }
 
     async def interrupt(self) -> bool:
@@ -309,10 +313,11 @@ class ManagerSession:
         """
         return await self.interrupt()
 
-    async def soft_reset(self) -> bool:
+    async def soft_reset(self, operation_timeout: float | None = None) -> bool:
         """Run a raw-mode soft reset and stream boot output.
 
-        :return: True on success.
+        :param operation_timeout: Optional deadline for the reset protocol.
+        :return: True after the new raw prompt and helper are ready.
         """
         await self._ensure_open()
         transport = self._require_transport()
@@ -324,17 +329,19 @@ class ManagerSession:
                 self._emit_event("stdout", {"text": text})
 
         try:
-            await self._gate.run("soft-reset", transport.soft_reset, _consumer)
+            await self._gate.run("soft-reset", transport.soft_reset, _consumer, operation_timeout)
             await self._gate.run("helper-load", self._ensure_helper_loaded, transport)
+        except ReplSyncError as exc:
+            self._mark_repl_unsynchronized(exc)
         except TransportError as exc:
             await self._mark_transport_lost(exc)
         finally:
             text = decoder.flush()
             if text:
                 self._emit_event("stdout", {"text": text})
-        self._symbols.clear()
-        if self._completer is not None:
-            self._completer.clear_runtime_cache()
+            self._symbols.clear()
+            if self._completer is not None:
+                self._completer.clear_runtime_cache()
         return True
 
     async def execute(
@@ -441,7 +448,7 @@ class ManagerSession:
         :param requested: Whether completion was explicitly requested.
         :return: Completion candidate payloads.
         """
-        if self._completer is None:
+        if self._completer is None or self._repl_needs_sync:
             await self._ensure_open()
         if self._completer is None:
             raise RpcMethodError("completion is not ready", "not_ready")
@@ -485,6 +492,34 @@ class ManagerSession:
     async def _ensure_open(self) -> None:
         if self._transport is None:
             await self.open()
+            return
+        if not self._repl_needs_sync:
+            return
+        try:
+            await self._gate.run("repl-recover", self._recover_repl, self._transport)
+        except ReplSyncError as exc:
+            self._mark_repl_unsynchronized(exc)
+        except TransportError as exc:
+            await self._mark_transport_lost(exc)
+        self._emit_status()
+
+    def _recover_repl(self, transport: SerialReplTransport) -> None:
+        """Restore protocol synchronization using the existing serial handle."""
+        if not self._repl_needs_sync:
+            return
+        transport.enter_raw_repl(soft_reset=False)
+        self._ensure_helper_loaded(transport)
+        self._repl_needs_sync = False
+
+    def _mark_repl_unsynchronized(self, exc: ReplSyncError) -> NoReturn:
+        """Keep serial ownership after a protocol timeout and require resync."""
+        self._repl_needs_sync = True
+        self._emit_status()
+        raise RpcMethodError(
+            "REPL synchronization timed out; serial port remains open; retry a command to restore REPL (%s)" % exc,
+            "repl_sync_timeout",
+            {"resetSent": exc.reset_sent, "resetObserved": exc.reset_observed, "replReady": False},
+        ) from exc
 
     def _start_connection_monitor(self, transport: SerialReplTransport) -> None:
         """Start the idle serial-device monitor for the active transport."""
@@ -538,6 +573,7 @@ class ManagerSession:
         self._transport = None
         self._fs_client = None
         self._completer = None
+        self._repl_needs_sync = False
         self._state = "stopped"
         await self._stop_connection_monitor()
         self._emit_status()

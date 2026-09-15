@@ -24,7 +24,7 @@ python scripts/mpyrepl/__main__.py agent [全局选项] <命令> [命令选项]
 | `--workspace PATH` | 空 | 使用 `PATH/.mpy-workbench/serial-manager.json`. |
 | `--busy wait\|reject` | `wait` | 有界排队,或在忙碌时立即失败. |
 | `--queue-timeout SECONDS` | `30` | 排队操作开始前的最长等待时间. |
-| `--timeout SECONDS` | `120` | 客户端操作期限;对 `exec` 同时作为执行输出等待时间. |
+| `--timeout SECONDS` | `120` | 客户端操作等待时间;对 `exec` 同时控制执行输出等待,对 `soft-reset` 控制整个复位协议等待. |
 | `--progress` | 关闭 | 将当前传输对应的进度 JSONL 写入 stderr. |
 
 ## 会话发现
@@ -61,7 +61,7 @@ CLI 按以下顺序解析 manager 描述文件:
 | `disconnect` | 无 | 释放物理串口,保留 manager 和描述文件. |
 | `reconnect` | 无 | 由 manager 关闭旧句柄并重连原串口,等待时长由 `--timeout` 控制. |
 | `shutdown` | 无 | 关闭共享 manager;会断开人工 REPL 和其他 Agent. |
-| `soft-reset` | 无 | 排队执行设备软重置. |
+| `soft-reset` | 无 | 排队执行软复位,等待新 raw REPL 提示符和 helper 就绪. |
 
 示例:
 
@@ -79,6 +79,32 @@ python scripts/mpyrepl/__main__.py agent disconnect
 python scripts/mpyrepl/__main__.py agent --timeout 20 reconnect
 python scripts/mpyrepl/__main__.py agent shutdown
 ```
+
+## 文件传输格式
+
+文件传输快路径使用 stdio 连续流,但数据仍经 Base64 编码,不是无编码的裸二进制协议.上传端在设备支持 `stdin.buffer.readinto` 时启动一个接收程序,接收编码数据并解码写文件;下载端启动一个发送程序,逐块读取文件并持续输出 Base64 数据行.这些流式路径不会为每个数据块重新执行一条 REPL 命令;设备不支持 stdin 流式接收时,上传仍保留原有逐块兼容回退.
+
+下载的 Base64 是 ASCII,因此使用文本 `sys.stdout.write()` 输出,避免二进制 `stdout.buffer.write()` 在 `dupterm` 副输出短写时,把主串口已经发送的尾部再次发送.原文件仍按二进制读取和保存,文本输出只作用于传输记录,不会转换原文件中的换行或其他字节.缓冲已满的 WebREPL 镜像不保证完整显示文件传输数据.
+
+开始/结束标记、最终长度校验和字节进度保持不变.下载先写 `.mpydownload` 临时文件,全部校验成功后才替换本地目标;失败时保留已有目标并清理临时文件.
+
+升级扩展后,已常驻的旧 manager 不会自动重新加载 Python 代码.验证修复前应确认所附着 manager 的启动脚本属于新版本;需要结束旧实例时,先安排好所有共享客户端,不要中断正在使用的设备会话.
+
+## 软复位与 REPL 恢复
+
+`soft-reset` 只发送一次 Ctrl-D.发送前的 raw 提示符、`soft reboot` 标记、复位后的 raw banner 和真实 `>` 提示符共用由 `--timeout` 指定的完整期限,不会因为启动过程中 100ms 没有输出就提前失败.人工 REPL/扩展未传期限时继续使用 manager 的默认协议期限,通常为 10 秒.成功结果保持 `{"ok":true,"result":true}`,此时 helper 也已重新注入.
+
+CLI 通过 `device.softReset` 的可选 `softResetTimeoutMs` 参数传递毫秒期限,必须为正有限数.省略参数时沿用 manager 配置;这是复位协议的期限,排队和 helper 初始化另有等待开销.
+
+完整期限内仍未恢复时,返回 `repl_sync_timeout` (退出码 5),不关闭原串口句柄.错误 `details` 包含:
+
+- `resetSent`: 本次协议中是否已经发送 Ctrl-D.
+- `resetObserved`: 是否已经收到 `soft reboot` 标记.它不是最终 REPL 就绪的证明.
+- `replReady`: 此时为 `false`,表示协议需要重新同步.
+
+这时 `status.state` 仍表示原串口连接,例如 `ready`,新增 `status.replReady=false` 表示不能直接开始 raw 协议操作.下一次执行、文件系统或补全命令会在原 manager、原串口句柄上通过 Ctrl-C/Ctrl-A 恢复 raw REPL 并重新注入 helper,不会再次发送 Ctrl-D.`status` 本身只查询状态,不会触发恢复.实际串口读写失败仍返回 `transport_lost`,关闭失效句柄并进入 `stopped`.
+
+不要仅因同步超时就直接重试 `soft-reset`,因为第一次 Ctrl-D 可能已经生效;特别是 `resetSent=true`、`resetObserved=false` 时,复位结果尚不能确定.先用下一条正常命令恢复 REPL.人工 REPL 会继续保留,不会因这类同步错误收到断线状态.
 
 ## 排队与输出行为
 
@@ -112,7 +138,7 @@ python scripts/mpyrepl/__main__.py agent shutdown
 | `2` | 参数无效、本地文件缺失或未提供必须的确认参数. |
 | `3` | manager 发现、描述文件、schema、协议或过期实例错误. |
 | `4` | 使用 `--busy reject` 时 manager 正忙. |
-| `5` | 排队、操作、socket 或 `wait-idle` 超时. |
+| `5` | 排队、操作、REPL 同步、socket 或 `wait-idle` 超时. |
 | `6` | manager 不可用、传输断开或设备未就绪. |
 | `7` | 设备/文件系统错误,或 MicroPython 执行产生 stderr. |
 | `8` | 其他 manager RPC 错误. |

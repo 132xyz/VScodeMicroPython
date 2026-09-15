@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import os
 import socket
 import subprocess
@@ -328,6 +329,10 @@ def execute_agent_command(client: AgentManagerClient, args: argparse.Namespace) 
         params["reconnectTimeoutMs"] = int(args.timeout * 1000)
         return client.call("device.reconnect", params, timeout=timeout)
     if command == "soft-reset":
+        timeout_ms = args.timeout * 1000.0
+        if not math.isfinite(timeout_ms):
+            raise AgentCliError("usage", "--timeout must be finite", EXIT_USAGE)
+        params["softResetTimeoutMs"] = timeout_ms
         return client.call("device.softReset", params, timeout=timeout)
     if command in {"exec", "exec-file"}:
         source = args.code if command == "exec" else _read_source_file(args.local_path)
@@ -511,7 +516,7 @@ def _wait_idle(client: AgentManagerClient, timeout: float) -> dict[str, Any]:
 def _exit_for_rpc(code: str) -> int:
     if code == "busy":
         return EXIT_BUSY
-    if code in {"queue_timeout", "timeout"}:
+    if code in {"queue_timeout", "timeout", "repl_sync_timeout"}:
         return EXIT_TIMEOUT
     if code in {"transport", "transport_lost", "not_ready"}:
         return EXIT_TRANSPORT

@@ -128,6 +128,37 @@ class _ContinuousSerial:
         return b"x"
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class _ScheduledSerial(_FakeSerial):
+    def __init__(self, clock: _FakeClock, schedule: list[tuple[float, bytes]]) -> None:
+        super().__init__()
+        self.clock = clock
+        self.schedule = list(schedule)
+
+    def _release_ready_chunks(self) -> None:
+        while self.schedule and self.schedule[0][0] <= self.clock.now:
+            self.read_chunks.append(self.schedule.pop(0)[1])
+
+    @property
+    def in_waiting(self) -> int:
+        self._release_ready_chunks()
+        return super().in_waiting
+
+    def read(self, size: int) -> bytes:
+        self._release_ready_chunks()
+        return super().read(size)
+
+
 class TransportBehaviorTests(unittest.TestCase):
     """Cover transport diagnostics for raw REPL entry failures.
 
@@ -156,6 +187,7 @@ class TransportBehaviorTests(unittest.TestCase):
                 b"raw REPL; CTRL-B to exit\r\n>",
                 b"soft reboot\r\n",
                 b"raw REPL; CTRL-B to exit\r\n",
+                b">",
             ]
         )
         transport.read_until = lambda *args, **kwargs: next(responses)
@@ -258,6 +290,167 @@ class TransportBehaviorTests(unittest.TestCase):
 
         self.assertEqual(transport.read_until(b"OK", timeout=0.01), b"OK")
 
+    def test_read_until_reads_arrived_data_at_idle_deadline(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="loop://"))
+        serial_stub = _FakeSerial()
+        serial_stub.read_chunks = [b"END"]
+        transport._serial = serial_stub
+
+        with mock.patch.object(transport_module.time, "monotonic", side_effect=[0.0, 0.1]):
+            self.assertEqual(transport.read_until(b"END", timeout=0.1, overall_timeout=1.0), b"END")
+
+    def test_enter_raw_repl_waits_for_delayed_actual_prompt(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://", operation_timeout=1.0))
+        transport._serial = _ScheduledSerial(
+            clock, [(0.25, b"raw REPL; CTRL-B to exit\r\n"), (0.75, b">")]
+        )
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ):
+            transport.enter_raw_repl(soft_reset=False)
+            self.assertGreaterEqual(clock.now, 0.75)
+            self.assertEqual(transport.read_until(b">", timeout=0.1), b">")
+
+        self.assertTrue(transport._in_raw_repl)
+
+    def test_enter_raw_repl_uses_one_deadline_for_banner_and_prompt(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://", operation_timeout=1.0))
+        transport._serial = _ScheduledSerial(
+            clock, [(0.75, b"raw REPL; CTRL-B to exit\r\n"), (1.50, b">")]
+        )
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ), self.assertRaises(transport_module.ReplSyncError):
+            transport.enter_raw_repl(soft_reset=False)
+
+        self.assertGreaterEqual(clock.now, 1.0)
+        self.assertLess(clock.now, 1.05)
+        self.assertFalse(transport._in_raw_repl)
+
+    def test_read_until_timeout_streams_unmatched_marker_tail(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://"))
+        transport._serial = _ScheduledSerial(clock, [(0.0, b"boot ended\r\n")])
+        streamed: list[bytes] = []
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ):
+            data = transport.read_until(
+                b"raw REPL; CTRL-B to exit\r\n", timeout=0.1, consumer=streamed.append
+            )
+
+        self.assertEqual(data, b"boot ended\r\n")
+        self.assertEqual(b"".join(streamed), data)
+
+    def test_read_until_overall_deadline_bounds_continuous_output(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://"))
+        serial_stub = _ContinuousSerial()
+        transport._serial = serial_stub
+
+        def tick() -> float:
+            clock.now += 0.01
+            return clock.now
+
+        with mock.patch.object(transport_module.time, "monotonic", tick):
+            data = transport.read_until(b"END", timeout=None, overall_timeout=0.1)
+
+        self.assertTrue(data)
+        self.assertLess(serial_stub.read_calls, 10)
+
+    def test_soft_reset_waits_through_boot_gaps_and_preserves_actual_prompt(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://", operation_timeout=1.0))
+        serial_stub = _ScheduledSerial(
+            clock,
+            [
+                (0.0, b">"),
+                (0.02, b"MPY: soft reboot\r\n"),
+                (0.25, b"boot complete\r\nraw RE"),
+                (0.50, b"PL; CTRL-B to exit\r\n"),
+                (0.75, b">background\r\n"),
+            ],
+        )
+        transport._serial = serial_stub
+        transport._in_raw_repl = True
+        streamed: list[bytes] = []
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ):
+            transport.soft_reset(output_consumer=streamed.append)
+            self.assertGreaterEqual(clock.now, 0.75)
+            self.assertEqual(transport.read_until(b">", timeout=0.1), b">")
+            self.assertEqual(transport.read_exact(len(b"background\r\n"), timeout=0.1), b"background\r\n")
+
+        self.assertTrue(transport._in_raw_repl)
+        self.assertEqual(serial_stub.writes, [b"\x04"])
+        self.assertEqual(
+            b"".join(streamed),
+            b"MPY: soft reboot\r\nboot complete\r\nraw REPL; CTRL-B to exit\r\n",
+        )
+
+    def test_soft_reset_uses_one_deadline_and_reports_observed_reset(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://", operation_timeout=1.0))
+        serial_stub = _ScheduledSerial(
+            clock,
+            [
+                (0.30, b">"),
+                (0.60, b"MPY: soft reboot\r\n"),
+                (0.90, b"raw REPL; CTRL-B to exit\r\n"),
+                (1.20, b">"),
+            ],
+        )
+        transport._serial = serial_stub
+        transport._in_raw_repl = True
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ), self.assertRaises(transport_module.ReplSyncError) as raised:
+            transport.soft_reset()
+
+        self.assertTrue(raised.exception.reset_sent)
+        self.assertTrue(raised.exception.reset_observed)
+        self.assertGreaterEqual(clock.now, 1.0)
+        self.assertLess(clock.now, 1.05)
+        self.assertFalse(transport._in_raw_repl)
+        self.assertEqual(serial_stub.writes, [b"\x04"])
+
+    def test_soft_reset_accepts_operation_timeout_override(self) -> None:
+        clock = _FakeClock()
+        transport = SerialReplTransport(ReplConfig(port="loop://", operation_timeout=0.1))
+        transport._serial = _ScheduledSerial(
+            clock,
+            [(0.0, b">"), (0.20, b"MPY: soft reboot\r\n"), (0.40, b"raw REPL; CTRL-B to exit\r\n>")],
+        )
+        transport._in_raw_repl = True
+
+        with mock.patch.object(transport_module.time, "monotonic", clock.monotonic), mock.patch.object(
+            transport_module.time, "sleep", clock.sleep
+        ):
+            transport.soft_reset(operation_timeout=1.0)
+
+        self.assertTrue(transport._in_raw_repl)
+
+    def test_soft_reset_write_failure_is_not_a_sync_timeout(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="loop://"))
+        serial_stub = _FakeSerial()
+        serial_stub.read_chunks = [b">"]
+        transport._serial = serial_stub
+        transport._in_raw_repl = True
+
+        with mock.patch.object(serial_stub, "write", side_effect=transport_module.serial.SerialException("write failed")):
+            with self.assertRaises(transport_module.TransportError) as raised:
+                transport.soft_reset()
+
+        self.assertNotIsInstance(raised.exception, transport_module.ReplSyncError)
+
     def test_soft_reset_requires_raw_mode_and_streams_banner(self) -> None:
         transport = SerialReplTransport(ReplConfig(port="COM4"))
         transport._serial = _FakeSerial()
@@ -272,6 +465,7 @@ class TransportBehaviorTests(unittest.TestCase):
                 b">",
                 b"soft reboot\r\n",
                 b"raw REPL; CTRL-B to exit\r\n",
+                b">",
             ]
         )
 
@@ -291,16 +485,20 @@ class TransportBehaviorTests(unittest.TestCase):
         prompt_failure._serial = _FakeSerial()
         prompt_failure._in_raw_repl = True
         prompt_failure.read_until = lambda *args, **kwargs: b"not ready"
-        with self.assertRaisesRegex(transport_module.TransportError, "raw prompt not ready"):
+        with self.assertRaisesRegex(transport_module.ReplSyncError, "raw prompt not ready") as raised:
             prompt_failure.soft_reset()
+        self.assertFalse(raised.exception.reset_sent)
+        self.assertFalse(raised.exception.reset_observed)
 
         reboot_failure = SerialReplTransport(ReplConfig(port="COM4"))
         reboot_failure._serial = _FakeSerial()
         reboot_failure._in_raw_repl = True
         reboot_responses = iter([b">", b"missing reboot"])
         reboot_failure.read_until = lambda *args, **kwargs: next(reboot_responses)
-        with self.assertRaisesRegex(transport_module.TransportError, "soft reboot banner"):
+        with self.assertRaisesRegex(transport_module.ReplSyncError, "soft reboot banner") as raised:
             reboot_failure.soft_reset()
+        self.assertTrue(raised.exception.reset_sent)
+        self.assertFalse(raised.exception.reset_observed)
 
         restore_failure = SerialReplTransport(ReplConfig(port="COM4"))
         restore_failure._serial = _FakeSerial()

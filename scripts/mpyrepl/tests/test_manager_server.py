@@ -35,6 +35,7 @@ class FakeSession:
         self.disconnected = False
         self.reconnect_timeout = 0.0
         self.reset = False
+        self.reset_timeout = None
         self.executed = ""
         self.execute_instrument = True
         self.fs_calls: list[tuple[str, dict]] = []
@@ -70,8 +71,9 @@ class FakeSession:
         self.disconnected = True
         return {**self.status(), "state": "stopped"}
 
-    async def soft_reset(self) -> bool:
+    async def soft_reset(self, operation_timeout=None) -> bool:
         self.reset = True
+        self.reset_timeout = operation_timeout
         return True
 
     async def execute(self, source: str, follow_timeout=None, instrument=True) -> dict:
@@ -232,6 +234,7 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.disconnected)
         self.assertEqual(session.reconnect_timeout, 1.25)
         self.assertTrue(session.reset)
+        self.assertIsNone(session.reset_timeout)
         self.assertEqual(len(device_statuses), 2)
         await server.close()
 
@@ -291,6 +294,29 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.sources, ["first"])
         await server.close()
 
+    async def test_soft_reset_passes_protocol_deadline(self) -> None:
+        session = FakeSession()
+        server = ManagerServer("tok")
+        await server.start(session)  # type: ignore[arg-type]
+        try:
+            self.assertTrue(await server._dispatch("device.softReset", {"softResetTimeoutMs": 1234.5}, "reset"))
+            self.assertEqual(session.reset_timeout, 1.2345)
+        finally:
+            await server.close()
+
+    async def test_soft_reset_rejects_invalid_deadline_before_device_operation(self) -> None:
+        session = FakeSession()
+        server = ManagerServer("tok")
+        await server.start(session)  # type: ignore[arg-type]
+        try:
+            for value in (0, -1, True, "1000", [], float("inf"), float("nan"), 10 ** 400):
+                with self.subTest(value=value), self.assertRaises(RpcMethodError) as raised:
+                    await server._dispatch("device.softReset", {"softResetTimeoutMs": value}, "reset")
+                self.assertEqual(raised.exception.code, "invalid_params")
+                self.assertFalse(session.reset)
+        finally:
+            await server.close()
+
     async def test_serial_operation_can_reject_busy_manager(self) -> None:
         class BlockingResetSession(FakeSession):
             def __init__(self) -> None:
@@ -298,7 +324,7 @@ class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
                 self.started = asyncio.Event()
                 self.release = asyncio.Event()
 
-            async def soft_reset(self) -> bool:
+            async def soft_reset(self, operation_timeout=None) -> bool:
                 self.started.set()
                 await self.release.wait()
                 return True

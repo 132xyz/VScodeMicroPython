@@ -230,6 +230,10 @@ Check:
 
 The client serializes protocol operations through an internal gate. If a blocking execution is in progress, the requested action may be applied right after the active operation yields control.
 
+### Soft reset reports a synchronization timeout after resetting the board
+
+Soft reset waits for the reboot marker, raw banner, and actual prompt using the full protocol deadline, not a 100ms idle timeout. If that deadline expires, `repl_sync_timeout` reports whether Ctrl-D was sent and the reboot marker was observed. The manager retains the serial handle and the human REPL stays open. The next normal command restores raw REPL on the same handle using Ctrl-C/Ctrl-A and reinjects the helper; it does not send another Ctrl-D. `status.replReady=false` distinguishes this condition from physical serial loss. See [Agent CLI recovery](agent-cli.md#soft-reset-and-repl-recovery) for the error details and retry guidance.
+
 ### Windows terminal output is still problematic
 
 If the problem is inside the extension REPL terminal, prefer the custom REPL path.

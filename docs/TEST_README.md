@@ -103,6 +103,7 @@ npm run test:watch
 
 - `test_transport_behavior.py`
 	- raw REPL transport、超时、soft reset、协议边界
+	- 软复位/进入 raw REPL 的启动空闲和真实提示符延迟、共享截止时间、空闲临界点数据读取、超时尾部输出和 I/O 错误分类
 - `test_session_behavior.py`
 	- prompt 会话、多行输入、缩进、按键行为、补全触发
 - `test_support_modules.py`
@@ -111,6 +112,7 @@ npm run test:watch
 	- `app.py` 分发、异步 REPL 主循环、控制通道、Unicode 输出回退、soft reset 路径
 - `test_manager_descriptor.py`、`test_manager_protocol.py`、`test_manager_server.py`、`test_manager_session.py`
 	- NDJSON 协议、客户端角色、串口操作排队、事件广播和共享设备会话
+	- soft-reset 同步超时保留串口、下一条命令原句柄恢复且不重复复位、并发恢复门控和 CLI 期限验证
 - `test_agent_client.py`、`test_repl_client.py`
 	- 会话发现、冷启动、串口生命周期、JSON 契约、Agent 命令映射、人工 REPL manager 连接和空闲提示符实时输出
 - `test_fs_ops.py`、`test_operation_gate.py`
@@ -118,14 +120,14 @@ npm run test:watch
 
 ## 当前验证快照
 
-以下数字是本次文档刷新时的本地验证快照，不代表长期冻结指标：
+以下数字是 2026-09-15 宿主侧验证快照,不代表长期冻结指标:
 
 - JS / TS
 	- 26 个 test suites
-	- 110 个 tests
+	- 112 个 tests
 - Python `mpyrepl`
-	- 189 个 tests
-	- 递归包源码覆盖率：81.4%
+	- 250 个 tests
+	- Python 3.12 递归包源码覆盖率: 89.2%
 
 ## 测试基础设施与约定
 
@@ -160,6 +162,28 @@ npm run test:watch
 3. 新增覆盖率测试时，优先覆盖错误分支、平台分支、恢复逻辑和回退逻辑。
 4. 如果测试会触发预期中的 warning / error 输出，在测试里显式接管 console，避免污染日志。
 5. 修改测试结构或入口命令后，同步更新本文档。
+
+## 软复位同步回归
+
+`test_transport_behavior.py` 使用 FakeClock/FakeSerial 模拟 boot.py 静默、banner 分片、实际 `>` 延迟和截止时间临界点,验证整体期限仍有界,且不会在 100ms 无输出时误报.最后的提示符必须被保留给下一次执行,同步超时仍要转发未匹配标记的输出尾部.
+
+`test_manager_session.py` 验证超时不关闭串口、不发 stopped,下一条命令原句柄恢复且不重复软复位,并覆盖恢复失败、并发恢复、补全缓存清理和真实 I/O 错误的断线分支.`test_manager_server.py` 与 `test_agent_client.py` 验证期限参数、退出码 5 和单条 JSON 错误细节.
+
+这些是纯宿主模拟回归.本次没有连接物理串口、附着已有 manager 或执行真实设备复位,不代表 Windows/macOS 串口驱动或硬件验收.
+
+## 下载发送器回归
+
+`scripts/mpyrepl/tests/test_fs_ops.py` 会执行实际生成的下载发送程序,通过模拟 stdout 的主输出与副输出短写行为,检查二进制流自动补写是否导致尾部重复.这属于主机模拟,不是固件或真实设备测试.
+
+回归覆盖空文件、Base64 尾部补齐、4096 字符附近的输出边界、包含 `0..255` 的二进制内容,以及接收回调按 1、7、4096 字节拆分的情况.成功时核对完整文件和进度;重复或非法尾部必须继续报错,保留旧目标并清理 `.mpydownload`.
+
+定向运行:
+
+```bash
+python3 -m unittest discover -s scripts/mpyrepl/tests -p 'test_fs_ops.py'
+```
+
+实机验证应使用明确获准的测试板和独立 manager 会话,保留目标 `dupterm` 条件,下载到主机临时目录并核对长度及哈希.测试样本不覆盖既有文件,结束后清理恢复.通过 `repl.exec` 单独执行新发送器只验证设备输出,不能代替新版本 manager 的原生 `fs.readFile`、流式进度和 VS Code 下载界面验收.
 
 ## 仍值得继续补强的区域
 

@@ -272,6 +272,29 @@ class AgentClientTests(unittest.TestCase):
                     agent_client.execute_agent_command(client, args)
                     self.assertEqual(client.calls[-1][0], expected_method)
 
+    def test_soft_reset_sends_protocol_deadline_and_queue_policy(self) -> None:
+        args = agent_client.build_agent_parser().parse_args(
+            ["--busy", "reject", "--queue-timeout", "3", "--timeout", "0.25", "soft-reset"]
+        )
+        client = FakeClient("127.0.0.1", 1, "x")
+
+        agent_client.execute_agent_command(client, args)
+
+        method, params, timeout = client.calls[-1]
+        self.assertEqual(method, "device.softReset")
+        self.assertEqual(params, {"queuePolicy": "reject", "queueTimeoutMs": 3000, "softResetTimeoutMs": 250.0})
+        self.assertEqual(timeout, 8.25)
+
+    def test_soft_reset_rejects_non_finite_timeout(self) -> None:
+        for value in ("nan", "inf", "1e308"):
+            with self.subTest(timeout=value):
+                args = agent_client.build_agent_parser().parse_args(["--timeout", value, "soft-reset"])
+                client = FakeClient("127.0.0.1", 1, "x")
+                with self.assertRaises(agent_client.AgentCliError) as raised:
+                    agent_client.execute_agent_command(client, args)
+                self.assertEqual(raised.exception.exit_code, agent_client.EXIT_USAGE)
+                self.assertEqual(client.calls, [])
+
     def test_reconnect_uses_operation_timeout_and_manager_queue(self) -> None:
         args = agent_client.build_agent_parser().parse_args(
             ["--busy", "reject", "--queue-timeout", "3", "--timeout", "20", "reconnect"]
@@ -475,9 +498,22 @@ class AgentClientTests(unittest.TestCase):
     def test_rpc_exit_codes_are_stable(self) -> None:
         self.assertEqual(agent_client._exit_for_rpc("busy"), agent_client.EXIT_BUSY)
         self.assertEqual(agent_client._exit_for_rpc("queue_timeout"), agent_client.EXIT_TIMEOUT)
+        self.assertEqual(agent_client._exit_for_rpc("repl_sync_timeout"), agent_client.EXIT_TIMEOUT)
         self.assertEqual(agent_client._exit_for_rpc("transport_lost"), agent_client.EXIT_TRANSPORT)
         self.assertEqual(agent_client._exit_for_rpc("device"), agent_client.EXIT_DEVICE)
         self.assertEqual(agent_client._exit_for_rpc("other"), agent_client.EXIT_RPC)
+
+    def test_soft_reset_sync_error_keeps_reset_details_in_one_json_result(self) -> None:
+        details = {"resetSent": True, "resetObserved": True, "replReady": False}
+        error = agent_client.ManagerRequestError("repl_sync_timeout", "REPL is not ready", details)
+        output = io.StringIO()
+        with mock.patch.object(agent_client, "run_agent", side_effect=error), mock.patch.object(sys, "stdout", output):
+            exit_code = agent_client.main(["soft-reset"])
+
+        lines = output.getvalue().splitlines()
+        self.assertEqual(exit_code, agent_client.EXIT_TIMEOUT)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["error"]["details"], details)
 
 
 if __name__ == "__main__":

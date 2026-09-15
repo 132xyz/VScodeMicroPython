@@ -23,6 +23,7 @@ export type SerialManagerStatus = {
   baudrate?: number;
   busy?: boolean;
   operation?: string;
+  replReady?: boolean;
   clientCount?: number;
   extensionClientCount?: number;
   replClientCount?: number;

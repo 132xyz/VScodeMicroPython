@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 import sys
 from pathlib import Path
@@ -316,7 +317,10 @@ class ManagerServer:
                 writer,
             )
         if method == "device.softReset":
-            return await self._run_serial_operation(method, params, session.soft_reset, writer)
+            reset_timeout = _soft_reset_timeout(params)
+            return await self._run_serial_operation(
+                method, params, lambda: session.soft_reset(reset_timeout), writer
+            )
         if method == "repl.exec":
             label = str(params.get("label") or "")
             async def execute() -> Any:
@@ -492,6 +496,21 @@ def _connect_timeout_ms(params: dict[str, Any]) -> float:
     if timeout_ms <= 0:
         raise RpcMethodError("connectTimeoutMs must be greater than zero", "invalid_params")
     return timeout_ms
+
+
+def _soft_reset_timeout(params: dict[str, Any]) -> float | None:
+    value = params.get("softResetTimeoutMs")
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise RpcMethodError("softResetTimeoutMs must be a positive finite number", "invalid_params")
+    try:
+        timeout_ms = float(value)
+    except OverflowError as exc:
+        raise RpcMethodError("softResetTimeoutMs must be a positive finite number", "invalid_params") from exc
+    if not math.isfinite(timeout_ms) or timeout_ms <= 0:
+        raise RpcMethodError("softResetTimeoutMs must be a positive finite number", "invalid_params")
+    return timeout_ms / 1000.0
 
 
 def _first_string(params: dict[str, Any], *names: str, default: str = "") -> str:

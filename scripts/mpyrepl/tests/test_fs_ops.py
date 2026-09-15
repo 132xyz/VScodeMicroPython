@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -56,6 +58,45 @@ class FakeTransport:
         if stdout_consumer is not None:
             stdout_consumer(result.stdout)
         return result
+
+
+class FragmentedTransport(FakeTransport):
+    def __init__(self, responses, read_size: int):
+        super().__init__(responses)
+        self.read_size = read_size
+
+    def exec_raw(self, command: str, timeout: float, stdout_consumer=None, stderr_consumer=None):
+        result = super().exec_raw(command, timeout, stderr_consumer=stderr_consumer)
+        if stdout_consumer is not None:
+            for start in range(0, len(result.stdout), self.read_size):
+                stdout_consumer(result.stdout[start : start + self.read_size])
+        return result
+
+
+class MirroredBinaryStdout:
+    """Model stream retries after a mirror short-writes an already-sent chunk."""
+
+    def __init__(self, primary: bytearray, mirror_capacity: int):
+        self.primary = primary
+        self.mirror_capacity = mirror_capacity
+
+    def write(self, data: bytes) -> int:
+        total = len(data)
+        while data:
+            self.primary.extend(data)
+            data = data[self.mirror_capacity :]
+        return total
+
+
+class RecordingTextStdout:
+    def __init__(self, mirror_capacity: int | None):
+        self.primary = bytearray()
+        if mirror_capacity is not None:
+            self.buffer = MirroredBinaryStdout(self.primary, mirror_capacity)
+
+    def write(self, text: str) -> int:
+        self.primary.extend(text.replace("\n", "\r\n").encode("ascii"))
+        return len(text)
 
 
 class FakeStreamingTransport(FakeTransport):
@@ -113,6 +154,23 @@ def _download_error_stdout(message: str, *, size: int = 0) -> bytes:
             (DOWNLOAD_ERROR_MARKER + json.dumps({"error": message}) + "\n").encode("ascii"),
         ]
     )
+
+
+def _capture_download_sender(source: Path, chunk_size: int, mirror_capacity: int | None) -> bytes:
+    stdout = RecordingTextStdout(mirror_capacity)
+    fake_sys = SimpleNamespace(stdout=stdout)
+
+    def import_for_sender(name, *args, **kwargs):
+        if name == "sys":
+            return fake_sys
+        return builtins.__import__(name, *args, **kwargs)
+
+    namespace = {"__builtins__": {**vars(builtins), "__import__": import_for_sender}}
+    sender = DeviceFsClient(FakeTransport([]))._stdout_base64_sender_code(
+        str(source), source.stat().st_size, chunk_size
+    )
+    exec(sender, namespace)
+    return bytes(stdout.primary)
 
 
 class FsOpsTests(unittest.TestCase):
@@ -441,6 +499,83 @@ class FsOpsTests(unittest.TestCase):
                     },
                 ],
             )
+
+    def test_download_sender_does_not_repeat_data_when_mirror_short_writes(self) -> None:
+        data = (bytes(range(256)) * 16)[:4026]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "source.bin"
+            source.write_bytes(data)
+            for chunk_size, capacity in ((4096, 4096), (4096, 2715), (1024, 400)):
+                with self.subTest(chunk_size=chunk_size, mirror_capacity=capacity):
+                    stream = _capture_download_sender(source, chunk_size, capacity)
+                    lines = stream.splitlines()
+                    self.assertTrue(lines[0].startswith(DOWNLOAD_START_MARKER.encode("ascii")))
+                    self.assertTrue(lines[-1].startswith(DOWNLOAD_END_MARKER.encode("ascii")))
+                    expected = [
+                        base64.b64encode(data[start : start + chunk_size])
+                        for start in range(0, len(data), chunk_size)
+                    ]
+                    self.assertEqual([len(line) for line in lines[1:-1]], [len(line) for line in expected])
+                    self.assertEqual(lines[1:-1], expected)
+                    self.assertEqual(b"".join(base64.b64decode(line, validate=True) for line in lines[1:-1]), data)
+
+    def test_download_sender_roundtrips_binary_boundaries_and_fragmented_output(self) -> None:
+        sizes = (0, 1, 2, 3, 1024, 3071, 3072, 3073, 4026, 4096, 8192)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = Path(tmp_dir) / "source.bin"
+            target = Path(tmp_dir) / "target.bin"
+            for size in sizes:
+                data = (bytes(range(256)) * ((size + 255) // 256))[:size]
+                source.write_bytes(data)
+                for capacity in (None, 4096):
+                    stream = _capture_download_sender(source, DEFAULT_CHUNK_SIZE, capacity)
+                    for read_size in (1, 7, 4096):
+                        with self.subTest(size=size, mirror_capacity=capacity, read_size=read_size):
+                            target.write_bytes(b"existing target")
+                            events = []
+                            transport = FragmentedTransport(
+                                [
+                                    {"exists": True, "mode": 0, "size": size, "mtime": 0, "is_dir": False},
+                                    ExecResult(stdout=stream, stderr=b""),
+                                ],
+                                read_size,
+                            )
+                            DeviceFsClient(transport).read_file("/source.bin", str(target), progress=events.append)
+                            self.assertEqual(target.read_bytes(), data)
+                            self.assertFalse(target.with_name("target.bin.mpydownload").exists())
+                            self.assertEqual(len(transport.commands), 2)
+                            self.assertEqual(events[-1]["bytes"], size)
+                            self.assertTrue(events[-1]["done"])
+                            self.assertEqual(sum(bool(event["done"]) for event in events), 1)
+                            counts = [event["bytes"] for event in events]
+                            self.assertEqual(counts, sorted(counts))
+                            self.assertTrue(all(count <= size for count in counts))
+
+    def test_read_file_repeated_or_invalid_tail_preserves_existing_target(self) -> None:
+        data = (bytes(range(256)) * 16)[:4026]
+        encoded = base64.b64encode(data)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "target.bin"
+            for tail_start, error_code in ((4096, "size_mismatch"), (2715, "bad_response")):
+                with self.subTest(tail_start=tail_start):
+                    target.write_bytes(b"existing target")
+                    stream = _download_stdout(data).replace(
+                        DOWNLOAD_END_MARKER.encode("ascii"),
+                        encoded[tail_start:] + b"\n" + DOWNLOAD_END_MARKER.encode("ascii"),
+                    )
+                    transport = FakeTransport(
+                        [
+                            {"exists": True, "mode": 0, "size": len(data), "mtime": 0, "is_dir": False},
+                            ExecResult(stdout=stream, stderr=b""),
+                        ]
+                    )
+                    events = []
+                    with self.assertRaises(FsOperationError) as raised:
+                        DeviceFsClient(transport).read_file("/source.bin", str(target), progress=events.append)
+                    self.assertEqual(raised.exception.code, error_code)
+                    self.assertEqual(target.read_bytes(), b"existing target")
+                    self.assertFalse(target.with_name("target.bin.mpydownload").exists())
+                    self.assertFalse(any(event["done"] for event in events))
 
     def test_read_file_rejects_size_mismatch_and_removes_temp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

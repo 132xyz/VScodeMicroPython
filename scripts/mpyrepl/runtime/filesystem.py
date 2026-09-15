@@ -873,6 +873,8 @@ class DeviceFsClient:
                 )
 
     def _stdout_base64_sender_code(self, source: str, size: int, chunk_size: int) -> str:
+        # Base64 is ASCII. Binary stdout may resend bytes already sent to serial
+        # when a dupterm mirror reports a short write.
         return (
             "try:\n"
             "    import ujson as json\n"
@@ -888,11 +890,7 @@ class DeviceFsClient:
             "def emit(marker, payload):\n"
             "    sys.stdout.write(marker + json.dumps(payload) + '\\n')\n"
             "def write_bytes(data):\n"
-            "    stream = getattr(sys.stdout, 'buffer', None)\n"
-            "    if stream is not None:\n"
-            "        stream.write(data)\n"
-            "    else:\n"
-            "        sys.stdout.write(data.decode())\n"
+            "    sys.stdout.write(data.decode())\n"
             "f = None\n"
             "sent = 0\n"
             "try:\n"

@@ -20,7 +20,7 @@ from mpyrepl.manager import session as manager_session_module
 from mpyrepl.manager.protocol import RpcMethodError
 from mpyrepl.manager.session import ManagerSession
 from mpyrepl.runtime.models import ExecResult, ReplConfig
-from mpyrepl.runtime.transport import TransportError
+from mpyrepl.runtime.transport import ReplSyncError, TransportError
 
 
 @dataclass
@@ -33,6 +33,8 @@ class FakeTransport:
         self.raw = False
         self.interrupted = False
         self.executed: list[str] = []
+        self.raw_entries: list[bool] = []
+        self.reset_timeouts: list[float | None] = []
 
     def open(self) -> None:
         self.opened = True
@@ -41,6 +43,7 @@ class FakeTransport:
         self.closed = True
 
     def enter_raw_repl(self, soft_reset: bool, operation_timeout=None) -> None:
+        self.raw_entries.append(soft_reset)
         self.raw = True
 
     def exit_raw_repl(self) -> None:
@@ -49,7 +52,8 @@ class FakeTransport:
     def interrupt(self) -> None:
         self.interrupted = True
 
-    def soft_reset(self, output_consumer=None) -> None:
+    def soft_reset(self, output_consumer=None, operation_timeout=None) -> None:
+        self.reset_timeouts.append(operation_timeout)
         if output_consumer:
             output_consumer(b"soft reboot\r\n")
 
@@ -110,8 +114,32 @@ class InterruptErrorTransport(FakeTransport):
 
 
 class SoftResetErrorTransport(FakeTransport):
-    def soft_reset(self, output_consumer=None) -> None:
+    def soft_reset(self, output_consumer=None, operation_timeout=None) -> None:
         raise TransportError("ReadFile failed")
+
+
+class SoftResetSyncErrorTransport(FakeTransport):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.reset_observed = True
+        self.recovery_error: Exception | None = None
+
+    def soft_reset(self, output_consumer=None, operation_timeout=None) -> None:
+        self.reset_timeouts.append(operation_timeout)
+        self.raw = False
+        if output_consumer and self.reset_observed:
+            output_consumer(b"MPY: soft reboot\r\n")
+        raise ReplSyncError(
+            "raw repl prompt not restored after soft reset",
+            reset_sent=True,
+            reset_observed=self.reset_observed,
+        )
+
+    def enter_raw_repl(self, soft_reset: bool, operation_timeout=None) -> None:
+        super().enter_raw_repl(soft_reset, operation_timeout)
+        if len(self.raw_entries) > 1 and self.recovery_error is not None:
+            self.raw = False
+            raise self.recovery_error
 
 
 class ProbeErrorTransport(FakeTransport):
@@ -414,6 +442,120 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "transport_lost")
         self.assertEqual(session.state, "stopped")
         self.assertTrue(transport_holder["transport"].closed)
+
+    async def test_soft_reset_sync_timeout_keeps_handle_and_next_command_recovers(self) -> None:
+        for reset_observed in (False, True):
+            with self.subTest(reset_observed=reset_observed):
+                transports: list[SoftResetSyncErrorTransport] = []
+                events: list[tuple[str, dict]] = []
+
+                def factory(config: ReplConfig) -> SoftResetSyncErrorTransport:
+                    transport = SoftResetSyncErrorTransport(config)
+                    transport.reset_observed = reset_observed
+                    transports.append(transport)
+                    return transport
+
+                session = ManagerSession(
+                    ReplConfig(port="loop://"),
+                    emit_event=lambda event, payload: events.append((event, payload)),
+                    transport_factory=factory,
+                )
+                try:
+                    with self.assertRaises(RpcMethodError) as raised:
+                        await session.soft_reset(0.25)
+
+                    self.assertEqual(raised.exception.code, "repl_sync_timeout")
+                    self.assertEqual(
+                        raised.exception.details,
+                        {"resetSent": True, "resetObserved": reset_observed, "replReady": False},
+                    )
+                    self.assertEqual(session.state, "ready")
+                    self.assertFalse(session.status()["replReady"])
+                    self.assertFalse(transports[0].closed)
+                    self.assertFalse(any(event == "status" and payload["state"] == "stopped" for event, payload in events))
+
+                    result = await session.execute("print(1)", instrument=False)
+
+                    self.assertEqual(result["stdout"], "ok\r\n")
+                    self.assertTrue(session.status()["replReady"])
+                    self.assertEqual(len(transports), 1)
+                    self.assertEqual(transports[0].raw_entries, [False, False])
+                    self.assertEqual(transports[0].reset_timeouts, [0.25])
+                    self.assertFalse(transports[0].closed)
+                finally:
+                    await session.close()
+
+    async def test_repl_recovery_sync_failure_can_retry_without_reopening(self) -> None:
+        transport = SoftResetSyncErrorTransport(ReplConfig(port="loop://"))
+        session = ManagerSession(transport.config, transport_factory=lambda config: transport)
+        try:
+            with self.assertRaises(RpcMethodError):
+                await session.soft_reset()
+            transport.recovery_error = ReplSyncError("missing raw banner")
+            with self.assertRaises(RpcMethodError) as raised:
+                await session.execute("1")
+
+            self.assertEqual(raised.exception.code, "repl_sync_timeout")
+            self.assertEqual(session.state, "ready")
+            self.assertFalse(transport.closed)
+            self.assertFalse(session.status()["replReady"])
+
+            transport.recovery_error = None
+            await session.execute("2")
+            self.assertTrue(session.status()["replReady"])
+            self.assertEqual(transport.raw_entries, [False, False, False])
+            self.assertEqual(transport.reset_timeouts, [None])
+        finally:
+            await session.close()
+
+    async def test_concurrent_repl_recovery_only_synchronizes_once(self) -> None:
+        transport = SoftResetSyncErrorTransport(ReplConfig(port="loop://"))
+        session = ManagerSession(transport.config, transport_factory=lambda config: transport)
+        try:
+            with self.assertRaises(RpcMethodError):
+                await session.soft_reset()
+
+            await asyncio.gather(session._ensure_open(), session._ensure_open())
+
+            self.assertTrue(session.status()["replReady"])
+            self.assertEqual(transport.raw_entries, [False, False])
+            self.assertEqual(transport.reset_timeouts, [None])
+        finally:
+            await session.close()
+
+    async def test_repl_recovery_io_failure_marks_connection_lost(self) -> None:
+        transport = SoftResetSyncErrorTransport(ReplConfig(port="loop://"))
+        session = ManagerSession(transport.config, transport_factory=lambda config: transport)
+        try:
+            with self.assertRaises(RpcMethodError):
+                await session.soft_reset()
+            transport.recovery_error = TransportError("ReadFile failed")
+            with self.assertRaises(RpcMethodError) as raised:
+                await session.execute("1")
+
+            self.assertEqual(raised.exception.code, "transport_lost")
+            self.assertEqual(session.state, "stopped")
+            self.assertFalse(session.status()["replReady"])
+            self.assertTrue(transport.closed)
+        finally:
+            await session.close()
+
+    async def test_soft_reset_timeout_invalidates_symbols_and_completion_recovers(self) -> None:
+        transport = SoftResetSyncErrorTransport(ReplConfig(port="loop://"))
+        session = ManagerSession(transport.config, transport_factory=lambda config: transport)
+        try:
+            await session.execute("value = 1")
+            with self.assertRaises(RpcMethodError):
+                await session.soft_reset()
+
+            completions = await session.complete("val", 3, True)
+
+            self.assertFalse(any(item["text"] == "value" for item in completions))
+            self.assertTrue(session.status()["replReady"])
+            self.assertEqual(transport.raw_entries, [False, False])
+            self.assertEqual(transport.reset_timeouts, [None])
+        finally:
+            await session.close()
 
     async def test_idle_connection_probe_marks_removed_device_lost(self) -> None:
         transport_holder: dict[str, ProbeErrorTransport] = {}
