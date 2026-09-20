@@ -485,148 +485,61 @@ function buildTreeFromStats(stats: Array<{ path: string; isDir: boolean; size?: 
   return root;
 }
 
-// Global cache for the complete file tree
-let globalFileTreeCache: TreeNode | null = null;
-let lastTreeUpdate: number = 0;
-const TREE_CACHE_DURATION = 30000; // 30 seconds
-
-function getTreePathsCacheFile(): string | null {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    return null;
-  }
-
-  return path.join(workspaceFolder.uri.fsPath, '.mpy-workbench', 'tree-paths.json');
+type DirectoryEntry = { name: string; isDir: boolean };
+interface DirectoryCacheEntry {
+  entries: DirectoryEntry[];
+  updatedAt: number;
 }
 
-// Populate the global cache with complete file tree
-async function populateFileTreeCache(): Promise<void> {
-  try {
-    debugLog(`populateFileTreeCache: Starting cache population`);
-    const connectSetting = getActiveConnect();
-    const connect = normalizeConnect(connectSetting);
-    if (connectSetting === "auto") {
-      debugLog(`populateFileTreeCache: connect=auto and no active connection — skipping device probe`);
-      globalFileTreeCache = { name: '/', isDir: true, children: [], fullPath: '/' };
-      lastTreeUpdate = Date.now();
-      return;
-    }
+const directoryCache = new Map<string, DirectoryCacheEntry>();
+const directoryRequests = new Map<string, Promise<DirectoryEntry[]>>();
+const TREE_CACHE_DURATION = 30000;
+let directoryGeneration = 0;
+let refreshRequest: Promise<void> | undefined;
+let refreshTarget = "";
 
-    debugLog(`populateFileTreeCache: Fetching complete file tree from device through custom transport`);
-    const stats = await listTreeStats("/");
-    const treeRoot = buildTreeFromStats(stats);
-
-    try {
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      const filePath = getTreePathsCacheFile();
-      if (workspaceFolder && filePath) {
-        const cachedData = stats.map(item => ({
-          fullPath: item.path,
-          name: item.path.split('/').filter(Boolean).pop() || '',
-          isDir: item.isDir,
-          depth: Math.max(0, item.path.split('/').filter(Boolean).length - 1),
-        }));
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, JSON.stringify(cachedData, null, 2), 'utf8');
-      }
-    } catch (error) {
-      console.error(`Failed to save parsed paths:`, error);
-    }
-
-    globalFileTreeCache = treeRoot;
-    lastTreeUpdate = Date.now();
-    try {
-      await vscode.commands.executeCommand('microPythonWorkBench._cachePopulated');
-    } catch (e) {
-      // ignore
-    }
-  } catch (error) {
-    console.error(`populateFileTreeCache: Failed to populate cache:`, error);
-    throw error;
-  }
+function directoryPath(value: string): string {
+  return path.posix.normalize("/" + (value || "").replace(/^\/+/, "")).replace(/\/$/, "") || "/";
 }
 
-// Check if cache needs refresh
-function isCacheValid(): boolean {
-  if (!globalFileTreeCache) return false;
-  const now = Date.now();
-  return (now - lastTreeUpdate) < TREE_CACHE_DURATION;
+function directoryKey(device: string, target: string): string {
+  return JSON.stringify([device, directoryPath(target)]);
 }
 
-// Get entries for a specific path from cache
-function getEntriesFromCache(targetPath: string): { name: string; isDir: boolean }[] | null {
-  if (!globalFileTreeCache) {
-    console.log(`[DEBUG] getEntriesFromCache: globalFileTreeCache is null`);
-    return null;
-  }
-
-  console.log(`[DEBUG] getEntriesFromCache: Looking for ${targetPath} in cache`);
-  console.log(`[DEBUG] getEntriesFromCache: Cache has ${globalFileTreeCache.children.length} root children`);
-  console.log(`[DEBUG] getEntriesFromCache: Root children:`, globalFileTreeCache.children.map(c => `${c.name} (${c.isDir ? 'dir' : 'file'})`));
-
-  if (targetPath === "/") {
-    const result = globalFileTreeCache.children.map(child => ({
-      name: child.name,
-      isDir: child.isDir
-    }));
-    console.log(`[DEBUG] getEntriesFromCache: Found ${result.length} root items:`, result.map(r => `${r.name} (${r.isDir ? 'dir' : 'file'})`));
-    return result;
-  }
-
-  // Find the target directory node
-  const pathParts = targetPath.split("/").filter(p => p);
-  console.log(`[DEBUG] getEntriesFromCache: Path parts for ${targetPath}:`, pathParts);
-
-  let currentNode = globalFileTreeCache;
-  console.log(`[DEBUG] getEntriesFromCache: Starting from root node`);
-
-  for (let i = 0; i < pathParts.length; i++) {
-    const part = pathParts[i];
-    console.log(`[DEBUG] getEntriesFromCache: Looking for '${part}' in ${currentNode.children.length} children`);
-    console.log(`[DEBUG] getEntriesFromCache: Available children:`, currentNode.children.map(c => c.name));
-
-    const found = currentNode.children.find(child => child.name === part);
-    if (!found) {
-      console.log(`[DEBUG] getEntriesFromCache: Path ${targetPath} not found in cache - '${part}' not found`);
-      console.log(`[DEBUG] getEntriesFromCache: Current node children:`, currentNode.children.map(c => `${c.name} (${c.isDir ? 'dir' : 'file'})`));
-      return null;
-    }
-    currentNode = found;
-    console.log(`[DEBUG] getEntriesFromCache: Found '${part}', continuing to next level`);
-  }
-
-  const result = currentNode.children.map(child => ({
-    name: child.name,
-    isDir: child.isDir
-  }));
-
-  console.log(`[DEBUG] getEntriesFromCache: Found ${result.length} items for ${targetPath}:`, result.map(r => `${r.name} (${r.isDir ? 'dir' : 'file'})`));
-  return result;
+function getEntriesFromCache(targetPath: string): DirectoryEntry[] | null {
+  const key = directoryKey(normalizeConnect(getActiveConnect()), targetPath);
+  const cached = directoryCache.get(key);
+  return cached && Date.now() - cached.updatedAt < TREE_CACHE_DURATION ? cached.entries : null;
 }
 
-// Clear the cache (useful when files change)
 export function clearFileTreeCache(): void {
-  globalFileTreeCache = null;
-  lastTreeUpdate = 0;
-  const persistedCacheFile = getTreePathsCacheFile();
-  if (persistedCacheFile) {
-    try {
-      if (fs.existsSync(persistedCacheFile)) {
-        fs.unlinkSync(persistedCacheFile);
-      }
-    } catch (error) {
-      console.warn(`[DEBUG] clearFileTreeCache: Failed to remove persisted cache file`, error);
-    }
-  }
-  console.log(`[DEBUG] clearFileTreeCache: Cache cleared`);
+  directoryGeneration++;
+  directoryCache.clear();
+  directoryRequests.clear();
+  refreshRequest = undefined;
 }
 
-// Force refresh the cache
 export async function refreshFileTreeCache(): Promise<void> {
-  console.log(`[DEBUG] refreshFileTreeCache: Forcing cache refresh`);
-  globalFileTreeCache = null;
-  lastTreeUpdate = 0;
-  await populateFileTreeCache();
+  const device = normalizeConnect(getActiveConnect());
+  if (!device || device === "auto") return;
+  const root = vscode.workspace.getConfiguration().get<string>("microPythonWorkBench.rootPath", "/");
+  const target = directoryKey(device, root);
+  if (refreshRequest && refreshTarget === target) return refreshRequest;
+  const request = (async () => {
+    clearFileTreeCache();
+    const generation = directoryGeneration;
+    await lsTyped(root);
+    if (generation === directoryGeneration) {
+      await vscode.commands.executeCommand("microPythonWorkBench._cachePopulated");
+    }
+  })();
+  refreshRequest = request;
+  refreshTarget = target;
+  try {
+    await request;
+  } finally {
+    if (refreshRequest === request) refreshRequest = undefined;
+  }
 }
 
 // Debug function to manually test tree parsing
@@ -744,27 +657,16 @@ export function getFileTreeCacheStats(): {
   itemCount: number;
   lastUpdate: number;
 } {
-  const isValid = isCacheValid();
-  const age = Date.now() - lastTreeUpdate;
-  let itemCount = 0;
-
-  if (globalFileTreeCache) {
-    // Count all nodes in the tree
-    const countNodes = (node: TreeNode): number => {
-      let count = 1; // count this node
-      for (const child of node.children) {
-        count += countNodes(child);
-      }
-      return count;
-    };
-    itemCount = countNodes(globalFileTreeCache);
-  }
-
+  const device = normalizeConnect(getActiveConnect());
+  const cached = [...directoryCache.entries()]
+    .filter(([key]) => JSON.parse(key)[0] === device)
+    .map(([, entry]) => entry);
+  const lastUpdate = Math.max(0, ...cached.map(entry => entry.updatedAt));
   return {
-    isValid,
-    age,
-    itemCount,
-    lastUpdate: lastTreeUpdate
+    isValid: cached.some(entry => Date.now() - entry.updatedAt < TREE_CACHE_DURATION),
+    age: lastUpdate ? Date.now() - lastUpdate : 0,
+    itemCount: cached.reduce((count, entry) => count + entry.entries.length, 0),
+    lastUpdate,
   };
 }
 
@@ -1030,42 +932,29 @@ function parseTreeForPath(treeOutput: string, targetPath: string): { name: strin
   }
 }
 
-export async function lsTyped(p: string): Promise<{ name: string; isDir: boolean }[]> {
+export async function lsTyped(p: string): Promise<DirectoryEntry[]> {
   const connect = normalizeConnect(getActiveConnect());
-  console.log(`[DEBUG] lsTyped: Getting entries for path ${p}`);
+  if (!connect || connect === "auto") return [];
+  const target = directoryPath(p);
+  const key = directoryKey(connect, target);
+  const cached = getEntriesFromCache(target);
+  if (cached !== null) return cached;
+  const pending = directoryRequests.get(key);
+  if (pending) return pending;
 
+  const generation = directoryGeneration;
+  const request = mpyClient.listdir(connect, target).then(entries => {
+    const result = entries.map(entry => ({ name: entry.name, isDir: Boolean(entry.is_dir ?? entry.isDir) }));
+    if (generation === directoryGeneration) {
+      directoryCache.set(key, { entries: result, updatedAt: Date.now() });
+    }
+    return result;
+  });
+  directoryRequests.set(key, request);
   try {
-    const cacheValid = isCacheValid();
-    console.log(`[DEBUG] lsTyped: Cache valid = ${cacheValid}, lastTreeUpdate = ${lastTreeUpdate}, now = ${Date.now()}`);
-
-    if (!cacheValid) {
-      const allowOnActivate = vscode.workspace.getConfiguration().get<boolean>("microPythonWorkBench.connectOnActivate", false);
-      if (lastTreeUpdate === 0 && !allowOnActivate) {
-        console.log(`[DEBUG] lsTyped: Skipping auto-populate on activation (connectOnActivate=false)`);
-        const direct = await mpyClient.listdir(connect, p || "/");
-        return direct.map(entry => ({ name: entry.name, isDir: Boolean(entry.is_dir ?? entry.isDir) }));
-      }
-      console.log(`[DEBUG] lsTyped: Cache invalid, populating...`);
-      await populateFileTreeCache();
-      console.log(`[DEBUG] lsTyped: Cache populated, globalFileTreeCache exists = ${!!globalFileTreeCache}`);
-    } else {
-      console.log(`[DEBUG] lsTyped: Using cached tree data`);
-    }
-
-    // Try to get entries from cache first
-    const cachedResult = getEntriesFromCache(p);
-    console.log(`[DEBUG] lsTyped: Cached result for ${p}:`, cachedResult);
-
-    if (cachedResult && cachedResult.length > 0) {
-      console.log(`[DEBUG] lsTyped: Found ${cachedResult.length} entries in cache for ${p}`);
-      return cachedResult;
-    }
-
-    const direct = await mpyClient.listdir(connect, p || "/");
-    return direct.map(entry => ({ name: entry.name, isDir: Boolean(entry.is_dir ?? entry.isDir) }));
-  } catch (error) {
-    console.error(`[DEBUG] lsTyped: Error for path ${p}: ${error}`);
-    throw error;
+    return await request;
+  } finally {
+    if (directoryRequests.get(key) === request) directoryRequests.delete(key);
   }
 }
 

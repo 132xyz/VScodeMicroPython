@@ -132,7 +132,7 @@ export const fileCommands = {
       try {
         await vscode.commands.executeCommand("microPythonWorkBench.refresh");
       } catch {}
-      Localization.showInfo("messages.syncedLocalToBoard", target.relativePath);
+      vscode.window.setStatusBarMessage(Localization.t("messages.syncedLocalToBoard", target.relativePath), 3000);
     } catch (error) {
       if (error instanceof ActiveFileSyncError) {
         switch (error.code) {
@@ -255,7 +255,7 @@ export const fileCommands = {
     }
     await withAutoSuspend(() => mp.cpToDevice(abs, node.path));
     // tree.addNode(node.path, false); // Add uploaded file to tree
-    vscode.window.showInformationMessage(`Synced local → board: ${rel}`);
+    vscode.window.setStatusBarMessage(Localization.t("messages.syncedLocalToBoard", rel), 3000);
   },
 
   syncFileBoardToLocal: async (node: Esp32Node) => {

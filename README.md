@@ -64,11 +64,13 @@ Use `microPythonWorkBench.pythonPath` if the extension should use a specific int
 
 ### Files and sync
 
-- `MicroPython WorkBench: Refresh` reloads the board file tree.
+- `MicroPython WorkBench: Refresh` reloads direct children of the configured `rootPath`. Expanding a directory loads its children on demand. Browsing does not recursively scan the device or SD card.
+- The Files title-bar upload button targets the device root `/`; its overflow menu also provides New File/Folder at Root. These root commands ignore the current selection and `rootPath`. Right-click a folder to upload there, or a file to upload to its parent directory. The `Board (/)` root entry offers upload/create/refresh without delete or rename. Empty-space context menus are not required for these operations.
 - `MicroPython WorkBench: Check files differences` compares board files with the configured local sync root.
 - `MicroPython WorkBench: Sync changed Files Local → Board` and `MicroPython WorkBench: Sync changed Files Board → Local` only transfer changed files.
 - `MicroPython WorkBench: Sync all files (Local → Board)` and `MicroPython WorkBench: Sync all files (Board → Local)` perform full baseline sync operations.
 - `MicroPython WorkBench: Sync Active File Local → Board` uploads only the current editor file when it belongs to the configured sync root.
+- Successful per-file local-to-board sync and file/folder uploads show a status-bar message that disappears after 3 seconds. Errors and warnings remain notifications.
 - `MicroPython WorkBench: Toggle workspace Auto-Sync on Save` stores the save-upload toggle in VS Code workspace state, not in `settings.json`.
 
 Workspace-specific metadata is stored under `.mpy-workbench/`:

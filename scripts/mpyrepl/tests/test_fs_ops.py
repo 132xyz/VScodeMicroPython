@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import builtins
 import json
+import re
+import hashlib
 import os
 import sys
 import tempfile
@@ -21,6 +23,7 @@ from mpyrepl.runtime.filesystem import (
     DOWNLOAD_END_MARKER,
     DOWNLOAD_ERROR_MARKER,
     DOWNLOAD_START_MARKER,
+    DOWNLOAD_DATA_MARKER,
     JSON_MARKER,
     DeviceFsClient,
     FsOperationError,
@@ -34,6 +37,29 @@ from mpyrepl.runtime.filesystem import (
     list_serial_ports,
 )
 from mpyrepl.runtime.models import ExecResult
+from mpyrepl.runtime.response_stream import encode_frame
+
+
+def _wire_response(command: str, result: ExecResult) -> ExecResult:
+    nonce = re.search(r"MPY:([0-9a-f]{24}):", command)
+    if nonce is None:
+        return result
+    lines = result.stdout.splitlines(keepends=True)
+    payload = b""
+    block_index = 0
+    for line in lines:
+        line = line.rstrip(b"\r\n")
+        if line.startswith(JSON_MARKER.encode()):
+            line = line[len(JSON_MARKER):].rstrip(b"\r\n")
+        elif DOWNLOAD_DATA_MARKER in command and not line.startswith(b"__MPYFS_"):
+            try:
+                size = len(base64.b64decode(line, validate=True))
+            except Exception:
+                size = 0
+            line = (DOWNLOAD_DATA_MARKER + json.dumps({"index": block_index, "size": size, "data": line.decode('ascii')})).encode()
+            block_index += 1
+        payload += encode_frame(nonce.group(1), line)
+    return ExecResult(stdout=payload, stderr=result.stderr)
 
 
 class FakeTransport:
@@ -49,12 +75,13 @@ class FakeTransport:
             raise AssertionError("unexpected exec_raw call")
         response = self.responses.pop(0)
         if isinstance(response, ExecResult):
+            response = _wire_response(command, response)
             if stdout_consumer is not None and response.stdout:
                 stdout_consumer(response.stdout)
             if stderr_consumer is not None and response.stderr:
                 stderr_consumer(response.stderr)
             return response
-        result = ExecResult(stdout=_json_stdout(response), stderr=b"")
+        result = _wire_response(command, ExecResult(stdout=_json_stdout(response), stderr=b""))
         if stdout_consumer is not None:
             stdout_consumer(result.stdout)
         return result
@@ -121,11 +148,16 @@ class FakeStreamingTransport(FakeTransport):
     def flush_output(self) -> None:
         self.flushes += 1
 
-    def follow(self, timeout: float):
+    def follow(self, timeout: float, stdout_consumer=None, stderr_consumer=None):
         self.timeouts.append(timeout)
         if not self.follow_responses:
             raise AssertionError("unexpected follow call")
-        return self.follow_responses.pop(0)
+        result = _wire_response(self.no_follow_commands[-1].decode(), self.follow_responses.pop(0))
+        if stdout_consumer:
+            stdout_consumer(result.stdout)
+        if stderr_consumer:
+            stderr_consumer(result.stderr)
+        return result
 
     def interrupt(self) -> None:
         self.interrupts += 1
@@ -142,7 +174,7 @@ def _download_stdout(data: bytes, *, size: int | None = None) -> bytes:
         [
             (DOWNLOAD_START_MARKER + json.dumps({"size": total}) + "\n").encode("ascii"),
             base64.b64encode(data) + b"\n",
-            (DOWNLOAD_END_MARKER + json.dumps({"bytes": len(data)}) + "\n").encode("ascii"),
+            (DOWNLOAD_END_MARKER + json.dumps({"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}) + "\n").encode("ascii"),
         ]
     )
 

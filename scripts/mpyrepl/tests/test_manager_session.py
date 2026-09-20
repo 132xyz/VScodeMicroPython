@@ -268,6 +268,40 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ok": "write_file"})
         self.assertTrue(any(event == "progress" for event, _ in self.events))
 
+    async def test_filesystem_sync_timeout_keeps_handle_and_does_not_replay_operation(self) -> None:
+        await self.session.open()
+        assert self.transport is not None
+        try:
+            with mock.patch.object(manager_session_module, "run_fs_operation", side_effect=ReplSyncError("timeout waiting for stdout EOF")) as run:
+                with self.assertRaises(RpcMethodError) as raised:
+                    await self.session.fs_operation("listdir", {"path": "/"})
+                self.assertEqual(raised.exception.code, "repl_sync_timeout")
+                self.assertEqual(run.call_count, 1)
+            self.assertFalse(self.transport.closed)
+            self.assertFalse(self.session.status()["replReady"])
+            self.assertEqual(self.session.state, "ready")
+            with mock.patch.object(manager_session_module, "run_fs_operation", return_value=[]) as run:
+                self.assertEqual(await self.session.fs_operation("listdir", {"path": "/sd"}), [])
+                self.assertEqual(run.call_count, 1)
+            self.assertEqual(self.transport.raw_entries, [False, False])
+            self.assertTrue(self.session.status()["replReady"])
+        finally:
+            await self.session.close()
+
+    async def test_execution_sync_timeout_does_not_close_or_repeat_source(self) -> None:
+        await self.session.open()
+        assert self.transport is not None
+        try:
+            with mock.patch.object(self.transport, "exec_raw", side_effect=ReplSyncError("timeout waiting for stdout EOF")) as execute:
+                with self.assertRaises(RpcMethodError) as raised:
+                    await self.session.execute("print(1)")
+                self.assertEqual(raised.exception.code, "repl_sync_timeout")
+                self.assertEqual(execute.call_count, 1)
+            self.assertFalse(self.transport.closed)
+            self.assertFalse(self.session.status()["replReady"])
+        finally:
+            await self.session.close()
+
     async def test_open_failure_sets_failed_state_and_closes_transport(self) -> None:
         transport_holder: dict[str, OpenErrorTransport] = {}
 
@@ -540,7 +574,7 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await session.close()
 
-    async def test_soft_reset_timeout_invalidates_symbols_and_completion_recovers(self) -> None:
+    async def test_soft_reset_timeout_invalidates_symbols_without_completion_interrupting_device(self) -> None:
         transport = SoftResetSyncErrorTransport(ReplConfig(port="loop://"))
         session = ManagerSession(transport.config, transport_factory=lambda config: transport)
         try:
@@ -551,8 +585,8 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
             completions = await session.complete("val", 3, True)
 
             self.assertFalse(any(item["text"] == "value" for item in completions))
-            self.assertTrue(session.status()["replReady"])
-            self.assertEqual(transport.raw_entries, [False, False])
+            self.assertFalse(session.status()["replReady"])
+            self.assertEqual(transport.raw_entries, [False])
             self.assertEqual(transport.reset_timeouts, [None])
         finally:
             await session.close()

@@ -97,6 +97,7 @@ jest.mock('../src/commands/fileCommands', () => ({
     openFileFromLocal: jest.fn(),
     syncActiveFileLocalToBoard: jest.fn(),
     syncFileLocalToBoard: jest.fn(),
+    uploadToBoardHere: jest.fn(),
     syncFileBoardToLocal: jest.fn(),
     openFile: jest.fn(),
     mkdir: jest.fn(),
@@ -348,6 +349,14 @@ describe('extension activate smoke coverage', () => {
     expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled();
     expect(pythonInterpreterModule.PythonInterpreterManager.checkMpremoteAvailability).toHaveBeenCalled();
     expect(context.subscriptions.length).toBeGreaterThan(10);
+    const { fileCommands } = require('../src/commands/fileCommands');
+    const selected = { kind: 'dir', path: '/sd' };
+    await getRegisteredCommandHandler('microPythonWorkBench.uploadToBoardRoot')(selected);
+    await getRegisteredCommandHandler('microPythonWorkBench.newFileAtBoardRoot')(selected);
+    await getRegisteredCommandHandler('microPythonWorkBench.newFolderAtBoardRoot')({ viewId: 'microPythonWorkBenchFsView' });
+    expect(fileCommands.uploadToBoardHere).toHaveBeenCalledWith();
+    expect(fileCommands.newFileInTree).toHaveBeenCalledWith();
+    expect(fileCommands.newFolderInTree).toHaveBeenCalledWith();
   });
 
   test('activate command callbacks and autosave handler execute expected branches', async () => {

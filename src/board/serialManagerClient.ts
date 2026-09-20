@@ -27,6 +27,7 @@ export class SerialManagerClient extends EventEmitter {
   private socket?: net.Socket;
   private buffer = "";
   private nextId = 1;
+  private supportsCancellation = false;
   private readonly pending = new Map<string, PendingRequest>();
 
   constructor(private readonly endpoint: SerialManagerEndpoint) {
@@ -89,6 +90,12 @@ export class SerialManagerClient extends EventEmitter {
       const timer = timeoutMs > 0
         ? setTimeout(() => {
           this.pending.delete(id);
+          if (this.supportsCancellation && !socket.destroyed) {
+            socket.write(JSON.stringify({
+              id: `cancel-${id}`, token: this.endpoint.token,
+              method: "request.cancel", params: { requestId: id },
+            }) + "\n");
+          }
           reject(new Error(`serial manager request '${method}' timed out after ${timeoutMs}ms`));
         }, timeoutMs)
         : undefined;
@@ -145,6 +152,9 @@ export class SerialManagerClient extends EventEmitter {
     this.pending.delete(id);
     if (pending.timer) clearTimeout(pending.timer);
     if (payload.ok) {
+      if (Array.isArray(payload.result?.capabilities)) {
+        this.supportsCancellation = payload.result.capabilities.includes("request-cancel");
+      }
       pending.resolve(payload.result);
       return;
     }

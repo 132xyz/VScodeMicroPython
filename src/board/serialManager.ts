@@ -21,6 +21,14 @@ let activeProcess: SerialManagerProcess | undefined;
 let activeClient: SerialManagerClient | undefined;
 let activeRuntime: SerialManagerRuntime | undefined;
 let activeTransportConnected = false;
+let lifecycle: Promise<unknown> = Promise.resolve();
+let pendingStart: { device: string; promise: Promise<SerialManagerRuntime> } | undefined;
+
+function serializeLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+  const result = lifecycle.then(operation);
+  lifecycle = result.catch(() => undefined);
+  return result;
+}
 
 function getBaudRate(): number {
   return vscode.workspace.getConfiguration("microPythonWorkBench").get<number>("baudRate", 115200);
@@ -126,11 +134,23 @@ export function isRecoverableSerialManagerError(error: unknown): boolean {
 }
 
 export async function ensureManagerStarted(device: string): Promise<SerialManagerRuntime> {
+  if (pendingStart?.device === device) return pendingStart.promise;
+  const promise = serializeLifecycle(() => startManager(device));
+  const pending = { device, promise };
+  pendingStart = pending;
+  try {
+    return await promise;
+  } finally {
+    if (pendingStart === pending) pendingStart = undefined;
+  }
+}
+
+async function startManager(device: string): Promise<SerialManagerRuntime> {
   if (activeRuntime?.device === device && activeClient?.connected && activeTransportConnected) {
     return activeRuntime;
   }
   if (activeRuntime || activeClient || activeProcess) {
-    await closeManager();
+    await closeActiveManager();
   }
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -141,14 +161,21 @@ export async function ensureManagerStarted(device: string): Promise<SerialManage
   const managerProcess = activeProcess || new SerialManagerProcess();
   activeProcess = managerProcess;
   const stubRoot = await getActiveStubPath();
-  const endpoint = await managerProcess.start({
-    device,
-    baudRate: getBaudRate(),
-    stubRoot,
-    completionRoots: await getActiveCompletionRoots(),
-    helperVersion: getExtensionVersion(),
-    descriptorPath,
-  });
+  let endpoint: SerialManagerEndpoint;
+  try {
+    endpoint = await managerProcess.start({
+      device,
+      baudRate: getBaudRate(),
+      stubRoot,
+      completionRoots: await getActiveCompletionRoots(),
+      helperVersion: getExtensionVersion(),
+      descriptorPath,
+    });
+  } catch (error) {
+    if (activeProcess === managerProcess) activeProcess = undefined;
+    await managerProcess.stop(3000, { gracefulWaitMs: 0 });
+    throw error;
+  }
   const client = new SerialManagerClient(endpoint);
   activeClient = client;
   activeRuntime = { device, endpoint, descriptorPath };
@@ -246,6 +273,11 @@ async function attachExistingManager(
 }
 
 export async function closeManager(): Promise<void> {
+  pendingStart = undefined;
+  return serializeLifecycle(closeActiveManager);
+}
+
+async function closeActiveManager(): Promise<void> {
   const client = activeClient;
   const managerProcess = activeProcess;
   const runtime = activeRuntime;

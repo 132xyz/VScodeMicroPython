@@ -88,6 +88,8 @@ Download Base64 is ASCII, so the sender uses text `sys.stdout.write()`. This avo
 
 Start/end markers, final size checks, and byte progress remain unchanged. Downloads write to a `.mpydownload` temporary file and replace the local target only after validation succeeds. Failures preserve an existing target and remove the temporary file.
 
+Internal records are additionally framed with a per-operation nonce and byte length. Download data records include block index and decoded size; completion verifies a device SHA-256 against the host's digest before replacement. The firmware must provide `hashlib.sha256` or `uhashlib.sha256`. Background text outside those frames goes to the human console. Interleaved/corrupt records fail validation instead of becoming file bytes. Streaming and the existing temporary-target protections are retained.
+
 An already-running manager does not reload its Python code when the extension is upgraded. Before validating a fix, confirm that the attached manager was launched from the new version. Coordinate with all shared clients before ending an old manager; do not interrupt a device session that is in use.
 
 ## Soft reset and REPL recovery
@@ -106,9 +108,15 @@ If synchronization still fails within that deadline, the command returns `repl_s
 
 Do not blindly retry `soft-reset` after a synchronization timeout: the first Ctrl-D may already have taken effect. In particular, `resetSent=true` with `resetObserved=false` leaves the reset outcome uncertain. Use the next normal command to restore REPL first. The human REPL remains open and does not receive a disconnected status for this protocol error.
 
+Execution and filesystem commands also return `repl_sync_timeout` when raw stdout/stderr EOF is missing, keeping the existing serial handle. This indicates protocol uncertainty, not confirmed physical disconnection. The failed operation is not automatically replayed. The next active command may interrupt unfinished device code with Ctrl-C while restoring REPL, so inspect the operation's effects before retrying writes or other side effects. `ls` reads one directory; explicit `tree` still scans recursively and can take longer on a large or slow filesystem.
+
 ## Queue and output behavior
 
 Execution, filesystem operations, connect, disconnect, reconnect, soft reset, and completion share one manager-side serial-operation lock. The default `--busy wait` policy enters a bounded FIFO-style wait controlled by `--queue-timeout`; `--busy reject` returns a `busy` error immediately. A queued request is cancelled when its client disconnects. `interrupt` bypasses the queue so it can stop active device code.
+
+New managers advertise `request-cancel` and `ordered-output` capabilities. `request.cancel` takes `requestId` on the same authenticated connection: queued requests are removed without device input, and a running request can interrupt only its own serial operation. The operation lock is retained until the interrupt send completes. Clients use this on local timeout only when the capability is advertised; no global interrupt fallback is used for old managers. Cancellation is a request to stop, not a rollback of device-side effects.
+
+Status may include `activeOperation` with client ID, request ID, method, phase, and elapsed milliseconds. Event `sequence` identifies manager stream ordering. These IDs identify the active host operation, not the originating device thread. CLI waits use a monotonic deadline even when events continue arriving. Extension filesystem requests use a 2-second queue budget and a bounded device-operation budget; timing out a view does not restart the shared owner.
 
 After `machine.reset()` or USB serial re-enumeration, the manager may temporarily enter `stopped`. `reconnect` releases the manager's stale serial handle, retries the same configured port for up to `--timeout`, then enters raw REPL and injects the helper again. The existing manager owns the entire sequence; the Agent never opens COM directly and does not need to automate the VS Code UI.
 

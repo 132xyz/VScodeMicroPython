@@ -309,6 +309,8 @@ async function runFs<T>(
   const manager = await getFsManager(device, managerMethod);
   if (manager && managerMethod) {
     const params = managerParamsForFsPayload(payload);
+    params.queueTimeoutMs = 2000;
+    params.operationTimeoutMs = Math.max(1000, timeoutMs - 3000);
     try {
       return await managerCallWithCancellation<T>(
         manager,

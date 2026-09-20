@@ -204,7 +204,7 @@ export async function uploadToBoardHere(node?: Esp32Node): Promise<void> {
     }));
 
     await vscode.commands.executeCommand("microPythonWorkBench.refresh");
-    vscode.window.showInformationMessage(`Uploaded ${fileCount} file(s) and ${directoryCount} folder(s) to ${targetDir}`);
+    vscode.window.setStatusBarMessage(`Uploaded ${fileCount} file(s) and ${directoryCount} folder(s) to ${targetDir}`, 3000);
   } catch (err: any) {
     if (touchedBoard) {
       try { await vscode.commands.executeCommand("microPythonWorkBench.refresh"); } catch {}

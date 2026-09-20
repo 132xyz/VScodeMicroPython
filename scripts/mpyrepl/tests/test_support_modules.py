@@ -70,12 +70,18 @@ class FakeGate:
         self.source = ""
         self.timeout = 0.0
 
-    def try_run_blocking(self, operation, func, source, timeout):
+    def try_run_blocking(self, operation, func, source, timeout, stdout_consumer=None, stderr_consumer=None):
         self.operation = operation
         self.source = source
         self.timeout = timeout
         if self.error is not None:
             raise self.error
+        if self.result is not None and stdout_consumer is not None:
+            import ast, json, re
+            from mpyrepl.runtime.response_stream import encode_frame
+            nonce = re.search(r"MPY:([0-9a-f]{24}):", source).group(1)
+            names = [ast.literal_eval(line) for line in self.result.stdout.decode().splitlines()]
+            stdout_consumer(encode_frame(nonce, json.dumps(names).encode()))
         return self.result
 
 

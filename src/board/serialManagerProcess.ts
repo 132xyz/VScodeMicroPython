@@ -88,7 +88,9 @@ function sleep(ms: number): Promise<void> {
 export class SerialManagerProcess {
   private child?: ChildProcessWithoutNullStreams;
   private endpoint?: SerialManagerEndpoint;
-  private stderr = "";
+  private startRequest?: Promise<SerialManagerEndpoint>;
+  private startDevice?: string;
+  private generation = 0;
 
   get running(): boolean {
     return !!this.child && !this.child.killed;
@@ -103,6 +105,24 @@ export class SerialManagerProcess {
   }
 
   async start(options: SerialManagerStartOptions): Promise<SerialManagerEndpoint> {
+    if (this.startRequest) {
+      if (this.startDevice !== options.device) throw new Error("serial manager is starting for another device");
+      return this.startRequest;
+    }
+    const request = this.startAttempt(options, this.generation);
+    this.startRequest = request;
+    this.startDevice = options.device;
+    try {
+      return await request;
+    } finally {
+      if (this.startRequest === request) {
+        this.startRequest = undefined;
+        this.startDevice = undefined;
+      }
+    }
+  }
+
+  private async startAttempt(options: SerialManagerStartOptions, generation: number): Promise<SerialManagerEndpoint> {
     if (this.child && this.endpoint && this.child.exitCode === null && !this.child.killed) {
       return this.endpoint;
     }
@@ -118,13 +138,14 @@ export class SerialManagerProcess {
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      if (this.generation !== generation) throw new Error("serial manager startup cancelled");
       try {
         return await this.startOnce(options, parsed, scriptPath, token);
       } catch (error) {
         lastError = error;
         this.child = undefined;
         this.endpoint = undefined;
-        if (attempt >= retryDelays.length || !isTransientSerialOpenError(error)) {
+        if (this.generation !== generation || attempt >= retryDelays.length || !isTransientSerialOpenError(error)) {
           throw error;
         }
         await sleep(retryDelays[attempt]);
@@ -178,12 +199,18 @@ export class SerialManagerProcess {
     };
     const child = spawn(parsed.exe, args, { env, windowsHide: true });
     this.child = child;
-    this.stderr = "";
 
     return await this.waitForReady(child, token, options.startupTimeoutMs ?? 15000);
   }
 
   async stop(timeoutMs = 3000, options: { gracefulWaitMs?: number } = {}): Promise<void> {
+    this.generation++;
+    const pending = this.startRequest;
+    await this.stopChild(timeoutMs, options);
+    await pending?.catch(() => undefined);
+  }
+
+  private async stopChild(timeoutMs: number, options: { gracefulWaitMs?: number }): Promise<void> {
     const child = this.child;
     this.endpoint = undefined;
     this.child = undefined;
@@ -210,11 +237,12 @@ export class SerialManagerProcess {
   ): Promise<SerialManagerEndpoint> {
     return new Promise((resolve, reject) => {
       let stdoutBuffer = "";
+      let stderr = "";
       let settled = false;
       const timer = setTimeout(() => {
         finish(() => {
           child.kill();
-          reject(new Error(`serial manager did not become ready after ${timeoutMs}ms${this.stderr ? `: ${this.stderr}` : ""}`));
+          reject(new Error(`serial manager did not become ready after ${timeoutMs}ms${stderr ? `: ${stderr}` : ""}`));
         });
       }, timeoutMs);
 
@@ -248,11 +276,11 @@ export class SerialManagerProcess {
         }
       };
       const onStderr = (chunk: Buffer) => {
-        this.stderr += chunk.toString("utf8");
+        stderr += chunk.toString("utf8");
       };
       const onError = (error: Error) => finish(() => reject(error));
       const onExit = (code: number | null) => finish(() => {
-        reject(new Error(`serial manager exited before ready with code ${code}${this.stderr ? `: ${this.stderr}` : ""}`));
+        reject(new Error(`serial manager exited before ready with code ${code}${stderr ? `: ${stderr}` : ""}`));
       });
 
       child.stdout.on("data", onStdout);

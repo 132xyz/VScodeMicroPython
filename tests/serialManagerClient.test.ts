@@ -2,6 +2,35 @@ import * as net from "node:net";
 import { SerialManagerClient, SerialManagerRequestError } from "../src/board/serialManagerClient";
 
 describe("SerialManagerClient", () => {
+  test("timeout cancels only its own request after capability negotiation", async () => {
+    const requests: any[] = [];
+    let resolveCancel!: () => void;
+    const cancelled = new Promise<void>(resolve => { resolveCancel = resolve; });
+    const server = net.createServer(socket => {
+      let buffer = "";
+      socket.on("data", chunk => {
+        buffer += String(chunk);
+        const lines = buffer.split("\n"); buffer = lines.pop() || "";
+        for (const line of lines) {
+          const request = JSON.parse(line); requests.push(request);
+          if (request.method === "manager.hello") socket.write(JSON.stringify({ id: request.id, ok: true, result: { capabilities: ["request-cancel"] } }) + "\n");
+          if (request.method === "request.cancel") resolveCancel();
+        }
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const client = new SerialManagerClient({ host: "127.0.0.1", port: (server.address() as net.AddressInfo).port, token: "tok" });
+    try {
+      await client.call("manager.hello", { role: "extension" });
+      await expect(client.call("fs.listdir", { path: "/sd" }, 20)).rejects.toThrow("timed out");
+      await cancelled;
+      expect(requests[2].params.requestId).toBe(requests[1].id);
+      expect(requests.some(request => request.method === "device.interrupt")).toBe(false);
+    } finally {
+      client.dispose();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
   test("calls manager and emits events", async () => {
     const server = net.createServer(socket => {
       let buffer = "";

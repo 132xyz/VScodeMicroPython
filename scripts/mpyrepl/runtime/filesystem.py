@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mpyrepl.runtime.transport import SerialReplTransport
+from mpyrepl.runtime.response_stream import ResponseStream, emitter_source, new_nonce
 
 
 JSON_MARKER = "__MPYFS_JSON__"
@@ -19,6 +20,7 @@ PROGRESS_MARKER = "__MPYFS_PROGRESS__"
 DOWNLOAD_START_MARKER = "__MPYFS_DOWNLOAD_START__"
 DOWNLOAD_END_MARKER = "__MPYFS_DOWNLOAD_END__"
 DOWNLOAD_ERROR_MARKER = "__MPYFS_DOWNLOAD_ERROR__"
+DOWNLOAD_DATA_MARKER = "__MPYFS_DOWNLOAD_DATA__"
 DEFAULT_CHUNK_SIZE = 4096
 UPLOAD_HANDLE_VAR = "__mpy_upload_file"
 UPLOAD_PATH_VAR = "__mpy_upload_path"
@@ -105,14 +107,14 @@ def _parse_json_result(stdout: bytes) -> dict[str, Any]:
     raise FsOperationError("device response marker not found", "bad_response")
 
 
-def _wrap_device_code(body: str) -> str:
+def _wrap_device_code(body: str, nonce: str | None = None) -> str:
     """Wrap a device-side body so it always prints one JSON result line.
 
     :param body: Indented Python statements assigning ``data``.
     :return: Complete source code.
     """
     indented = "\n".join("    " + line if line else "" for line in body.splitlines())
-    return (
+    source = (
         "try:\n"
         "    import ujson as __mpy_json\n"
         "except ImportError:\n"
@@ -140,6 +142,11 @@ def _wrap_device_code(body: str) -> str:
         "    except NameError:\n"
         "        pass\n"
     )
+    if nonce is not None:
+        source = emitter_source(nonce) + source
+        source = source.replace("print(" + repr(JSON_MARKER) + " + ", "__mpy_emit(")
+        source += "    del __mpy_emit\n"
+    return source
 
 
 class DeviceFsClient:
@@ -167,13 +174,32 @@ class DeviceFsClient:
         :param body: Device-side source body.
         :return: Parsed ``data`` field.
         """
-        result = self._transport.exec_raw(_wrap_device_code(body), timeout=self._timeout)
+        nonce = new_nonce()
+        frames: list[bytes] = []
+        console = getattr(self._transport, "console_output", lambda data: None)
+        parser = ResponseStream(nonce, frames.append, console)
+        try:
+            result = self._transport.exec_raw(
+                _wrap_device_code(body, nonce), timeout=self._timeout,
+                stdout_consumer=parser.feed, stderr_consumer=console,
+            )
+        finally:
+            parser.finish()
+        if parser.error:
+            raise FsOperationError(parser.error, "protocol_interleaved")
         if result.stderr:
             raise FsOperationError(
                 result.stderr.decode("utf-8", errors="replace").strip() or "device stderr",
                 "stderr",
             )
-        payload = _parse_json_result(result.stdout)
+        if len(frames) != 1:
+            raise FsOperationError("internal response frame missing or duplicated", "bad_response")
+        try:
+            payload = json.loads(frames[0])
+        except (ValueError, UnicodeError) as exc:
+            raise FsOperationError("invalid internal JSON response", "bad_json") from exc
+        if not isinstance(payload, dict):
+            raise FsOperationError("internal response must be an object", "bad_response")
         if not payload.get("ok"):
             raise FsOperationError(str(payload.get("error") or "device operation failed"))
         return payload.get("data")
@@ -448,6 +474,10 @@ class DeviceFsClient:
         receiver_started = False
         receiver_finished = False
         bytes_sent = 0
+        nonce = new_nonce()
+        frames: list[bytes] = []
+        console = getattr(self._transport, "console_output", lambda data: None)
+        parser = ResponseStream(nonce, frames.append, console)
 
         try:
             self._transport.exec_raw_no_follow(
@@ -458,7 +488,7 @@ class DeviceFsClient:
                         total_size,
                         encoded_total,
                         ((raw_chunk_size + 2) // 3) * 4,
-                    )
+                    ), nonce
                 ).encode("utf-8")
             )
             receiver_started = True
@@ -478,14 +508,17 @@ class DeviceFsClient:
                     bytes_sent += len(chunk)
                     self._emit_write_progress(progress, source, target, bytes_sent, total_size)
             self._transport.flush_output()
-            result = self._transport.follow(self._timeout)
+            result = self._transport.follow(self._timeout, stdout_consumer=parser.feed, stderr_consumer=console)
+            parser.finish()
             receiver_finished = True
             if result.stderr:
                 raise FsOperationError(
                     result.stderr.decode("utf-8", errors="replace").strip() or "device stderr",
                     "stderr",
                 )
-            payload = _parse_json_result(result.stdout)
+            if parser.error or len(frames) != 1:
+                raise FsOperationError(parser.error or "upload response missing", "bad_response")
+            payload = json.loads(frames[0])
             if not payload.get("ok"):
                 raise FsOperationError(str(payload.get("error") or "device operation failed"))
             return int(payload.get("data") or 0)
@@ -781,7 +814,11 @@ class DeviceFsClient:
         started = False
         completed = False
         device_error = ""
-        saw_consumer_data = False
+        nonce = new_nonce()
+        console = getattr(self._transport, "console_output", lambda data: None)
+        import hashlib
+        digest = hashlib.sha256()
+        block_index = 0
 
         def parse_marker(line: bytes, marker: str) -> dict[str, Any]:
             text = line.decode("utf-8", errors="replace")
@@ -792,7 +829,7 @@ class DeviceFsClient:
             return payload if isinstance(payload, dict) else {}
 
         def process_line(raw_line: bytes, handle) -> None:
-            nonlocal started, completed, device_error, offset
+            nonlocal started, completed, device_error, offset, block_index
             line = raw_line.strip()
             if not line:
                 return
@@ -816,6 +853,8 @@ class DeviceFsClient:
                         % (source, offset, reported),
                         "size_mismatch",
                     )
+                if payload.get("sha256") != digest.hexdigest():
+                    raise FsOperationError("download checksum mismatch", "checksum_mismatch")
                 completed = True
                 return
             if line.startswith(DOWNLOAD_ERROR_MARKER.encode("ascii")):
@@ -825,34 +864,47 @@ class DeviceFsClient:
             if not started:
                 raise FsOperationError("download stream start marker not found for %s" % source, "bad_response")
             if completed:
-                return
+                raise FsOperationError("unexpected record after download end", "bad_response")
+            if not line.startswith(DOWNLOAD_DATA_MARKER.encode("ascii")):
+                raise FsOperationError("invalid download data record", "bad_response")
+            record = parse_marker(line, DOWNLOAD_DATA_MARKER)
+            if record.get("index") != block_index:
+                raise FsOperationError("download block sequence mismatch", "bad_response")
             try:
-                chunk = base64.b64decode(line)
+                chunk = base64.b64decode(record.get("data", ""), validate=True)
             except Exception as exc:
                 raise FsOperationError("invalid download data for %s: %s" % (source, exc), "bad_response")
+            if record.get("size") != len(chunk):
+                raise FsOperationError("download block size mismatch", "size_mismatch")
+            block_index += 1
             handle.write(chunk)
+            digest.update(chunk)
             offset += len(chunk)
             self._emit_read_progress(progress, source, target, offset, size)
 
         def consume_stdout(data: bytes, handle) -> None:
-            nonlocal pending, saw_consumer_data
+            nonlocal pending
             if not data:
                 return
-            saw_consumer_data = True
-            pending += data.replace(b"\x04", b"")
+            pending += data
             while b"\n" in pending:
                 line, pending = pending.split(b"\n", 1)
                 process_line(line, handle)
 
         self._emit_read_progress(progress, source, target, 0, size)
         with temp_target.open("wb") as handle:
-            result = self._transport.exec_raw(
-                self._stdout_base64_sender_code(source, size, chunk_size),
-                timeout=self._timeout,
-                stdout_consumer=lambda data: consume_stdout(data, handle),
-            )
-            if not saw_consumer_data and result.stdout:
-                consume_stdout(result.stdout, handle)
+            parser = ResponseStream(nonce, lambda data: consume_stdout(data + b"\n", handle), console)
+            try:
+                result = self._transport.exec_raw(
+                    self._stdout_base64_sender_code(source, size, chunk_size, nonce),
+                    timeout=self._timeout,
+                    stdout_consumer=parser.feed,
+                    stderr_consumer=console,
+                )
+            finally:
+                parser.finish()
+            if parser.error:
+                raise FsOperationError(parser.error, "protocol_interleaved")
             consume_stdout(b"\n", handle)
             if result.stderr:
                 raise FsOperationError(
@@ -872,10 +924,10 @@ class DeviceFsClient:
                     "size_mismatch",
                 )
 
-    def _stdout_base64_sender_code(self, source: str, size: int, chunk_size: int) -> str:
+    def _stdout_base64_sender_code(self, source: str, size: int, chunk_size: int, nonce: str | None = None) -> str:
         # Base64 is ASCII. Binary stdout may resend bytes already sent to serial
         # when a dupterm mirror reports a short write.
-        return (
+        code = (
             "try:\n"
             "    import ujson as json\n"
             "except ImportError:\n"
@@ -921,6 +973,17 @@ class DeviceFsClient:
             "    except Exception:\n"
             "        pass\n"
         )
+        code = "try:\n    import hashlib\nexcept ImportError:\n    import uhashlib as hashlib\ndigest = hashlib.sha256()\n" + code
+        code = code.replace("        sent += len(chunk)", "        digest.update(chunk)\n        sent += len(chunk)")
+        code = code.replace("{'bytes': sent}", "{'bytes': sent, 'sha256': binascii.hexlify(digest.digest()).decode()}")
+        if nonce is not None:
+            code = emitter_source(nonce) + code
+            code = code.replace("f = None\nsent = 0", "f = None\nsent = 0\nblock_index = 0")
+            code = code.replace("sys.stdout.write(marker + json.dumps(payload) + '\\n')", "__mpy_emit(marker + json.dumps(payload))")
+            code = code.replace("sys.stdout.write(data.decode())", "__mpy_emit(%r + json.dumps({'index': block_index, 'size': len(chunk), 'data': data.decode().rstrip('\\r\\n')}))" % DOWNLOAD_DATA_MARKER)
+            code = code.replace("        sent += len(chunk)", "        sent += len(chunk)\n        block_index += 1")
+        indented = "\n".join("    " + line if line else "" for line in code.splitlines())
+        return "def __mpy_download():\n" + indented + "\ntry:\n    __mpy_download()\nfinally:\n    del __mpy_download\n"
 
     def _read_chunk(self, device_path: str, offset: int, size: int) -> str:
         body = (
@@ -945,7 +1008,8 @@ class DeviceFsClient:
         :param source: Python source.
         :return: Execution result dictionary.
         """
-        result = self._transport.exec_raw(source, timeout=self._timeout)
+        console = getattr(self._transport, "console_output", lambda data: None)
+        result = self._transport.exec_raw(source, timeout=self._timeout, stdout_consumer=console, stderr_consumer=console)
         return {
             "stdout": result.stdout.decode("utf-8", errors="replace"),
             "stderr": result.stderr.decode("utf-8", errors="replace"),

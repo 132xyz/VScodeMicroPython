@@ -120,14 +120,14 @@ npm run test:watch
 
 ## 当前验证快照
 
-以下数字是 2026-09-15 宿主侧验证快照,不代表长期冻结指标:
+以下数字是 2026-09-17 宿主侧验证快照,不代表长期冻结指标:
 
 - JS / TS
-	- 26 个 test suites
-	- 112 个 tests
+	- 30 个 test suites
+	- 132 个 tests
 - Python `mpyrepl`
-	- 250 个 tests
-	- Python 3.12 递归包源码覆盖率: 89.2%
+	- 276 个 tests
+	- 输出完整性修复的最终覆盖率以 build.sh 输出为准,门槛仍为 80%.
 
 ## 测试基础设施与约定
 
@@ -170,6 +170,24 @@ npm run test:watch
 `test_manager_session.py` 验证超时不关闭串口、不发 stopped,下一条命令原句柄恢复且不重复软复位,并覆盖恢复失败、并发恢复、补全缓存清理和真实 I/O 错误的断线分支.`test_manager_server.py` 与 `test_agent_client.py` 验证期限参数、退出码 5 和单条 JSON 错误细节.
 
 这些是纯宿主模拟回归.本次没有连接物理串口、附着已有 manager 或执行真实设备复位,不代表 Windows/macOS 串口驱动或硬件验收.
+
+## 目录与启动回归
+
+`rootActionsMenu.test.ts` 验证标题栏/溢出菜单和根节点上下文入口,根节点不暴露删除/重命名.`extensionSmoke.test.ts` 验证专用根命令忽略视图/选中节点参数.`fileCommandsCoverage.test.ts` 覆盖目录、文件父目录、根anchor和无node调用的真实上传目标解析,测试使用mock,不会上传到设备.
+
+`directoryListing.test.ts` 覆盖配置根目录、按需子目录、TTL 后单目录读取、空目录缓存、并发去重、设备隔离和失效响应保护.`directoryRefresh.test.ts` 确认刷新失败不会立即触发第二次设备读取.`esp32FsCoverage.test.ts` 覆盖刷新后界面节点不被迟到结果覆盖.
+
+`serialManagerLifecycle.test.ts` 和 `serialManagerProcess.test.ts` 验证同设备共享启动、失败后重试、启动期间关闭、端口切换串行化及子进程监听清理.Python transport 回归覆盖提前终止、短写、延迟 ACK、丢失额度后的有界 Ctrl-C 中止;session 回归确认 EOF 同步错误保留句柄并且不自动重放执行或文件操作.
+
+这些检查使用 mock/FakeSerial,未连接设备或现有 manager,不提供实际刷新耗时或硬件驱动验证结论.
+
+## 控制台完整性与定向取消
+
+`test_console_integrity.py` 覆盖逐切点 CRLF/中文/括号/大于号、无换行尾行、裸 CR 进度、超长记录、请求帧切分和损坏帧.测试会执行实际生成的设备 wrapper 和下载发送器,模拟 cooked stdout 后核对文件字节与后台打印.异步测试覆盖补全不阻塞输入、输出写失败退出和慢消费者缺口诊断.
+
+本机安装 pexpect 时,额外用其 VT100 模拟器验证实际 prompt-toolkit 渲染后的两条进度行不会在 CR/LF 分片时消失.未安装时这一屏幕集成测试显式跳过,其他分片/协议测试仍运行.该测试工具不是 Agent CLI 或扩展运行依赖;不等价于 Windows/macOS 终端实测.
+
+`test_manager_server.py` 覆盖同连接状态/取消可响应、排队取消后不执行、不能取消另一连接的同名请求、中断完成前不释放操作锁、取消 asyncio 等待不提前放开串口工作,以及 stdout 事件先于结果且序号连续.`serialManagerClient.test.ts` 验证超时在能力协商后只取消自己的请求,不发送全局中断.
 
 ## 下载发送器回归
 

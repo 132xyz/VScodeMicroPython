@@ -165,12 +165,24 @@ def build_prompt_session(
 
         if completer is not None and getattr(completer, "has_completion_target", None):
             if completer.has_completion_target(document):
-                completions = list(
-                    completer.get_completions(
-                        document,
-                        CompleteEvent(completion_requested=True),
-                    )
-                )
+                if hasattr(completer, "_query_lock"):
+                    async def apply_remote_completion():
+                        completions = [item async for item in completer.get_completions_async(
+                            document, CompleteEvent(completion_requested=True)
+                        )]
+                        if buffer.document != document or event.app.is_done:
+                            return
+                        if len(completions) == 1:
+                            buffer.apply_completion(completions[0])
+                        elif completions:
+                            suffix = get_common_complete_suffix(document, completions)
+                            if suffix:
+                                buffer.insert_text(suffix)
+                            else:
+                                buffer._set_completions(completions)
+                    event.app.create_background_task(apply_remote_completion())
+                    return
+                completions = list(completer.get_completions(document, CompleteEvent(completion_requested=True)))
                 if len(completions) == 1:
                     buffer.apply_completion(completions[0])
                     return

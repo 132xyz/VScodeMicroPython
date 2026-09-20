@@ -117,6 +117,49 @@ describe("SerialManagerProcess", () => {
     );
   });
 
+  test("concurrent start calls share one child and one ready listener", async () => {
+    const child = new FakeChild();
+    (spawn as jest.Mock).mockReturnValue(child);
+    const manager = new SerialManagerProcess();
+    const options = { device: "COM7", baudRate: 115200, token: "tok", scriptPath: "/extension/scripts/mpyrepl/__main__.py" };
+    const first = manager.start(options);
+    const second = manager.start(options);
+    await waitForSpawnCount(1);
+    expect(child.stdout.listenerCount("data")).toBe(1);
+    child.stdout.emit("data", Buffer.from(`${MANAGER_READY_MARKER}{"host":"127.0.0.1","port":50124,"token":"tok"}\n`));
+    expect(await first).toEqual(await second);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    child.exitCode = 0;
+    await manager.stop();
+  });
+
+  test("stop while resolving Python cancels startup before it can spawn", async () => {
+    let resolvePython!: (value: string) => void;
+    (MpRemoteManager.detectPythonPath as jest.Mock).mockReturnValue(new Promise<string>(resolve => { resolvePython = resolve; }));
+    const manager = new SerialManagerProcess();
+    const started = manager.start({ device: "COM7", baudRate: 115200 });
+    const rejected = expect(started).rejects.toThrow("startup cancelled");
+    const stopped = manager.stop();
+    resolvePython("python3");
+    await stopped;
+    await rejected;
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  test("stop during startup releases the child and prevents retries", async () => {
+    const child = new FakeChild();
+    (spawn as jest.Mock).mockReturnValue(child);
+    const manager = new SerialManagerProcess();
+    const started = manager.start({ device: "COM7", baudRate: 115200, token: "tok", startupRetryDelaysMs: [0] });
+    const rejected = expect(started).rejects.toThrow("exited before ready");
+    await waitForSpawnCount(1);
+    await manager.stop(100, { gracefulWaitMs: 0 });
+    await rejected;
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+  });
+
   test("retries startup when the serial port is still being released", async () => {
     const firstChild = new FakeChild();
     const secondChild = new FakeChild();

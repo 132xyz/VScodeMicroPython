@@ -75,6 +75,9 @@ class FakePromptSession:
             raise value
         return value
 
+    async def prompt_async(self, *args, **kwargs):
+        return self.prompt(*args, **kwargs)
+
 
 class FakeInput:
     def __init__(self, key_batches=None) -> None:

@@ -91,6 +91,7 @@ class AgentManagerClient:
         self._counter = itertools.count(1)
         self._socket: socket.socket | None = None
         self._reader = None
+        self._supports_cancellation = False
 
     def connect(self, timeout: float = 5.0) -> None:
         if self._socket is not None:
@@ -129,9 +130,15 @@ class AgentManagerClient:
         if sock is None:
             raise RuntimeError("manager client is not connected")
         sock.settimeout(timeout if timeout > 0 else None)
+        deadline = time.monotonic() + timeout if timeout > 0 else None
         try:
             sock.sendall(encode_json_line(payload).encode("utf-8"))
             while True:
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("manager request deadline exceeded")
+                    sock.settimeout(remaining)
                 message = self._read_message()
                 if "event" in message:
                     self._handle_event(message, request_id)
@@ -145,7 +152,19 @@ class AgentManagerClient:
                         str(error.get("message") or "manager request failed"),
                         error.get("details"),
                     )
-                return message.get("result")
+                result = message.get("result")
+                if method == "manager.hello" and isinstance(result, dict):
+                    self._supports_cancellation = "request-cancel" in result.get("capabilities", [])
+                return result
+        except TimeoutError:
+            if self._supports_cancellation:
+                try:
+                    sock.settimeout(1.0)
+                    sock.sendall(encode_json_line({"id": "cancel-" + request_id, "token": self._token,
+                        "method": "request.cancel", "params": {"requestId": request_id}}).encode("utf-8"))
+                except OSError:
+                    pass
+            raise
         finally:
             if self._socket is sock:
                 sock.settimeout(None)
@@ -284,9 +303,9 @@ def load_session_descriptor(path: Path) -> dict[str, Any]:
 
 
 def _queue_params(args: argparse.Namespace) -> dict[str, Any]:
-    if args.queue_timeout < 0:
+    if not math.isfinite(args.queue_timeout) or args.queue_timeout < 0:
         raise AgentCliError("usage", "--queue-timeout must be non-negative", EXIT_USAGE)
-    if args.timeout <= 0:
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
         raise AgentCliError("usage", "--timeout must be greater than zero", EXIT_USAGE)
     return {
         "queuePolicy": args.busy,

@@ -98,7 +98,7 @@ describe('Esp32Tree coverage', () => {
     });
     expect(tree.getTreeItemForNode({ kind: 'dir', name: 'Board (/)', path: '/', isContextAnchor: true })).toMatchObject({
       label: 'Board (/)',
-      contextValue: 'dir',
+      contextValue: 'root',
     });
     expect(tree.getTreeItemForNode({ kind: 'file', name: 'main.py', path: '/main.py' })).toMatchObject({
       label: 'main.py',
@@ -118,6 +118,25 @@ describe('Esp32Tree coverage', () => {
     expect(tree._nodeCache.get('/pkg')).toEqual([]);
     tree.clearCache();
     expect(tree._nodeCache.size).toBe(0);
+  });
+
+  test('a delayed old listing cannot replace nodes loaded after refresh', async () => {
+    const { Esp32Tree } = require('../src/board/esp32Fs') as typeof import('../src/board/esp32Fs');
+    const tree = new Esp32Tree() as any;
+    tree.allowListing();
+    let resolveOld!: (entries: unknown[]) => void;
+    const oldEntries = new Promise(resolve => { resolveOld = resolve; });
+    const started = new Promise<void>(resolve => {
+      mp.lsTyped.mockImplementationOnce(() => { resolve(); return oldEntries; });
+    });
+    const old = tree.getChildNodes();
+    await started;
+    tree.clearCache();
+    mp.lsTyped.mockResolvedValue([{ name: 'fresh.py', isDir: false }]);
+    const fresh = await tree.getChildNodes();
+    resolveOld([{ name: 'stale.py', isDir: false }]);
+    expect(await old).toEqual(fresh);
+    expect(tree._nodeCache.get('/').some((node: any) => node.name === 'stale.py')).toBe(false);
   });
 
   test('manual refresh gate and listing merge logic are covered', async () => {

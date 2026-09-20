@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import ast
 import textwrap
+import json
 
 from mpyrepl.completion.state import ReplSessionSymbols
 from mpyrepl.runtime.transport import SerialReplTransport, TransportError
+from mpyrepl.runtime.response_stream import ResponseStream, emitter_source, new_nonce
 
 
 DEFAULT_DIR_QUERY_TIMEOUT = 2.0
@@ -112,11 +114,27 @@ def query_device_attributes(
     :return: Parsed attribute names or an empty list.
     """
     source = _build_dir_query_source(expression, session_symbols)
+    nonce = new_nonce()
+    source = source.replace("    if target is not None:", "    names = []\n    if target is not None:")
+    source = source.replace("print(repr(name))", "names.append(str(name))")
+    source = source.replace("\n__mpy_dir_query()", "\n    return names\n__mpy_emit(__import__('json').dumps(__mpy_dir_query()))")
+    source = emitter_source(nonce) + source + "\ndel __mpy_emit"
+    frames: list[bytes] = []
+    console = getattr(transport, "console_output", lambda data: None)
+    parser = ResponseStream(nonce, frames.append, console)
     try:
-        result = gate.try_run_blocking("dir-query", transport.exec_raw, source, timeout)
+        result = gate.try_run_blocking("dir-query", transport.exec_raw, source, timeout, parser.feed, console)
     except TransportError:
+        parser.finish()
         return []
 
+    parser.finish()
     if result is None or result.stderr:
         return []
-    return _parse_dir_output(result.stdout)
+    if parser.error or len(frames) != 1:
+        return []
+    try:
+        names = json.loads(frames[0])
+        return [name for name in names if isinstance(name, str) and not name.startswith("_")] if isinstance(names, list) else []
+    except (ValueError, UnicodeError):
+        return []

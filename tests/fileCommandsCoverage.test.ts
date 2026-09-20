@@ -27,6 +27,7 @@ jest.mock('../src/board/mpremote', () => ({
 }));
 jest.mock('../src/core/localization', () => ({
   Localization: {
+    t: jest.requireActual('../src/core/localization').Localization.t,
     showInfo: jest.fn(),
     showError: jest.fn(),
     showWarning: jest.fn(),
@@ -160,7 +161,9 @@ describe('fileCommands coverage', () => {
 
     await fileCommands.syncActiveFileLocalToBoard();
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('microPythonWorkBench.refresh');
-    expect(localization.Localization.showInfo).toHaveBeenCalledWith('messages.syncedLocalToBoard', 'main.py');
+    expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith('Synced local → board: main.py', 3000);
+    expect(localization.Localization.showInfo).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 
     activeFileSync.syncActiveEditorToBoard.mockRejectedValueOnce(new activeFileSync.ActiveFileSyncError('NO_ACTIVE_EDITOR'));
     await fileCommands.syncActiveFileLocalToBoard();
@@ -209,6 +212,8 @@ describe('fileCommands coverage', () => {
 
     expect(mp.cpFromDeviceWithProgress).toHaveBeenCalledWith('/lib/utils.py', path.join('/workspace/mpy', 'lib', 'utils.py'), expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
     expect(mp.cpToDevice).toHaveBeenCalledWith(path.join('/workspace/mpy', 'lib', 'utils.py'), '/lib/utils.py');
+    expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith('Synced local → board: lib/utils.py', 3000);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalledWith('Synced local → board: lib/utils.py');
   });
 
   test('syncFileBoardToLocal downloads missing local file', async () => {
@@ -229,7 +234,13 @@ describe('fileCommands coverage', () => {
     expect(actions.refreshActionsTreeView).toHaveBeenCalled();
   });
 
-  test('uploadToBoardHere uploads selected files into the selected board directory', async () => {
+  test.each([
+    [{ kind: 'dir', path: '/sd' }, '/sd/boot.py'],
+    [{ kind: 'file', path: '/existing.py' }, '/boot.py'],
+    [{ kind: 'file', path: '/sd/existing.py' }, '/sd/boot.py'],
+    [{ kind: 'dir', path: '/', isContextAnchor: true }, '/boot.py'],
+    [undefined, '/boot.py'],
+  ])('uploadToBoardHere resolves destination for %j', async (node, destination) => {
     const { fileCommands } = require('../src/commands/fileCommands') as typeof import('../src/commands/fileCommands');
     const pickedFile = path.join('/external', 'boot.py');
 
@@ -242,14 +253,18 @@ describe('fileCommands coverage', () => {
       size: 10,
     }));
 
-    await fileCommands.uploadToBoardHere({ kind: 'dir', path: '/sd' } as any);
+    await fileCommands.uploadToBoardHere(node as any);
 
     expect(vscode.window.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
       canSelectFiles: true,
       canSelectFolders: false,
       canSelectMany: true,
     }));
-    expect(mp.uploadReplacingWithProgress).toHaveBeenCalledWith(pickedFile, '/sd/boot.py', expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(mp.uploadReplacingWithProgress).toHaveBeenCalledWith(pickedFile, destination, expect.any(Function), expect.objectContaining({ token: expect.any(Object) }));
+    expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+      `Uploaded 1 file(s) and 0 folder(s) to ${path.posix.dirname(destination as string)}`, 3000,
+    );
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('microPythonWorkBench.refresh');
   });
 

@@ -74,6 +74,23 @@ class SerialReplTransport:
         self._use_raw_paste = True
         self._interrupt_requested_at: Optional[float] = None
         self._read_buffer = b""
+        self._raw_paste_active = False
+        self._prompt_ready = False
+        self.console_consumer: Optional[BytesConsumer] = None
+        self.operation_deadline: Optional[float] = None
+
+    def console_output(self, data: bytes) -> None:
+        """Forward bytes not owned by an internal response to the shared console."""
+        if data and self.console_consumer is not None:
+            self.console_consumer(data)
+
+    def _await_prompt(self, timeout: float) -> None:
+        if self._prompt_ready:
+            return
+        data = self.read_until(b">", timeout=None, overall_timeout=timeout, consumer=self.console_output)
+        if not data.endswith(b">"):
+            raise ReplSyncError("could not observe raw prompt before execution")
+        self._prompt_ready = True
 
     def __enter__(self) -> "SerialReplTransport":
         """Open the transport when used as a context manager.
@@ -122,6 +139,8 @@ class SerialReplTransport:
             self._serial = None
             self._in_raw_repl = False
             self._read_buffer = b""
+            self._raw_paste_active = False
+            self._prompt_ready = False
 
     def read_until(
         self,
@@ -148,6 +167,10 @@ class SerialReplTransport:
 
         while True:
             now = time.monotonic()
+            if self.operation_deadline is not None and now >= self.operation_deadline:
+                raise ReplSyncError("serial operation deadline exceeded")
+            if interrupt_timeout is not None and self._interrupt_requested_at is not None and now >= self._interrupt_requested_at + interrupt_timeout:
+                break
             if overall_timeout is not None and now >= started_at + overall_timeout:
                 break
 
@@ -205,8 +228,9 @@ class SerialReplTransport:
         protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
         deadline = time.monotonic() + protocol_timeout
         self._in_raw_repl = False
-        self._write_serial(b"\r\x03")
-        self.drain_input()
+        self._prompt_ready = False
+        # A second Ctrl-C also releases a raw-paste reader waiting for abort acknowledgement.
+        self._write_serial(b"\r\x03\x03")
         self._write_serial(b"\r\x01")
 
         if soft_reset:
@@ -238,6 +262,7 @@ class SerialReplTransport:
             b"raw REPL; CTRL-B to exit\r\n",
             timeout=None,
             overall_timeout=max(0.0, deadline - time.monotonic()),
+            consumer=self.console_output,
         )
         if not data.endswith(b"raw REPL; CTRL-B to exit\r\n"):
             raise ReplSyncError(
@@ -253,8 +278,9 @@ class SerialReplTransport:
                 reset_sent=soft_reset,
                 reset_observed=soft_reset,
             )
-        self._read_buffer = b">" + self._read_buffer
+        self._prompt_ready = True
         self._in_raw_repl = True
+        self._raw_paste_active = False
 
     def exit_raw_repl(self) -> None:
         """Return to friendly REPL and clear local raw state.
@@ -301,17 +327,10 @@ class SerialReplTransport:
 
         protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
         deadline = time.monotonic() + protocol_timeout
-        prompt = self.read_until(
-            b">",
-            timeout=None,
-            overall_timeout=max(0.0, deadline - time.monotonic()),
-        )
-        if not prompt.endswith(b">"):
-            raise ReplSyncError(
-                "raw prompt not ready for soft reset; observed=%s" % _describe_observed_bytes(prompt)
-            )
+        self._await_prompt(max(0.0, deadline - time.monotonic()))
 
         self._write_serial(b"\x04")
+        self._prompt_ready = False
         self._in_raw_repl = False
         self.clear_interrupt_request()
         data = self.read_until(
@@ -353,7 +372,7 @@ class SerialReplTransport:
                 reset_sent=True,
                 reset_observed=True,
             )
-        self._read_buffer = b">" + self._read_buffer
+        self._prompt_ready = True
         self._in_raw_repl = True
 
     def exec_raw(
@@ -380,13 +399,8 @@ class SerialReplTransport:
         :param command_bytes: UTF-8 encoded source bytes.
         :return: None
         """
-        prompt = self.read_until(
-            b">",
-            timeout=self._config.read_timeout,
-            overall_timeout=self._config.operation_timeout,
-        )
-        if not prompt.endswith(b">"):
-            raise TransportError("could not observe raw prompt before execution")
+        self._await_prompt(self._config.operation_timeout)
+        self._prompt_ready = False
 
         if self._use_raw_paste:
             self._write_serial(b"\x05A\x01")
@@ -437,7 +451,7 @@ class SerialReplTransport:
         if not stdout_data.endswith(b"\x04"):
             if self._interrupt_requested_at is not None:
                 raise TransportInterrupted("interrupted waiting for stdout EOF")
-            raise TransportError("timeout waiting for stdout EOF")
+            raise ReplSyncError("timeout waiting for stdout EOF")
 
         stderr_data = self.read_until(
             b"\x04",
@@ -448,9 +462,10 @@ class SerialReplTransport:
         if not stderr_data.endswith(b"\x04"):
             if self._interrupt_requested_at is not None:
                 raise TransportInterrupted("interrupted waiting for stderr EOF")
-            raise TransportError("timeout waiting for stderr EOF")
+            raise ReplSyncError("timeout waiting for stderr EOF")
 
         self.clear_interrupt_request()
+        self._await_prompt(self._config.operation_timeout)
         return ExecResult(stdout=stdout_data[:-1], stderr=stderr_data[:-1])
 
     def write_bytes(self, data: bytes) -> int:
@@ -481,21 +496,53 @@ class SerialReplTransport:
         :param command_bytes: UTF-8 encoded source bytes.
         :return: None
         """
+        self._raw_paste_active = True
+        try:
+            self._raw_paste_write(command_bytes)
+            self._raw_paste_active = False
+        except ReplSyncError:
+            deadline = self.operation_deadline
+            self.operation_deadline = None
+            try:
+                self.abort_raw_paste()
+            finally:
+                self.operation_deadline = deadline
+            raise
+
+    def abort_raw_paste(self) -> bool:
+        """Abort an incomplete source upload without executing it or soft-resetting."""
+        if not self._raw_paste_active:
+            return True
+        self._write_serial(b"\x03\x03")
+        data = self.read_until(
+            b"\x04>", timeout=None, overall_timeout=min(2.0, self._config.operation_timeout)
+        )
+        if not data.endswith(b"\x04>"):
+            self._in_raw_repl = False
+            return False
+        self._raw_paste_active = False
+        self._prompt_ready = True
+        self._in_raw_repl = True
+        return True
+
+    def _raw_paste_write(self, command_bytes: bytes) -> None:
         header = self.read_exact(2, timeout=self._config.operation_timeout)
         if len(header) != 2:
-            raise TransportError("raw paste header incomplete")
+            raise ReplSyncError("raw paste header incomplete")
 
         window_size = struct.unpack("<H", header)[0]
+        if window_size == 0:
+            raise ReplSyncError("raw paste window size must be positive")
         window_remaining = window_size
         offset = 0
         deadline = time.monotonic() + self._config.operation_timeout
 
         while offset < len(command_bytes):
-            while window_remaining == 0:
+            while window_remaining == 0 or self._read_buffer or self._safe_in_waiting():
                 response = self._read_serial(1)
                 if response == b"":
                     if time.monotonic() >= deadline:
-                        raise TransportError("timed out waiting for raw paste window credit")
+                        raise ReplSyncError("timed out waiting for raw paste window credit")
                     time.sleep(0.01)
                     continue
                 if response == b"\x01":
@@ -505,21 +552,24 @@ class SerialReplTransport:
                     self._write_serial(b"\x04")
                     return
                 else:
-                    raise TransportError("unexpected raw paste response: %r" % (response,))
+                    raise ReplSyncError("unexpected raw paste response: %r" % (response,))
 
-            chunk = command_bytes[offset : offset + window_remaining]
-            self._write_serial(chunk)
-            offset += len(chunk)
-            window_remaining -= len(chunk)
+            chunk = command_bytes[offset : offset + min(window_remaining, window_size)]
+            written = self._write_serial(chunk)
+            count = len(chunk) if written is None else written
+            if count <= 0 or count > len(chunk):
+                raise ReplSyncError("raw paste source write made no progress")
+            offset += count
+            window_remaining -= count
 
         self._write_serial(b"\x04")
         result = self.read_until(
             b"\x04",
-            timeout=self._config.read_timeout,
+            timeout=None,
             overall_timeout=self._config.operation_timeout,
         )
         if not result.endswith(b"\x04"):
-            raise TransportError("device did not acknowledge raw paste end")
+            raise ReplSyncError("device did not acknowledge raw paste end")
 
     def drain_input(self, max_duration: float | None = 0.25) -> None:
         """Consume any pending bytes from the serial input buffer.
@@ -592,11 +642,7 @@ class SerialReplTransport:
         if not data:
             return b""
 
-        prompt_index = data.find(b">")
-        if prompt_index < 0:
-            return data
-        self._read_buffer = b">"
-        return data[:prompt_index] + data[prompt_index + 1 :]
+        return data
 
     def _safe_in_waiting(self) -> int:
         """Return pending bytes when supported, suppressing serial status failures.
@@ -656,6 +702,8 @@ class SerialReplTransport:
         :param data: Bytes sent to the serial backend.
         :return: Number of accepted bytes when provided by pyserial.
         """
+        if self.operation_deadline is not None and time.monotonic() >= self.operation_deadline:
+            raise ReplSyncError("serial operation deadline exceeded")
         serial_port = self._ensure_serial()
         try:
             return serial_port.write(data)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import itertools
 import json
 import ntpath
@@ -15,7 +16,7 @@ import sys
 import threading
 import time
 import traceback
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stdout, redirect_stderr
 from typing import Any, Callable, Iterator
 
 from mpyrepl.manager.protocol import decode_json_line, encode_json_line
@@ -26,6 +27,8 @@ from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
 from mpyrepl.repl.session import PROMPT_EXIT, PROMPT_SOFT_RESET, build_prompt_session
+from mpyrepl.repl.output import LiveOutput
+from prompt_toolkit.application.current import get_app_session
 
 
 CTRL_C = "\x03"
@@ -73,6 +76,9 @@ class ManagerClient:
         self._reader_stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
         self._reader_error: Exception | None = None
+        self.output_sink: Callable[[str], None] | None = None
+        self._last_sequence: int | None = None
+        self._supports_cancellation = False
 
     def connect(self) -> None:
         """Connect to the manager endpoint.
@@ -145,7 +151,17 @@ class ManagerClient:
                 if sock is None:
                     raise RuntimeError("manager client is not connected")
                 sock.sendall(encode_json_line(payload).encode("utf-8"))
-            response = response_queue.get()
+            wait_timeout = 0.5 if method == "repl.complete" else (None if method == "repl.exec" else 30.0)
+            try:
+                response = response_queue.get(timeout=wait_timeout)
+            except queue.Empty:
+                if self._supports_cancellation:
+                    with self._send_lock:
+                        sock.sendall(encode_json_line({
+                            "id": "cancel-" + request_id, "token": self._token,
+                            "method": "request.cancel", "params": {"requestId": request_id},
+                        }).encode("utf-8"))
+                raise ManagerRequestError("timeout", "manager request timed out: %s" % method)
         finally:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
@@ -158,7 +174,10 @@ class ManagerClient:
                 str(error.get("code") or "error"),
                 str(error.get("message") or "manager request failed"),
             )
-        return response.get("result")
+        result = response.get("result")
+        if method == "manager.hello" and isinstance(result, dict):
+            self._supports_cancellation = "request-cancel" in result.get("capabilities", [])
+        return result
 
     def _ensure_reader_thread(self) -> None:
         """Start the single socket reader used by requests and live events."""
@@ -194,6 +213,8 @@ class ManagerClient:
         except Exception as exc:
             if not self._reader_stop.is_set():
                 self._fail_pending(exc)
+                if self.output_sink is not None:
+                    self.output_sink("\n[mpyrepl] manager output connection closed\n")
 
     def _fail_pending(self, exc: Exception) -> None:
         """Wake every blocked request after the shared reader fails."""
@@ -219,6 +240,21 @@ class ManagerClient:
     def _handle_event(self, message: dict[str, Any]) -> None:
         event = message.get("event")
         payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+        sequence = payload.get("sequence")
+        if isinstance(sequence, int):
+            if self._last_sequence is not None and sequence != self._last_sequence + 1 and self.output_sink is not None:
+                self.output_sink("\n[mpyrepl] output sequence gap detected\n")
+            self._last_sequence = sequence
+        if event == "output_gap":
+            text = "\n[mpyrepl] %s\n" % payload.get("text", "console output gap")
+            if self.output_sink is not None:
+                self.output_sink(text)
+            else:
+                sys.stderr.write(text)
+            return
+        if event in {"stdout", "stderr"} and self.output_sink is not None:
+            self.output_sink(str(payload.get("text") or ""))
+            return
         if event == "stdout":
             stream = sys.stdout
             stream.write(str(payload.get("text") or ""))
@@ -247,6 +283,21 @@ class ManagerCompleter(Completer):
         :return: None
         """
         self._client = client
+        self._query_lock = threading.Lock()
+
+    async def get_completions_async(self, document, complete_event):
+        if self._query_lock.locked():
+            return
+        def query():
+            if not self._query_lock.acquire(blocking=False):
+                return []
+            try:
+                return list(self.get_completions(document, complete_event))
+            finally:
+                self._query_lock.release()
+        results = await asyncio.to_thread(query)
+        for completion in results:
+            yield completion
 
     def has_completion_target(self, document: Document) -> bool:
         """Return whether the current cursor position is worth completing.
@@ -309,6 +360,11 @@ def parse_endpoint(endpoint: str) -> tuple[str, int]:
 
 
 def run_repl_client(endpoint: str, token: str) -> int:
+    """Run the REPL on one event loop, including output between prompts."""
+    return asyncio.run(_run_repl_client_async(endpoint, token))
+
+
+async def _run_repl_client_async(endpoint: str, token: str) -> int:
     """Run the terminal REPL client loop.
 
     :param endpoint: Manager endpoint in host:port format.
@@ -320,12 +376,18 @@ def run_repl_client(endpoint: str, token: str) -> int:
     completer = ManagerCompleter(client)
     input_obj = create_input()
     session = build_prompt_session(completer=completer, input=input_obj, complete_while_typing=True)
+    presenter = LiveOutput(get_app_session().output)
+    client.output_sink = presenter.feed
     exit_code = 0
+    interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
     try:
-        with _patch_repl_output():
+        with _patch_repl_output(), ExitStack() as streams:
+            if interactive:
+                streams.enter_context(redirect_stdout(presenter))
+                streams.enter_context(redirect_stderr(presenter))
             try:
-                client.call("manager.hello", {"role": "repl"})
-                status = client.call("manager.status")
+                await asyncio.to_thread(client.call, "manager.hello", {"role": "repl"})
+                status = await asyncio.to_thread(client.call, "manager.status")
                 sys.stderr.write(
                     "[mpyrepl] connected to manager on %s:%s (%s)\n"
                     % (host, port, status.get("state", "unknown") if isinstance(status, dict) else "unknown")
@@ -333,15 +395,16 @@ def run_repl_client(endpoint: str, token: str) -> int:
                 sys.stderr.flush()
                 while True:
                     try:
-                        source = session.prompt(
-                            ">>> ",
+                        await presenter.begin_prompt()
+                        source = await session.prompt_async(
+                            presenter.message,
                             pre_run=lambda: session.default_buffer.load_history_if_not_yet_loaded(),
                         )
                     except EOFError:
                         break
                     except KeyboardInterrupt:
                         try:
-                            client.call("device.interrupt")
+                            await asyncio.to_thread(client.call, "device.interrupt")
                         except ManagerRequestError as exc:
                             _report_manager_error(exc)
                             if exc.code == "transport_lost":
@@ -352,12 +415,13 @@ def run_repl_client(endpoint: str, token: str) -> int:
                         sys.stderr.flush()
                         continue
 
+                    await presenter.end_prompt()
                     stripped = source.strip()
                     if source == PROMPT_EXIT or stripped in {":q", ":quit", ":exit"}:
                         break
                     if source == PROMPT_SOFT_RESET:
                         try:
-                            client.call("device.softReset")
+                            await asyncio.to_thread(client.call, "device.softReset")
                         except ManagerRequestError as exc:
                             _report_manager_error(exc)
                             if exc.code == "transport_lost":
@@ -375,17 +439,18 @@ def run_repl_client(endpoint: str, token: str) -> int:
                         continue
 
                     if run_file is not None:
-                        if not _run_file(client, host, port, token, input_obj, run_file):
+                        if not await asyncio.to_thread(_run_file, client, host, port, token, input_obj, run_file):
                             exit_code = EXIT_TRANSPORT_LOST
                             break
                         continue
 
-                    if _execute_source(client, host, port, token, input_obj, source) is _TRANSPORT_LOST:
+                    if await asyncio.to_thread(_execute_source, client, host, port, token, input_obj, source) is _TRANSPORT_LOST:
                         exit_code = EXIT_TRANSPORT_LOST
                         break
             finally:
                 # Stop the event reader before restoring sys.stdout/sys.stderr.
-                client.close()
+                await asyncio.to_thread(client.close)
+                await presenter.close()
     finally:
         input_obj.close()
     return exit_code
@@ -600,10 +665,10 @@ def _null_context() -> Iterator[None]:
 def _patch_repl_output() -> Iterator[None]:
     """Keep all live output prompt-safe for the complete client lifetime."""
     try:
-        if not sys.stdout.isatty():
-            yield
-            return
+        interactive = sys.stdout.isatty()
     except (AttributeError, OSError, ValueError):
+        interactive = False
+    if not interactive:
         yield
         return
 

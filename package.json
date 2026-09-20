@@ -3,7 +3,7 @@
   "icon": "media/logo.png",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.39",
+  "version": "0.4.43",
   "publisher": "WebForks",
   "engines": {
     "vscode": "^1.84.0"
@@ -217,6 +217,21 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "microPythonWorkBench.uploadToBoardRoot",
+        "title": "%commands.uploadToBoardRoot.title%",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "microPythonWorkBench.newFileAtBoardRoot",
+        "title": "%commands.newFileAtBoardRoot.title%",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "microPythonWorkBench.newFolderAtBoardRoot",
+        "title": "%commands.newFolderAtBoardRoot.title%",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "microPythonWorkBench.syncActiveFileLocalToBoard",
         "title": "%commands.syncActiveFileLocalToBoard.title%",
         "icon": "$(repo-push)"
@@ -380,6 +395,21 @@
           "group": "navigation@1"
         },
         {
+          "command": "microPythonWorkBench.uploadToBoardRoot",
+          "when": "view == microPythonWorkBenchFsView && microPythonWorkBench.hasPort",
+          "group": "navigation@2"
+        },
+        {
+          "command": "microPythonWorkBench.newFileAtBoardRoot",
+          "when": "view == microPythonWorkBenchFsView && microPythonWorkBench.hasPort",
+          "group": "0_create@0"
+        },
+        {
+          "command": "microPythonWorkBench.newFolderAtBoardRoot",
+          "when": "view == microPythonWorkBenchFsView && microPythonWorkBench.hasPort",
+          "group": "0_create@1"
+        },
+        {
           "command": "microPythonWorkBench.checkDiffsFromView",
           "when": "view == microPythonWorkBenchSyncView",
           "group": "navigation@3"
@@ -413,17 +443,17 @@
         },
         {
           "command": "microPythonWorkBench.newFileInTree",
-          "when": "view == microPythonWorkBenchFsView && (viewItem == dir || viewItem == file)",
+          "when": "view == microPythonWorkBenchFsView && (viewItem == root || viewItem == dir || viewItem == file)",
           "group": "0_create@0"
         },
         {
           "command": "microPythonWorkBench.newFolderInTree",
-          "when": "view == microPythonWorkBenchFsView && (viewItem == dir || viewItem == file)",
+          "when": "view == microPythonWorkBenchFsView && (viewItem == root || viewItem == dir || viewItem == file)",
           "group": "0_create@1"
         },
         {
           "command": "microPythonWorkBench.uploadToBoardHere",
-          "when": "view == microPythonWorkBenchFsView && viewItem == dir",
+          "when": "view == microPythonWorkBenchFsView && (viewItem == root || viewItem == dir || viewItem == file)",
           "group": "1_sync@0"
         },
         {
@@ -437,19 +467,9 @@
           "group": "3_delete@2"
         },
         {
-          "command": "microPythonWorkBench.newFileBoardAndLocal",
-          "when": "view == microPythonWorkBenchFsView && !viewItem",
-          "group": "0_create@0"
-        },
-        {
-          "command": "microPythonWorkBench.newFileInTree",
-          "when": "view == microPythonWorkBenchFsView && !viewItem",
-          "group": "0_create@1"
-        },
-        {
-          "command": "microPythonWorkBench.newFolderInTree",
-          "when": "view == microPythonWorkBenchFsView && !viewItem",
-          "group": "0_create@2"
+          "command": "microPythonWorkBench.refresh",
+          "when": "view == microPythonWorkBenchFsView && viewItem == root",
+          "group": "9_refresh@0"
         }
       ]
     },

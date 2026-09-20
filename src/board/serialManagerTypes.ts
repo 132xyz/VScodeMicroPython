@@ -24,6 +24,7 @@ export type SerialManagerStatus = {
   busy?: boolean;
   operation?: string;
   replReady?: boolean;
+  activeOperation?: { requestId: string; clientId: string; method: string; phase: string; elapsedMs: number };
   clientCount?: number;
   extensionClientCount?: number;
   replClientCount?: number;

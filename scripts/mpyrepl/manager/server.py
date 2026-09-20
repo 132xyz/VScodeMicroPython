@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import dataclass, field
 import secrets
 import sys
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TextIO
 
@@ -29,6 +31,18 @@ from mpyrepl.manager.protocol import (
 )
 from mpyrepl.manager.session import ManagerSession
 from mpyrepl.runtime.models import ReplConfig
+from mpyrepl.manager.output_queue import ClientOutput
+
+
+@dataclass
+class PendingOperation:
+    writer: Any
+    request_id: str
+    method: str
+    phase: str = "queued"
+    cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    interrupt_task: Any = None
+    started_at: float = 0.0
 
 
 FS_METHODS = {
@@ -77,6 +91,14 @@ class ManagerServer:
         self._shutdown_event = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._device_status_callback: Callable[[dict[str, Any]], None] | None = None
+        self._outputs: dict[Any, ClientOutput] = {}
+        self._requests: dict[tuple[Any, str], PendingOperation] = {}
+        self._contexts: dict[Any, PendingOperation] = {}
+        self._tasks: set[asyncio.Task] = set()
+        self._sequence = 0
+        self._active_operation: PendingOperation | None = None
+        self._client_ids: dict[Any, str] = {}
+        self._client_tasks: dict[Any, set[asyncio.Task]] = {}
 
     @property
     def host(self) -> str:
@@ -139,6 +161,9 @@ class ManagerServer:
         self._client_roles.clear()
         self._client_readers.clear()
         for writer in clients:
+            output = self._outputs.pop(writer, None)
+            if output is not None:
+                await output.close()
             await _close_writer(writer)
         if self._server is not None:
             self._server.close()
@@ -169,8 +194,20 @@ class ManagerServer:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        line = event_line(event, payload).encode("utf-8")
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._broadcast(line)))
+        context = self._active_operation
+        if context is not None:
+            payload = {**payload, "operationId": context.request_id,
+                       "clientId": self._client_ids.get(context.writer, "")}
+        def publish():
+            self._sequence += 1
+            line = event_line(event, {**payload, "sequence": self._sequence, "managerInstanceId": self._instance_id}).encode("utf-8")
+            for writer in list(self._clients):
+                output = self._outputs.get(writer)
+                if output is not None:
+                    output.send(line)
+                else:
+                    asyncio.create_task(self._write_line(writer, line.decode("utf-8")))
+        loop.call_soon_threadsafe(publish)
 
     async def _broadcast(self, line: bytes) -> None:
         stale: list[asyncio.StreamWriter] = []
@@ -193,22 +230,56 @@ class ManagerServer:
         self._clients.add(writer)
         self._client_roles[writer] = "unknown"
         self._client_readers[writer] = reader
+        self._outputs[writer] = ClientOutput(writer)
+        self._client_ids[writer] = secrets.token_hex(8)
+        tasks: set[asyncio.Task] = set()
+        self._client_tasks[writer] = tasks
         try:
             await self._write_line(writer, event_line("status", self._status_payload()))
             while not reader.at_eof():
                 line = await reader.readline()
                 if not line:
                     break
-                should_shutdown = await self._handle_line(writer, line)
-                if should_shutdown:
+                if len(tasks) >= 64:
                     break
+                task = asyncio.create_task(self._serve_line(writer, line))
+                self._tasks.add(task)
+                tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                task.add_done_callback(tasks.discard)
         except (ConnectionError, OSError):
             pass
         finally:
             self._clients.discard(writer)
             self._client_roles.pop(writer, None)
             self._client_readers.pop(writer, None)
+            self._client_ids.pop(writer, None)
+            self._client_tasks.pop(writer, None)
+            for (owner, _), request in list(self._requests.items()):
+                if owner is writer and request.phase == "queued":
+                    request.cancelled.set()
+            output = self._outputs.pop(writer, None)
+            if output is not None:
+                await output.close()
             await _close_writer(writer)
+
+    async def _serve_line(self, writer, line: bytes) -> None:
+        try:
+            shutdown = await self._handle_line(writer, line)
+            if shutdown:
+                output = self._outputs.get(writer)
+                if output is not None:
+                    try:
+                        await asyncio.wait_for(output.queue.join(), 1.0)
+                    except asyncio.TimeoutError:
+                        pass
+                await _close_writer(writer)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            context = self._contexts.pop(asyncio.current_task(), None)
+            if context is not None:
+                self._requests.pop((writer, context.request_id), None)
 
     async def _handle_line(self, writer: asyncio.StreamWriter, line: bytes) -> bool:
         request_id = ""
@@ -217,6 +288,13 @@ class ManagerServer:
             request_id = request.request_id
             if request.token != self._token:
                 raise RpcProtocolError("invalid manager token", ERROR_AUTH)
+            if request.method != "request.cancel":
+                key = (writer, request.request_id)
+                if key in self._requests:
+                    raise RpcMethodError("request id is already active", "duplicate_request")
+                context = PendingOperation(writer, request.request_id, request.method)
+                self._requests[key] = context
+                self._contexts[asyncio.current_task()] = context
             result = await self._dispatch(
                 request.method,
                 request.params,
@@ -250,6 +328,16 @@ class ManagerServer:
         writer: asyncio.StreamWriter | None = None,
     ) -> Any:
         session = self._require_session()
+        if method == "request.cancel":
+            target = self._requests.get((writer, str(params.get("requestId") or "")))
+            if target is None:
+                return {"cancelled": False, "phase": "finished"}
+            target.cancelled.set()
+            if target.phase == "running":
+                if target.interrupt_task is None:
+                    target.interrupt_task = asyncio.create_task(session.cancel())
+                await target.interrupt_task
+            return {"cancelled": True, "phase": target.phase}
         if method == "manager.ping":
             return {
                 "pong": True,
@@ -275,6 +363,8 @@ class ManagerServer:
                     "device-reconnect",
                     "filesystem",
                     "repl-exec",
+                    "request-cancel",
+                    "ordered-output",
                 ],
                 "status": self._status_payload(),
             }
@@ -378,12 +468,15 @@ class ManagerServer:
             raise RpcMethodError("serial manager is busy", "busy", self._busy_details(method))
 
         timeout_ms = _optional_float(params.get("queueTimeoutMs"))
-        if timeout_ms is not None and timeout_ms < 0:
-            raise RpcMethodError("queueTimeoutMs must be non-negative", "invalid_params")
+        if timeout_ms is None:
+            timeout_ms = 30000.0
+        if not math.isfinite(timeout_ms) or timeout_ms < 0:
+            raise RpcMethodError("queueTimeoutMs must be non-negative and finite", "invalid_params")
         self._queued_operations += 1
+        context = self._contexts.get(asyncio.current_task())
         try:
             try:
-                await self._acquire_operation_lock(timeout_ms, writer)
+                await self._acquire_operation_lock(timeout_ms, writer, context.cancelled if context else None)
             except asyncio.TimeoutError as exc:
                 raise RpcMethodError(
                     "timed out waiting for the serial manager",
@@ -394,14 +487,38 @@ class ManagerServer:
             self._queued_operations -= 1
 
         try:
-            return await operation()
+            if context is not None:
+                if context.cancelled.is_set():
+                    raise RpcMethodError("request cancelled before execution", "cancelled")
+                context.phase = "running"
+                context.started_at = time.monotonic()
+            self._active_operation = context
+            session = self._require_session()
+            session._request_cancelled = context.cancelled if context else None
+            running = asyncio.create_task(operation())
+            try:
+                return await asyncio.shield(running)
+            except asyncio.CancelledError:
+                # Cancelling an await does not stop a serial worker thread.
+                await asyncio.shield(running)
+                raise
         finally:
-            self._operation_lock.release()
+            try:
+                if context is not None:
+                    if context.interrupt_task is not None:
+                        await asyncio.shield(context.interrupt_task)
+                    context.phase = "finished"
+            finally:
+                self._active_operation = None
+                if self._session is not None:
+                    self._session._request_cancelled = None
+                self._operation_lock.release()
 
     async def _acquire_operation_lock(
         self,
         timeout_ms: float | None,
         writer: asyncio.StreamWriter | None,
+        cancelled: asyncio.Event | None = None,
     ) -> None:
         if timeout_ms == 0:
             if self._operation_lock.locked():
@@ -411,31 +528,39 @@ class ManagerServer:
         reader = self._client_readers.get(writer) if writer is not None else None
         acquire_task = asyncio.create_task(self._operation_lock.acquire())
         disconnect_task = asyncio.create_task(self._wait_for_disconnect(reader)) if reader is not None else None
+        cancel_task = asyncio.create_task(cancelled.wait()) if cancelled is not None else None
         wait_tasks = {acquire_task}
         if disconnect_task is not None:
             wait_tasks.add(disconnect_task)
+        if cancel_task is not None:
+            wait_tasks.add(cancel_task)
+        accepted = False
         try:
             done, _ = await asyncio.wait(
                 wait_tasks,
                 timeout=None if timeout_ms is None else timeout_ms / 1000.0,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if disconnect_task is not None and disconnect_task in done:
-                if acquire_task in done and acquire_task.result():
-                    self._operation_lock.release()
-                else:
+            if (disconnect_task is not None and disconnect_task in done) or (cancel_task is not None and cancel_task in done):
+                if acquire_task not in done:
                     acquire_task.cancel()
                     await _ignore_cancelled(acquire_task)
                 raise RpcMethodError("manager client disconnected while queued", "cancelled")
             if acquire_task in done:
+                accepted = True
                 return
             acquire_task.cancel()
             await _ignore_cancelled(acquire_task)
             raise asyncio.TimeoutError
         finally:
+            if cancel_task is not None and not cancel_task.done():
+                cancel_task.cancel()
+                await _ignore_cancelled(cancel_task)
             if not acquire_task.done():
                 acquire_task.cancel()
                 await _ignore_cancelled(acquire_task)
+            if not accepted and acquire_task.done() and not acquire_task.cancelled() and acquire_task.exception() is None and acquire_task.result():
+                self._operation_lock.release()
             if disconnect_task is not None and not disconnect_task.done():
                 disconnect_task.cancel()
                 await _ignore_cancelled(disconnect_task)
@@ -454,6 +579,11 @@ class ManagerServer:
         }
 
     async def _write_line(self, writer: asyncio.StreamWriter, line: str) -> None:
+        await asyncio.sleep(0)
+        output = self._outputs.get(writer)
+        if output is not None:
+            output.send(line.encode("utf-8"))
+            return
         writer.write(line.encode("utf-8"))
         await writer.drain()
 
@@ -470,6 +600,13 @@ class ManagerServer:
         status["agentClientCount"] = self._role_count("agent")
         status["queuedOperationCount"] = self._queued_operations
         status["protocolVersion"] = PROTOCOL_VERSION
+        current = self._active_operation
+        if current is not None:
+            status["activeOperation"] = {
+                "requestId": current.request_id, "clientId": self._client_ids.get(current.writer, ""),
+                "method": current.method, "phase": current.phase,
+                "elapsedMs": max(0, int((time.monotonic() - current.started_at) * 1000)),
+            }
         return status
 
     def _role_count(self, role: str) -> int:
@@ -523,6 +660,11 @@ def _first_string(params: dict[str, Any], *names: str, default: str = "") -> str
 
 def _fs_payload(method: str, params: dict[str, Any], request_id: str) -> dict[str, Any]:
     payload: dict[str, Any] = {"request_id": request_id}
+    if "operationTimeoutMs" in params:
+        value = _optional_float(params["operationTimeoutMs"])
+        if value is None or not math.isfinite(value) or value <= 0:
+            raise RpcMethodError("operationTimeoutMs must be positive and finite", "invalid_params")
+        payload["operation_timeout"] = value / 1000.0
     if method in {"fs.stat", "fs.listdir", "fs.tree", "fs.mkdir", "fs.remove", "fs.readFile", "fs.writeFile"}:
         payload["path"] = _first_string(params, "path", "devicePath", default="/")
     if method == "fs.mkdir":

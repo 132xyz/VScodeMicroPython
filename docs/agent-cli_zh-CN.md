@@ -88,6 +88,8 @@ python scripts/mpyrepl/__main__.py agent shutdown
 
 开始/结束标记、最终长度校验和字节进度保持不变.下载先写 `.mpydownload` 临时文件,全部校验成功后才替换本地目标;失败时保留已有目标并清理临时文件.
 
+内部记录现在另外带有每次操作独立 nonce 和字节长度的帧.下载块含序号和解码长度,结束时核对设备与主机 SHA-256 后才替换目标.固件需提供 `hashlib.sha256` 或 `uhashlib.sha256`.帧外后台文本送人工控制台;交错或损坏的记录导致校验失败,不会混进文件.流式传输和既有临时目标保护保持有效.
+
 升级扩展后,已常驻的旧 manager 不会自动重新加载 Python 代码.验证修复前应确认所附着 manager 的启动脚本属于新版本;需要结束旧实例时,先安排好所有共享客户端,不要中断正在使用的设备会话.
 
 ## 软复位与 REPL 恢复
@@ -106,9 +108,15 @@ CLI 通过 `device.softReset` 的可选 `softResetTimeoutMs` 参数传递毫秒�
 
 不要仅因同步超时就直接重试 `soft-reset`,因为第一次 Ctrl-D 可能已经生效;特别是 `resetSent=true`、`resetObserved=false` 时,复位结果尚不能确定.先用下一条正常命令恢复 REPL.人工 REPL 会继续保留,不会因这类同步错误收到断线状态.
 
+执行和文件系统命令缺少 raw stdout/stderr EOF 时也返回 `repl_sync_timeout`,保留原串口句柄.这表示协议状态不确定,不能据此认定物理断线,失败操作不会自动重放.下一条主动命令恢复 REPL 时可能通过 Ctrl-C 中断尚未结束的设备代码,重试写入或其他有副作用的操作前应先确认其实际结果.`ls` 只读取单个目录;显式 `tree` 仍递归扫描,大目录或慢文件系统需要更多时间.
+
 ## 排队与输出行为
 
 代码执行、文件系统操作、连接、断开、重连、软重置和补全共用 manager 端的串口操作锁.默认 `--busy wait` 使用由 `--queue-timeout` 限制的有界排队;`--busy reject` 会立即返回 `busy` 错误.排队期间客户端断开时,对应请求会被取消.`interrupt` 绕过队列,因此可用于停止正在运行的设备代码.
+
+新版 manager 公布 `request-cancel` 和 `ordered-output` 能力.`request.cancel` 在同一已认证连接上接收 `requestId`: 排队请求直接移除,不向设备发字节;运行中请求只能中断自己的串口操作,并在中断发送完成后才释放操作锁.客户端本地超时仅在 manager 声明能力时使用它,旧 manager 不会回退为全局中断.取消代表请求停止,不代表回滚设备副作用.
+
+状态可包含 `activeOperation`,提供客户端 ID、请求 ID、方法、阶段和已运行毫秒数.事件 `sequence` 标识 manager 输出顺序.这些 ID 表示当前主机操作,不能证明输出来自设备上的哪个线程.CLI 使用 monotonic 总等待期限,持续收到事件也不会无限延期.扩展文件请求使用 2 秒排队预算和有界设备操作预算,视图超时不会重启共享 owner.
 
 执行 `machine.reset()` 或设备重新枚举后,manager 可能暂时进入 `stopped`.`reconnect` 会释放 manager 持有的旧串口句柄,在 `--timeout` 范围内重复打开同一个已配置端口,然后重新进入 raw REPL 并注入 helper.整个过程仍由现有 manager 完成,Agent 不会直接打开 COM 口,也不需要操作 VS Code 界面.
 

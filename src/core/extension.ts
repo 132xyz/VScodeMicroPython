@@ -597,6 +597,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("microPythonWorkBench.syncActiveFileLocalToBoard", fileCommands.syncActiveFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileLocalToBoard", fileCommands.syncFileLocalToBoard),
     vscode.commands.registerCommand("microPythonWorkBench.uploadToBoardHere", fileCommands.uploadToBoardHere),
+    vscode.commands.registerCommand("microPythonWorkBench.uploadToBoardRoot", () => fileCommands.uploadToBoardHere()),
+    vscode.commands.registerCommand("microPythonWorkBench.newFileAtBoardRoot", () => fileCommands.newFileInTree()),
+    vscode.commands.registerCommand("microPythonWorkBench.newFolderAtBoardRoot", () => fileCommands.newFolderInTree()),
     vscode.commands.registerCommand("microPythonWorkBench.syncFileBoardToLocal", fileCommands.syncFileBoardToLocal),
     vscode.commands.registerCommand("microPythonWorkBench.setPort", async (port: string) => {
       await applyPortSelection(() => boardCommands.setPort(port));

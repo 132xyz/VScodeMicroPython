@@ -50,7 +50,7 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
     }
     if ((element as any).isContextAnchor) {
       const item = new vscode.TreeItem("Board (/)", vscode.TreeItemCollapsibleState.None);
-      item.contextValue = "dir";
+      item.contextValue = "root";
       item.tooltip = "Right-click to access MicroPython WorkBench actions";
       item.iconPath = new vscode.ThemeIcon("files");
       return item;
@@ -77,11 +77,13 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
 
   // --- Incremental node cache and addNode method ---
   private _nodeCache: Map<string, Esp32Node[]> = new Map();
+  private _nodeGeneration = 0;
 
   /**
    * Limpia el cache de nodos del árbol (para que desaparezcan los archivos listados).
    */
   clearCache(): void {
+    this._nodeGeneration++;
     this._nodeCache.clear();
   }
 
@@ -131,6 +133,7 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
 
   // Modifica getChildNodes para usar el cache si existe
   async getChildNodes(element?: Esp32Node): Promise<(Esp32Node | "no-port")[]> {
+    const generation = this._nodeGeneration;
     const port = mp.getActiveConnect();
     if (!port || port === "" || port === "auto") {
       return [];
@@ -268,9 +271,11 @@ export class Esp32Tree implements vscode.TreeDataProvider<TreeNode> {
       
       nodes.sort((a,b) => (a.kind === b.kind) ? a.name.localeCompare(b.name) : (a.kind === "dir" ? -1 : 1));
       // Cachear este directorio para actualizaciones incrementales
+      if (generation !== this._nodeGeneration) return this.getChildNodes(element);
       this._nodeCache.set(path, nodes);
       return maybeAddAnchor(nodes);
     } catch (err: any) {
+      if (generation !== this._nodeGeneration) return this.getChildNodes(element);
       // Only show error if it's not a "no port selected" issue
       const errorMessage = String(err?.message ?? err).toLowerCase();
       const isPortError = errorMessage.includes("select a specific serial port") || 

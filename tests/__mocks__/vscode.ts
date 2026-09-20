@@ -3,6 +3,7 @@ export const window = {
   showWarningMessage: jest.fn(),
   showErrorMessage: jest.fn(),
   showInformationMessage: jest.fn(),
+  setStatusBarMessage: jest.fn(() => ({ dispose: jest.fn() })),
   showOpenDialog: jest.fn(),
   showQuickPick: jest.fn(),
   withProgress: jest.fn(),

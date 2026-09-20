@@ -93,6 +93,121 @@ class FakeSession:
 
 
 class ManagerServerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelling_request_task_does_not_release_a_running_serial_worker(self) -> None:
+        session=FakeSession(); server=ManagerServer("tok"); await server.start(session)
+        started, release = asyncio.Event(), asyncio.Event()
+        async def operation():
+            started.set(); await release.wait(); return True
+        request=asyncio.create_task(server._run_serial_operation("fs.listdir", {}, operation))
+        await started.wait(); request.cancel(); await asyncio.sleep(0)
+        self.assertTrue(server._operation_lock.locked())
+        release.set()
+        with self.assertRaises(asyncio.CancelledError): await request
+        self.assertFalse(server._operation_lock.locked())
+        await server.close()
+
+    async def test_stdout_events_precede_result_on_the_same_socket(self) -> None:
+        server=ManagerServer("tok")
+        class OutputSession(FakeSession):
+            async def execute(self, *args):
+                server.emit_event("stdout", {"text": "["})
+                server.emit_event("stdout", {"text": "2031616, null]\r\n"})
+                return {"stdout": "[2031616, null]\r\n", "stderr": ""}
+        await server.start(OutputSession())
+        reader,writer=await asyncio.open_connection(server.host,server.port)
+        await reader.readline()
+        writer.write(encode_json_line({"id":"run","token":"tok","method":"repl.exec","params":{"source":"pass"}}).encode())
+        await writer.drain()
+        try:
+            values=[json.loads(await asyncio.wait_for(reader.readline(),1)) for _ in range(3)]
+            self.assertEqual([value.get("event") for value in values], ["stdout", "stdout", None])
+            self.assertEqual(values[1]["payload"]["sequence"], values[0]["payload"]["sequence"] + 1)
+            self.assertEqual(values[2]["id"], "run")
+        finally:
+            await _close_test_writer(writer); await server.close()
+
+    async def test_queued_request_cancel_and_status_use_same_connection_without_interrupting_owner(self) -> None:
+        class BusySession(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+            async def execute(self, *args):
+                self.started.set()
+                await self.release.wait()
+                return {"stdout": "", "stderr": ""}
+        session = BusySession(); server = ManagerServer("tok")
+        await server.start(session)
+        first = asyncio.create_task(server._dispatch("repl.exec", {"source": "owner"}, "owner"))
+        await session.started.wait()
+        reader, writer = await asyncio.open_connection(server.host, server.port)
+        await reader.readline()
+        try:
+            for ident, method, params in [
+                ("queued", "fs.listdir", {"path": "/sd"}),
+                ("status", "manager.status", {}),
+                ("cancel", "request.cancel", {"requestId": "queued"}),
+            ]:
+                writer.write(encode_json_line({"id": ident, "token": "tok", "method": method, "params": params}).encode())
+            await writer.drain()
+            replies = {}
+            for _ in range(3):
+                item = json.loads(await asyncio.wait_for(reader.readline(), 1.0))
+                replies[item["id"]] = item
+            self.assertTrue(replies["status"]["ok"])
+            self.assertTrue(replies["cancel"]["result"]["cancelled"])
+            self.assertEqual(replies["queued"]["error"]["code"], "cancelled")
+            self.assertFalse(session.cancelled)
+            session.release.set(); await first
+            self.assertEqual(session.fs_calls, [])
+        finally:
+            session.release.set(); await first
+            await _close_test_writer(writer); await server.close()
+
+    async def test_cancel_cannot_target_another_connections_request(self) -> None:
+        from mpyrepl.manager.server import PendingOperation
+        session = FakeSession(); server = ManagerServer("tok")
+        await server.start(session)
+        owner, other = object(), object()
+        context = PendingOperation(owner, "same-id", "repl.exec", "running")
+        server._requests[(owner, "same-id")] = context
+        try:
+            result = await server._dispatch("request.cancel", {"requestId": "same-id"}, "cancel", other)
+            self.assertFalse(result["cancelled"])
+            self.assertFalse(session.cancelled)
+            self.assertFalse(context.cancelled.is_set())
+        finally:
+            await server.close()
+
+    async def test_running_cancel_keeps_operation_lock_until_interrupt_is_sent(self) -> None:
+        from mpyrepl.manager.server import PendingOperation
+        class InterruptSession(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.started = asyncio.Event(); self.interrupt_started = asyncio.Event()
+                self.release_exec = asyncio.Event(); self.release_interrupt = asyncio.Event()
+            async def execute(self, *args):
+                self.started.set(); await self.release_exec.wait()
+                return {"stdout": "", "stderr": ""}
+            async def cancel(self):
+                self.interrupt_started.set(); await self.release_interrupt.wait()
+                return True
+        session = InterruptSession(); server = ManagerServer("tok"); await server.start(session)
+        owner = object(); context = PendingOperation(owner, "run", "repl.exec")
+        server._requests[(owner, "run")] = context
+        async def run():
+            server._contexts[asyncio.current_task()] = context
+            return await server._dispatch("repl.exec", {"source": "pass"}, "run", owner)
+        executing = asyncio.create_task(run()); await session.started.wait()
+        cancelling = asyncio.create_task(server._dispatch("request.cancel", {"requestId": "run"}, "cancel", owner))
+        await session.interrupt_started.wait(); session.release_exec.set()
+        await asyncio.sleep(0)
+        self.assertTrue(server._operation_lock.locked())
+        self.assertFalse(executing.done())
+        session.release_interrupt.set(); await cancelling; await executing
+        self.assertFalse(server._operation_lock.locked())
+        await server.close()
+
     async def test_server_dispatches_requests_and_shutdown(self) -> None:
         session = FakeSession()
         server = ManagerServer("tok")

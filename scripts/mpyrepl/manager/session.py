@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 from typing import Any, Callable, NoReturn
 
@@ -94,6 +95,7 @@ class ManagerSession:
         self._state = "stopped"
         self._connection_monitor: asyncio.Task[None] | None = None
         self._idle_output_decoder = Utf8StreamDecoder()
+        self._request_cancelled: asyncio.Event | None = None
 
     @property
     def state(self) -> str:
@@ -124,6 +126,7 @@ class ManagerSession:
         self._state = "starting"
         self._emit_status()
         transport = self._transport_factory(self._config)
+        transport.console_consumer = self._console_output
         try:
             await asyncio.to_thread(transport.open)
             await self._gate.run(
@@ -311,7 +314,11 @@ class ManagerSession:
 
         :return: True when cancellation was requested.
         """
-        return await self.interrupt()
+        transport = self._transport
+        if transport is None:
+            return False
+        await asyncio.to_thread(transport.interrupt)
+        return True
 
     async def soft_reset(self, operation_timeout: float | None = None) -> bool:
         """Run a raw-mode soft reset and stream boot output.
@@ -320,6 +327,7 @@ class ManagerSession:
         :return: True after the new raw prompt and helper are ready.
         """
         await self._ensure_open()
+        self._check_request_cancelled()
         transport = self._require_transport()
         decoder = Utf8StreamDecoder()
 
@@ -362,6 +370,7 @@ class ManagerSession:
             return {"stdout": "", "stderr": ""}
 
         await self._ensure_open()
+        self._check_request_cancelled()
         transport = self._require_transport()
         stdout_decoder = Utf8StreamDecoder()
         stderr_decoder = Utf8StreamDecoder()
@@ -369,10 +378,10 @@ class ManagerSession:
         stderr_chunks: list[str] = []
 
         def _stdout_consumer(chunk: bytes) -> None:
+            self._console_output(chunk)
             text = _decode_chunk(stdout_decoder, chunk)
             if text:
                 stdout_chunks.append(text)
-                self._emit_event("stdout", {"text": text})
 
         def _stderr_consumer(chunk: bytes) -> None:
             text = _decode_chunk(stderr_decoder, chunk)
@@ -391,8 +400,17 @@ class ManagerSession:
                 _stderr_consumer,
             )
         except TransportInterrupted:
-            await self._gate.run("interrupt-recover", transport.enter_raw_repl, False, 2.0)
+            self._repl_needs_sync = True
+            try:
+                await self._gate.run("interrupt-recover", transport.enter_raw_repl, False, 2.0)
+            except ReplSyncError as exc:
+                self._mark_repl_unsynchronized(exc)
+            except TransportError as exc:
+                await self._mark_transport_lost(exc)
+            self._repl_needs_sync = False
             raise RpcMethodError("execution interrupted", "cancelled")
+        except ReplSyncError as exc:
+            self._mark_repl_unsynchronized(exc)
         except TransportError as exc:
             await self._mark_transport_lost(exc)
         finally:
@@ -400,7 +418,6 @@ class ManagerSession:
             stderr_tail = stderr_decoder.flush()
             if stdout_tail:
                 stdout_chunks.append(stdout_tail)
-                self._emit_event("stdout", {"text": stdout_tail})
             if stderr_tail:
                 stderr_chunks.append(stderr_tail)
                 self._emit_event("stderr", {"text": stderr_tail})
@@ -425,6 +442,7 @@ class ManagerSession:
         :return: Operation result.
         """
         await self._ensure_open()
+        self._check_request_cancelled()
         client = self._require_fs_client()
         request_id = str(payload.get("request_id") or "")
         operation_payload = dict(payload)
@@ -434,9 +452,18 @@ class ManagerSession:
                 {"operationId": request_id, **event},
             )
         try:
-            return await self._gate.run("fs." + op, run_fs_operation, client, op, operation_payload)
+            timeout = float(payload.get("operation_timeout") or (120.0 if op in {"tree", "read_file", "write_file"} else self._config.operation_timeout))
+            return await self._gate.run("fs." + op, self._run_fs_bounded, client, op, operation_payload, timeout)
+        except TransportInterrupted:
+            self._repl_needs_sync = True
+            raise RpcMethodError("filesystem operation interrupted; result may be incomplete", "cancelled")
         except FsOperationError as exc:
+            if not getattr(self._require_transport(), "_prompt_ready", True):
+                self._repl_needs_sync = True
+                self._emit_status()
             raise RpcMethodError(str(exc), exc.code or "device") from exc
+        except ReplSyncError as exc:
+            self._mark_repl_unsynchronized(exc)
         except TransportError as exc:
             await self._mark_transport_lost(exc)
 
@@ -449,10 +476,25 @@ class ManagerSession:
         :return: Completion candidate payloads.
         """
         if self._completer is None or self._repl_needs_sync:
-            await self._ensure_open()
-        if self._completer is None:
-            raise RpcMethodError("completion is not ready", "not_ready")
+            return []
         return await asyncio.to_thread(self._complete_blocking, text, cursor, requested)
+
+    def _run_fs_bounded(self, client, op: str, payload: dict, timeout: float):
+        transport = self._require_transport()
+        transport.operation_deadline = time.monotonic() + timeout
+        try:
+            return run_fs_operation(client, op, payload)
+        finally:
+            transport.operation_deadline = None
+
+    def _check_request_cancelled(self) -> None:
+        if self._request_cancelled is not None and self._request_cancelled.is_set():
+            raise RpcMethodError("request cancelled before device execution", "cancelled")
+
+    def _console_output(self, data: bytes) -> None:
+        text = self._idle_output_decoder.feed(data)
+        if text:
+            self._emit_event("stdout", {"text": text, "background": True})
 
     def clear_runtime_cache(self) -> bool:
         """Clear manager-side completion runtime cache.
@@ -591,6 +633,8 @@ class ManagerSession:
         result = transport.exec_raw(
             build_helper_source(self._helper_version),
             timeout=self._config.operation_timeout,
+            stdout_consumer=self._console_output,
+            stderr_consumer=self._console_output,
         )
         if result.stderr:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
