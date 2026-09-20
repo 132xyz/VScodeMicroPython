@@ -130,6 +130,7 @@ npm run test:watch
 	- soft-reset 同步超时保留串口、下一条命令原句柄恢复且不重复复位、并发恢复门控和 CLI 期限验证
 - `test_agent_client.py`、`test_repl_client.py`
 	- 会话发现、冷启动、串口生命周期、JSON 契约、Agent 命令映射、人工 REPL manager 连接和空闲提示符实时输出
+	- REPL 客户端单元测试显式创建隔离的 prompt_toolkit app session, 使用测试输入和 DummyOutput, 不依赖 CI 的真实控制台. 仅 mock 提示符不足以阻止 Windows 初始化 Win32Output.
 - `test_fs_ops.py`、`test_operation_gate.py`
 	- 文件传输、进度事件和串口操作串行化
 

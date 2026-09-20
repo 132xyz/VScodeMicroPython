@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import io
 import os
 import queue
@@ -25,6 +25,9 @@ from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.input import DummyInput
+from prompt_toolkit.output import DummyOutput
 from mpyrepl.repl.session import PROMPT_SOFT_RESET
 
 
@@ -196,6 +199,14 @@ class ExecWaitsForCtrlCManagerClient(FakeManagerClient):
 
 
 class ReplClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        # A mocked prompt must not initialize a real Windows console in CI.
+        stack.enter_context(create_app_session(input=DummyInput(), output=DummyOutput()))
+        self.input_obj = FakeInput()
+        stack.enter_context(mock.patch.object(repl_client, "create_input", return_value=self.input_obj))
+
     def test_parse_endpoint_validates_host_port(self) -> None:
         self.assertEqual(repl_client.parse_endpoint("127.0.0.1:1234"), ("127.0.0.1", 1234))
         with self.assertRaises(ValueError):
@@ -594,12 +605,28 @@ class ReplClientTests(unittest.TestCase):
         )
 
     def test_main_uses_parser(self) -> None:
-        FakeManagerClient.instances.clear()
-        prompt = FakePromptSession([":exit"])
         with mock.patch.object(sys, "argv", ["repl_client.py", "--endpoint", "127.0.0.1:5000", "--token", "tok"]), mock.patch.object(
-            repl_client, "ManagerClient", FakeManagerClient
-        ), mock.patch.object(repl_client, "build_prompt_session", return_value=prompt):
+            repl_client, "run_repl_client", return_value=0
+        ) as run_client:
             self.assertEqual(repl_client.main(), 0)
+        run_client.assert_called_once_with("127.0.0.1:5000", "tok")
+
+    def test_run_repl_client_with_test_io_does_not_create_host_console(self) -> None:
+        FakeManagerClient.instances.clear()
+        with mock.patch.object(repl_client, "ManagerClient", FakeManagerClient), mock.patch.object(
+            repl_client, "build_prompt_session", return_value=FakePromptSession([":exit"])
+        ), mock.patch(
+            "prompt_toolkit.output.defaults.create_output",
+            side_effect=AssertionError("host console output must not be created"),
+        ) as create_output, mock.patch(
+            "prompt_toolkit.input.defaults.create_input",
+            side_effect=AssertionError("host console input must not be created"),
+        ) as create_input:
+            self.assertEqual(repl_client.run_repl_client("127.0.0.1:5000", "tok"), 0)
+        create_output.assert_not_called()
+        create_input.assert_not_called()
+        self.assertTrue(self.input_obj.closed)
+        self.assertTrue(FakeManagerClient.instances[0].closed)
 
     def test_build_parser_requires_endpoint_and_token(self) -> None:
         parser = repl_client.build_parser()
