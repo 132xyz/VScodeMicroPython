@@ -35,7 +35,9 @@ class ClientOutput:
 
     async def _run(self) -> None:
         try:
-            while True:
+            # Older asyncio.wait_for can return a completed drain result even
+            # when close() cancelled us. Do not wait for another queue item.
+            while not self.closed:
                 data = await self.queue.get()
                 try:
                     if data is None:

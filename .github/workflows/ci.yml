@@ -44,6 +44,9 @@ jobs:
       run: npm run test:js:coverage
 
     - name: Run Python REPL tests with coverage summary
+      timeout-minutes: 10
+      env:
+        PYTHONUNBUFFERED: '1'
       run: npm run test:py
 
     - name: Package extension (for validation)

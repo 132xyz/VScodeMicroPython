@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import io
+import faulthandler
+import math
 import os
 import sys
 import trace
+import time
 import unittest
 from pathlib import Path
 
@@ -14,6 +16,51 @@ TEST_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = TEST_DIR.parent
 SCRIPTS_DIR = PACKAGE_DIR.parent
 MINIMUM_COVERAGE_PERCENT = 80.0
+
+
+def timeout_setting(name: str, default: float) -> float:
+    """Read a positive, finite test budget in seconds."""
+    value = float(os.environ.get(name, default))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("%s must be positive and finite" % name)
+    return value
+
+
+class TestWatchdog:
+    """Abort even if an event loop, cleanup, or worker thread cannot progress."""
+
+    def __init__(self, test_timeout: float, suite_timeout: float) -> None:
+        self.test_timeout = test_timeout
+        self.deadline = time.monotonic() + suite_timeout
+
+    def arm(self, *, test: bool = False) -> None:
+        remaining = max(0.001, self.deadline - time.monotonic())
+        budget = min(remaining, self.test_timeout) if test else remaining
+        # Keep diagnostics independent of tests that redirect sys.stderr.
+        faulthandler.dump_traceback_later(budget, file=sys.__stderr__, exit=True)
+
+    def cancel(self) -> None:
+        faulthandler.cancel_dump_traceback_later()
+
+
+class ProgressResult(unittest.TextTestResult):
+    """Report each test before it starts and bound its setup/body/cleanup."""
+
+    watchdog: TestWatchdog
+
+    def startTest(self, test: unittest.TestCase) -> None:
+        self.watchdog.arm(test=True)
+        super().startTest(test)
+
+class ProgressRunner(unittest.TextTestRunner):
+    def __init__(self, watchdog: TestWatchdog, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.watchdog = watchdog
+
+    def _makeResult(self) -> ProgressResult:
+        result = ProgressResult(self.stream, self.descriptions, self.verbosity)
+        result.watchdog = self.watchdog
+        return result
 
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -90,16 +137,25 @@ def discover_and_run_tests(runner: unittest.TextTestRunner) -> unittest.TestResu
 
 def main() -> int:
     """Run unittest discovery under trace and print local coverage."""
-    stream = io.StringIO()
-    runner = unittest.TextTestRunner(stream=stream, verbosity=1)
+    try:
+        test_timeout = timeout_setting("MPY_TEST_TIMEOUT_SECONDS", 60.0)
+        suite_timeout = timeout_setting("MPY_TEST_SUITE_TIMEOUT_SECONDS", 300.0)
+    except ValueError as exc:
+        print("Invalid test timeout: %s" % exc, file=sys.__stderr__, flush=True)
+        return 2
+    watchdog = TestWatchdog(test_timeout, suite_timeout)
+    print("Python %s; test timeout=%ss, suite timeout=%ss" % (
+        sys.version.split()[0], test_timeout, suite_timeout,
+    ), file=sys.__stderr__, flush=True)
+    runner = ProgressRunner(watchdog, stream=sys.__stderr__, verbosity=2)
     tracer = trace.Trace(count=True, trace=False)
-    result = tracer.runfunc(discover_and_run_tests, runner)
-
-    output = stream.getvalue()
-    if output:
-        print(output, end="")
-
-    overall_percent = print_coverage_summary(tracer.results().counts)
+    watchdog.arm()
+    try:
+        result = tracer.runfunc(discover_and_run_tests, runner)
+        watchdog.arm()
+        overall_percent = print_coverage_summary(tracer.results().counts)
+    finally:
+        watchdog.cancel()
     if overall_percent < MINIMUM_COVERAGE_PERCENT:
         print(
             "Python coverage below required %.1f%%: %.1f%%"

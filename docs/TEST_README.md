@@ -36,6 +36,21 @@ python -m pip install -r scripts/mpyrepl/tests/requirements.txt
 npm run test:py
 ```
 
+测试入口实时输出 Python 版本、用例名称和结果. 默认每项用例 60 秒、整套测试 300 秒,
+包含 discovery、测试清理和覆盖率汇总. 超时会向原始 stderr 输出线程堆栈并以非零状态
+终止测试进程, 不会把未完成的测试报告为通过. 异步用例在 `stopTest` 之后的事件循环清理
+也保留单项 watchdog. CI 的 Python 步骤另有 10 分钟上限作为兜底.
+
+慢速诊断环境可以设置 `MPY_TEST_TIMEOUT_SECONDS` 和 `MPY_TEST_SUITE_TIMEOUT_SECONDS`,
+值必须为正的有限秒数. 不应靠增大超时掩盖死锁. 发生超时时先查看最后一个用例名及线程
+堆栈, 再单独运行对应测试. `test_test_runner.py` 使用独立子进程验证正常完成和挂起失败,
+不访问设备.
+
+2026-09 的关闭回归来自新增 `ClientOutput` worker: 旧版 asyncio 的 `wait_for(drain)`
+在完成与取消同时发生时可能返回结果, 原来的无限循环随后阻塞在空队列. worker 现在
+在循环边界检查关闭状态. `test_console_integrity.py` 确定性模拟取消被吞掉的情况,
+防止仅在新版 Python 上通过测试而遗漏此路径.
+
 ### 一次性运行 JS 与 Python 覆盖率命令
 
 ```bash

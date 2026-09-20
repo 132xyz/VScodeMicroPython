@@ -170,6 +170,45 @@ class LiveOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'output_gap', writer.data[-1])
         await output.close()
 
+    async def test_close_stops_worker_when_drain_swallows_cancellation(self):
+        from mpyrepl.manager.output_queue import ClientOutput
+        started = asyncio.Event()
+        swallowed = asyncio.Event()
+
+        class Writer:
+            def write(self, data):
+                pass
+
+            async def drain(self):
+                started.set()
+                await asyncio.Event().wait()
+
+        async def completed_drain_on_cancel(awaitable, timeout):
+            try:
+                await awaitable
+            except asyncio.CancelledError:
+                # Model wait_for's completion/cancellation race on Python 3.11.
+                swallowed.set()
+
+        output = ClientOutput(Writer())
+        closing = None
+        try:
+            with mock.patch("mpyrepl.manager.output_queue.asyncio.wait_for", completed_drain_on_cancel):
+                output.send(b"reply\n")
+                done, _ = await asyncio.wait({asyncio.create_task(started.wait())}, timeout=1)
+                self.assertTrue(done, "writer did not start")
+                closing = asyncio.create_task(output.close())
+                done, _ = await asyncio.wait({closing}, timeout=1)
+                self.assertTrue(done, "close waited forever after drain swallowed cancellation")
+                await closing
+                self.assertTrue(swallowed.is_set())
+                self.assertTrue(output.worker.done())
+        finally:
+            output.worker.cancel()
+            await asyncio.gather(output.worker, return_exceptions=True)
+            if closing is not None:
+                await asyncio.gather(closing, return_exceptions=True)
+
     async def test_output_failure_does_not_hang_shutdown(self):
         class Broken(RecordingOutput):
             def write(self, text): raise OSError('output closed')
