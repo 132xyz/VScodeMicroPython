@@ -20,7 +20,7 @@ from mpyrepl.manager import session as manager_session_module
 from mpyrepl.manager.protocol import RpcMethodError
 from mpyrepl.manager.session import ManagerSession
 from mpyrepl.runtime.models import ExecResult, ReplConfig
-from mpyrepl.runtime.transport import ReplSyncError, TransportError
+from mpyrepl.runtime.transport import ReplSyncError, TransportError, TransportInterrupted
 
 
 @dataclass
@@ -406,6 +406,30 @@ class ManagerSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.session.open()
         self.assertTrue(await self.session.cancel())
         await self.session.close()
+
+    async def test_interrupted_execution_recovers_once_without_replaying_source(self) -> None:
+        await self.session.open()
+        transport = self.session._require_transport()
+        transport.exec_raw = mock.Mock(side_effect=[
+            TransportInterrupted("interrupted waiting for stdout EOF"),
+            ExecResult(stdout=b"1\r\n", stderr=b""),
+            ExecResult(stdout=b"2\r\n", stderr=b""),
+        ])
+        entries_before = len(transport.raw_entries)
+        try:
+            with self.assertRaises(RpcMethodError) as raised:
+                await self.session.execute("long_running()", instrument=False)
+            self.assertEqual(raised.exception.code, "cancelled")
+            self.assertEqual(transport.raw_entries[entries_before:], [False])
+            self.assertTrue(self.session.status()["replReady"])
+            self.assertEqual((await self.session.execute("1"))["stdout"], "1\r\n")
+            self.assertEqual((await self.session.execute("2"))["stdout"], "2\r\n")
+            self.assertEqual(transport.exec_raw.call_count, 3)
+            self.assertIs(self.session._require_transport(), transport)
+            self.assertFalse(transport.closed)
+            self.assertEqual(transport.reset_timeouts, [])
+        finally:
+            await self.session.close()
 
     async def test_transport_error_drops_connection_and_next_execute_reopens(self) -> None:
         RecoveringTransport.fail_user_exec_once = True

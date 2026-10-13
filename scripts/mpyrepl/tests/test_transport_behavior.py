@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import struct
+import threading
 import sys
 import unittest
 from unittest import mock
@@ -91,6 +92,24 @@ class _FakeSerial:
         self.is_open = True
 
 
+class _ExpressionSerial(_FakeSerial):
+    """Return a complete expression result in either raw upload mode."""
+
+    def __init__(self, raw_paste: bool = False) -> None:
+        super().__init__()
+        self.raw_paste = raw_paste
+
+    def write(self, data: bytes) -> None:
+        super().write(data)
+        if data == b"\x05A\x01":
+            self.read_chunks.append(b"R\x01" + struct.pack("<H", 1024))
+        elif data == b"\x04":
+            ack = b"\x04" if self.raw_paste else b"OK"
+            self.read_chunks.append(ack + b"1\r\n\x04\x04>")
+        elif data == b"\r\x01":
+            self.read_chunks.append(b"raw REPL; CTRL-B to exit\r\n>")
+
+
 class _ResettableFakeSerial(_FakeSerial):
     def __init__(self) -> None:
         super().__init__()
@@ -160,6 +179,86 @@ class _ScheduledSerial(_FakeSerial):
 
 
 class TransportBehaviorTests(unittest.TestCase):
+    def test_previous_interrupt_does_not_cancel_subsequent_expressions(self) -> None:
+        for raw_paste in (False, True):
+            with self.subTest(raw_paste=raw_paste):
+                transport = SerialReplTransport(ReplConfig(port="fake"))
+                transport._serial = _ExpressionSerial(raw_paste)
+                transport._use_raw_paste = raw_paste
+                transport._prompt_ready = True
+                with mock.patch.object(transport_module.time, "monotonic", return_value=10.0):
+                    transport.interrupt()
+                with mock.patch.object(transport_module.time, "monotonic", return_value=100.0):
+                    for _ in range(3):
+                        result = transport.exec_raw("1", None)
+                        self.assertEqual(result.stdout, b"1\r\n")
+                        self.assertEqual(result.stderr, b"")
+                        self.assertIsNone(transport._interrupt_requested_at)
+
+    def test_raw_recovery_and_close_clear_previous_interrupt(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="fake"))
+        transport._serial = _ExpressionSerial()
+        transport.interrupt()
+        transport.enter_raw_repl(False)
+        self.assertIsNone(transport._interrupt_requested_at)
+        self.assertTrue(transport._prompt_ready)
+        transport.interrupt()
+        transport.close()
+        self.assertIsNone(transport._interrupt_requested_at)
+
+    def test_interrupt_during_submission_is_not_cleared_by_follow(self) -> None:
+        for raw_paste in (False, True):
+            with self.subTest(raw_paste=raw_paste):
+                transport = SerialReplTransport(ReplConfig(port="fake"))
+                serial_port = _ExpressionSerial(raw_paste)
+                transport._serial = serial_port
+                transport._use_raw_paste = raw_paste
+                transport._prompt_ready = True
+                original_write = serial_port.write
+
+                def write(data):
+                    original_write(data)
+                    if data == b"1":
+                        transport.interrupt()
+
+                serial_port.write = write
+                with mock.patch.object(transport_module.time, "monotonic", return_value=10.0):
+                    transport.exec_raw_no_follow(b"1")
+                self.assertEqual(transport._interrupt_requested_at, 10.0)
+                with mock.patch.object(transport_module.time, "monotonic", return_value=100.0):
+                    with self.assertRaises(transport_module.TransportInterrupted):
+                        transport.follow(None)
+
+    def test_interrupt_clear_waits_for_inflight_interrupt_write(self) -> None:
+        transport = SerialReplTransport(ReplConfig(port="fake"))
+        writing, release, clearing, cleared = (threading.Event() for _ in range(4))
+
+        def write(data):
+            writing.set()
+            release.wait(2)
+
+        def clear():
+            clearing.set()
+            transport.clear_interrupt_request()
+            cleared.set()
+
+        with mock.patch.object(transport, "_write_serial", side_effect=write):
+            sender = threading.Thread(target=transport.interrupt)
+            cleaner = threading.Thread(target=clear)
+            sender.start()
+            try:
+                self.assertTrue(writing.wait(1))
+                cleaner.start()
+                self.assertTrue(clearing.wait(1))
+                self.assertFalse(cleared.wait(0.05))
+            finally:
+                release.set()
+                sender.join(2)
+                if cleaner.ident is not None:
+                    cleaner.join(2)
+            self.assertTrue(cleared.is_set())
+            self.assertIsNone(transport._interrupt_requested_at)
+
     """Cover transport diagnostics for raw REPL entry failures.
 
     :return: None

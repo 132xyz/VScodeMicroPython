@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+import threading
 import time
 from typing import Callable, Optional
 
@@ -73,6 +74,7 @@ class SerialReplTransport:
         self._in_raw_repl = False
         self._use_raw_paste = True
         self._interrupt_requested_at: Optional[float] = None
+        self._interrupt_lock = threading.Lock()
         self._read_buffer = b""
         self._raw_paste_active = False
         self._prompt_ready = False
@@ -129,6 +131,7 @@ class SerialReplTransport:
 
         :return: None
         """
+        self.clear_interrupt_request()
         if self._serial is None:
             return
 
@@ -226,6 +229,7 @@ class SerialReplTransport:
         :return: None
         """
         protocol_timeout = self._config.operation_timeout if operation_timeout is None else operation_timeout
+        self.clear_interrupt_request()
         deadline = time.monotonic() + protocol_timeout
         self._in_raw_repl = False
         self._prompt_ready = False
@@ -301,15 +305,17 @@ class SerialReplTransport:
 
         :return: None
         """
-        self._write_serial(b"\x03")
-        self._interrupt_requested_at = time.monotonic()
+        with self._interrupt_lock:
+            self._write_serial(b"\x03")
+            self._interrupt_requested_at = time.monotonic()
 
     def clear_interrupt_request(self) -> None:
         """Clear local interrupt follow state.
 
         :return: None
         """
-        self._interrupt_requested_at = None
+        with self._interrupt_lock:
+            self._interrupt_requested_at = None
 
     def soft_reset(
         self,
@@ -399,6 +405,9 @@ class SerialReplTransport:
         :param command_bytes: UTF-8 encoded source bytes.
         :return: None
         """
+        # Retire a previous operation's interrupt before submission, not in
+        # follow(): a fresh interrupt during upload must still bound follow.
+        self.clear_interrupt_request()
         self._await_prompt(self._config.operation_timeout)
         self._prompt_ready = False
 

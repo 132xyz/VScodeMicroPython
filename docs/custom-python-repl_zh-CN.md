@@ -235,6 +235,13 @@ python scripts/mpyrepl/__main__.py agent shutdown
 
 客户端内部会通过串口操作门控来串行化协议操作。如果当前正有阻塞执行在进行，请求到达后通常会在当前操作让出控制权后应用。
 
+### 中断后每条命令都报 execution interrupted
+
+中断标记只应影响当前执行. 新命令提交、raw REPL 恢复和关闭传输时会清理上一条操作的中断标记,
+但提交过程中收到的新 Ctrl-C 仍会限制本次输出等待, 不会在 `follow` 开始时被清除.
+这避免了设备已经输出结果, manager 却仍使用旧中断时间判定失败的循环.
+升级后需让共享 manager 加载新版代码, 仅关闭并重开人工 REPL 客户端不会更新常驻 manager.
+
 ### 软复位已执行却报 REPL 同步超时
 
 软复位会在完整协议期限内等待 reboot 标记、raw banner 和真实提示符,不会因启动中 100ms 无输出就提前失败.完整期限到期后,`repl_sync_timeout` 会说明是否发送过 Ctrl-D、是否收到复位标记.manager 保留原串口句柄,人工 REPL 继续打开.下一条正常命令会使用 Ctrl-C/Ctrl-A 在原句柄上恢复 raw REPL 并注入 helper,不会再次发送 Ctrl-D.`status.replReady=false` 用于区分协议未就绪和真实断线.具体错误细节及重试注意事项见 [Agent CLI 恢复说明](agent-cli_zh-CN.md#软复位与-repl-恢复).

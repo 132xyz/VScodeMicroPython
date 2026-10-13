@@ -238,6 +238,15 @@ Check:
 
 The client serializes protocol operations through an internal gate. If a blocking execution is in progress, the requested action may be applied right after the active operation yields control.
 
+### Every command reports execution interrupted after an earlier interrupt
+
+Interrupt state belongs to the current execution. Starting a new source submission, recovering raw REPL,
+or closing the transport clears the previous operation's interrupt marker. A new Ctrl-C received during
+submission still bounds this execution's output wait; it is not cleared at the start of `follow`.
+This prevents a successful device result from repeatedly being rejected using an old interrupt timestamp.
+After upgrading, the shared manager must load the new code; reopening only the human REPL client does not
+update an already running manager.
+
 ### Soft reset reports a synchronization timeout after resetting the board
 
 Soft reset waits for the reboot marker, raw banner, and actual prompt using the full protocol deadline, not a 100ms idle timeout. If that deadline expires, `repl_sync_timeout` reports whether Ctrl-D was sent and the reboot marker was observed. The manager retains the serial handle and the human REPL stays open. The next normal command restores raw REPL on the same handle using Ctrl-C/Ctrl-A and reinjects the helper; it does not send another Ctrl-D. `status.replReady=false` distinguishes this condition from physical serial loss. See [Agent CLI recovery](agent-cli.md#soft-reset-and-repl-recovery) for the error details and retry guidance.
